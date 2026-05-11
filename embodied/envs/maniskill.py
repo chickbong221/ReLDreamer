@@ -19,6 +19,7 @@ Usage:
 
 import numpy as np
 import embodied
+import elements
 
 
 class ManiSkill(embodied.Env):
@@ -130,23 +131,23 @@ class ManiSkill(embodied.Env):
   @property
   def obs_space(self):
     spaces = {
-        'reward':      embodied.Space(np.float32, ()),
-        'is_first':    embodied.Space(bool, ()),
-        'is_last':     embodied.Space(bool, ()),
-        'is_terminal': embodied.Space(bool, ()),
-        'state':       embodied.Space(np.float32, (self._state_dim,)),
+        'reward':      elements.Space(np.float32, ()),
+        'is_first':    elements.Space(bool, ()),
+        'is_last':     elements.Space(bool, ()),
+        'is_terminal': elements.Space(bool, ()),
+        'state':       elements.Space(np.float32, (self._state_dim,)),
     }
     if 'rgb' in self._obs_mode:
       # uint8 is required — DreamerV3 Encoder asserts dtype==uint8
-      spaces['image'] = embodied.Space(np.uint8, self._img_shape)
+      spaces['image'] = elements.Space(np.uint8, self._img_shape)
     return spaces
 
   @property
   def act_space(self):
     return {
-        'action': embodied.Space(
+        'action': elements.Space(
             np.float32, (self._act_dim,), low=-1.0, high=1.0),
-        'reset':  embodied.Space(bool, ()),
+        'reset':  elements.Space(bool, ()),
     }
 
   def step(self, action):
