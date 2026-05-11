@@ -72,25 +72,54 @@ def main(argv=None):
   suite = config.task.split('_', 1)[0]
 
   # ------------------------------------------------------------------ #
-  #  ManiSkill: use a single batched GPU env instead of N subprocesses
+  #  ManiSkill: intercept Driver construction inside run.train.
+  #
+  #  train.py does:
+  #    fns = [bind(make_env, i) for i in range(args.envs)]
+  #    driver = embodied.Driver(fns, parallel=not args.debug)
+  #
+  #  We set args.envs=1 so fns has exactly one element.
+  #  We patch embodied.Driver so that when train.py calls Driver(fns, ...),
+  #  it gets our batched Driver instead: fns[0]() builds the ManiSkill env
+  #  and _ManiSkillDriver passes it to the batched init path.
+  #  The patch is restored in a finally block so nothing else is affected.
   # ------------------------------------------------------------------ #
   if suite == 'maniskill':
-    if config.script == 'train':
-      embodied.run.train(
-          bind(make_agent, config),
-          bind(make_replay, config, 'replay'),
-          bind(make_batched_env, config),   # <-- returns (env, driver_kwargs)
-          bind(make_stream, config),
-          bind(make_logger, config),
-          args,
-          batched_env=True)                 # signal to run.train
-    else:
-      raise NotImplementedError(
-          f'ManiSkill only supports script=train for now, got {config.script}')
+    num_envs = dict(config.env.get('maniskill', {})).get('num_envs', 32)
+    args = args.update(envs=1, debug=False)  # one env call, no subprocess
+
+    _OrigDriver = embodied.Driver
+
+    class _ManiSkillDriver(_OrigDriver):
+      def __init__(self, make_env_fns, parallel=True, **kwargs):
+        # fns[0]() returns the ManiSkill batched env instance
+        env = make_env_fns[0]()
+        _OrigDriver.__init__(
+            self, env,
+            batched=True,
+            num_envs=num_envs,
+            **kwargs,
+        )
+
+    embodied.Driver = _ManiSkillDriver
+    try:
+      if config.script == 'train':
+        embodied.run.train(
+            bind(make_agent, config),
+            bind(make_replay, config, 'replay'),
+            bind(make_env, config),
+            bind(make_stream, config),
+            bind(make_logger, config),
+            args)
+      else:
+        raise NotImplementedError(
+            f'ManiSkill only supports script=train, got {config.script}')
+    finally:
+      embodied.Driver = _OrigDriver
     return
 
   # ------------------------------------------------------------------ #
-  #  All other envs: original code unchanged
+  #  All other envs — original code unchanged
   # ------------------------------------------------------------------ #
   if config.script == 'train':
     embodied.run.train(
@@ -154,8 +183,10 @@ def main(argv=None):
 def make_agent(config):
   from .agent import Agent
   suite = config.task.split('_', 1)[0]
+  # For ManiSkill: build with num_envs=1 just for obs/act space discovery.
+  # This avoids spinning up 32 GPU envs twice.
   if suite == 'maniskill':
-    env = make_batched_env(config)
+    env = make_env(config, 0, num_envs=1)
   else:
     env = make_env(config, 0)
   notlog = lambda k: not k.startswith('log/')
@@ -178,25 +209,6 @@ def make_agent(config):
       replica=config.replica,
       replicas=config.replicas,
   ))
-
-
-def make_batched_env(config):
-  """
-  Construct a single ManiSkill GPU-vectorized env for batched Driver mode.
-  Returns the env directly (not a factory fn) — Driver receives it as-is.
-  wrap_env() is applied so NormalizeAction / UnifyDtypes / ClipAction run
-  on per-step scalar transitions (the Driver splits the batch before calling
-  callbacks, so wrappers see individual transitions, not [N,...] batches).
-  """
-  from embodied.envs.maniskill import ManiSkill
-  task = config.task.split('_', 1)[1]
-  kwargs = dict(config.env.get('maniskill', {}))
-  env = ManiSkill(task, **kwargs)
-  # Note: we do NOT apply wrap_env here because the wrappers expect scalar
-  # observations, but ManiSkill.step() returns [N,...] batches. The Driver
-  # splits them into scalar transitions before firing callbacks / replay.add.
-  # If you need NormalizeAction, apply it inside ManiSkill.step() instead.
-  return env
 
 
 def make_logger(config):
@@ -265,36 +277,39 @@ def make_env(config, index, **overrides):
     from embodied.envs import from_gym
     import memory_maze  # noqa
   ctor = {
-      'dummy':    'embodied.envs.dummy:Dummy',
-      'gym':      'embodied.envs.from_gym:FromGym',
-      'dm':       'embodied.envs.from_dmenv:FromDM',
-      'crafter':  'embodied.envs.crafter:Crafter',
-      'dmc':      'embodied.envs.dmc:DMC',
-      'atari':    'embodied.envs.atari:Atari',
-      'atari100k':'embodied.envs.atari:Atari',
-      'dmlab':    'embodied.envs.dmlab:DMLab',
-      'minecraft':'embodied.envs.minecraft:Minecraft',
-      'loconav':  'embodied.envs.loconav:LocoNav',
-      'pinpad':   'embodied.envs.pinpad:PinPad',
-      'langroom': 'embodied.envs.langroom:LangRoom',
-      'procgen':  'embodied.envs.procgen:ProcGen',
-      'bsuite':   'embodied.envs.bsuite:BSuite',
-      'memmaze':  lambda task, **kw: from_gym.FromGym(
+      'dummy':     'embodied.envs.dummy:Dummy',
+      'gym':       'embodied.envs.from_gym:FromGym',
+      'dm':        'embodied.envs.from_dmenv:FromDM',
+      'crafter':   'embodied.envs.crafter:Crafter',
+      'dmc':       'embodied.envs.dmc:DMC',
+      'atari':     'embodied.envs.atari:Atari',
+      'atari100k': 'embodied.envs.atari:Atari',
+      'dmlab':     'embodied.envs.dmlab:DMLab',
+      'minecraft': 'embodied.envs.minecraft:Minecraft',
+      'loconav':   'embodied.envs.loconav:LocoNav',
+      'pinpad':    'embodied.envs.pinpad:PinPad',
+      'langroom':  'embodied.envs.langroom:LangRoom',
+      'procgen':   'embodied.envs.procgen:ProcGen',
+      'bsuite':    'embodied.envs.bsuite:BSuite',
+      'memmaze':   lambda task, **kw: from_gym.FromGym(
           f'MemoryMaze-{task}-v0', **kw),
-      # ManiSkill single-env path (used by make_agent for space discovery)
+      # ManiSkill: builds the batched GPU env directly.
+      # Skips wrap_env — batched obs are not compatible with scalar wrappers.
       'maniskill': 'embodied.envs.maniskill:ManiSkill',
   }[suite]
   if isinstance(ctor, str):
     module, cls = ctor.split(':')
     module = importlib.import_module(module)
     ctor = getattr(module, cls)
-  kwargs = config.env.get(suite, {})
-  kwargs.update(overrides)
+  kwargs = dict(config.env.get(suite, {}))   # mutable copy
+  kwargs.update(overrides)                   # e.g. num_envs=1 for space discovery
   if kwargs.pop('use_seed', False):
     kwargs['seed'] = hash((config.seed, index)) % (2 ** 32 - 1)
   if kwargs.pop('use_logdir', False):
     kwargs['logdir'] = elements.Path(config.logdir) / f'env{index}'
   env = ctor(task, **kwargs)
+  if suite == 'maniskill':
+    return env   # no wrappers: Driver handles batched obs internally
   return wrap_env(env, config)
 
 
@@ -320,7 +335,6 @@ def make_stream(config, replay, mode):
       prefix=config.replay_context,
       strict=(mode == 'train'),
       contiguous=True)
-
   return stream
 
 
