@@ -205,14 +205,14 @@ mshab:
   jax:
     prealloc: False
   batch_size: 8
-  batch_length: 48
+  batch_length: 56
   logger:
     outputs: [jsonl, wandb]
   run:
     steps: 1e7
     envs: 1
     eval_envs: 0
-    train_ratio: 32
+    train_ratio: 64
     log_every: 20000
     report_every: 100000
     save_every: 100000
