@@ -365,7 +365,7 @@ def parallel_logger(make_logger, args):
 
       first_addr = next(iter(episodes.keys()))
       for key, value in tran.items():
-        if value.dtype == np.uint8 and value.ndim == 3 and key != 'rgb_head':
+        if value.dtype == np.uint8 and value.ndim == 3:
           if addr == first_addr:
             episode.add(f'policy_{key}', value, agg='stack')
         elif key.startswith('log/'):

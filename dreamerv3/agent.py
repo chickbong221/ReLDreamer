@@ -36,13 +36,8 @@ class Agent(embodied.jax.Agent):
     self.config = config
 
     exclude = ('is_first', 'is_last', 'is_terminal', 'reward')
-    # log/ keys are for episode-level logging only; exclude from encoder and
-    # decoder so they are not fed to the agent in parallel mode (parallel.py
-    # strips them before policy calls) or reconstructed by the world model.
-    enc_space = {k: v for k, v in obs_space.items()
-                 if k not in exclude and not k.startswith('log/')}
-    dec_space = {k: v for k, v in obs_space.items()
-                 if k not in exclude and not k.startswith('log/')}
+    enc_space = {k: v for k, v in obs_space.items() if k not in exclude}
+    dec_space = {k: v for k, v in obs_space.items() if k not in exclude}
     self.enc = {
         'simple': rssm.Encoder,
     }[config.enc.typ](enc_space, **config.enc[config.enc.typ], name='enc')
@@ -262,7 +257,7 @@ class Agent(embodied.jax.Agent):
     # Train metrics
     _, (new_carry, entries, outs, mets) = self.loss(
         carry, obs, prevact, training=False)
-    metrics.update(mets)
+    mets.update(mets)
 
     # Grad norms
     if self.config.report_gradnorms:
@@ -305,6 +300,7 @@ class Agent(embodied.jax.Agent):
       border = jnp.full((T, 3), jnp.array([0, 255, 0]), jnp.uint8)
       border = border.at[T // 2:].set(jnp.array([255, 0, 0], jnp.uint8))
       video = jnp.where(mask, video, border[None, :, None, None, :])
+      video = jnp.concatenate([video, 0 * video[:, :10]], 1)
 
       B, T, H, W, C = video.shape
       grid = video.transpose((1, 2, 0, 3, 4)).reshape((T, H, B * W, C))

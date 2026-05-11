@@ -35,10 +35,9 @@ defaults:
     minecraft: {size: [64, 64], break_speed: 100.0, logs: False, length: 36000}
     dmc: {size: [64, 64], repeat: 1, proprio: True, image: True, camera: -1}
     loconav: {size: [64, 64], repeat: 1, camera: -1}
-    mshab: {split: train, max_episode_steps: 200, sim_backend: gpu, stationary_base: False, stationary_torso: False, stationary_head: True}
 
   replay:
-    size: 1e6
+    size: 5e6
     online: True
     fracs: {uniform: 1.0, priority: 0.0, recency: 0.0}
     prio: {exponent: 0.8, maxfrac: 0.5, initial: inf, zero_on_sample: True}
@@ -195,27 +194,6 @@ loconav:
   task: loconav_ant_maze_m
   env.loconav.repeat: 1
   run.train_ratio: 256
-
-# ManiSkill-HAB: tasks are mshab_{task}_{subtask}
-# e.g. --configs mshab --task mshab_tidy_house_pick
-# Available tasks:    tidy_house | prepare_groceries | set_table
-# Available subtasks: pick | place | open | close
-mshab:
-  task: mshab_tidy_house_pick
-  jax:
-    prealloc: False
-  batch_size: 8
-  batch_length: 56
-  logger:
-    outputs: [jsonl, wandb]
-  run:
-    steps: 1e7
-    envs: 1
-    eval_envs: 0
-    train_ratio: 64
-    log_every: 20000
-    report_every: 100000
-    save_every: 100000
 
 multicpu:
   batch_size: 12
