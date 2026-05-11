@@ -4,6 +4,10 @@ import pathlib
 import sys
 from functools import partial as bind
 
+# Must be set before JAX initialises to share GPU with ManiSkill cleanly.
+os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
+os.environ.setdefault('XLA_PYTHON_CLIENT_MEM_FRACTION', '0.4')
+
 folder = pathlib.Path(__file__).parent
 sys.path.insert(0, str(folder.parent))
 sys.path.insert(1, str(folder.parent.parent))
@@ -65,6 +69,29 @@ def main(argv=None):
       replay_context=config.replay_context,
   )
 
+  suite = config.task.split('_', 1)[0]
+
+  # ------------------------------------------------------------------ #
+  #  ManiSkill: use a single batched GPU env instead of N subprocesses
+  # ------------------------------------------------------------------ #
+  if suite == 'maniskill':
+    if config.script == 'train':
+      embodied.run.train(
+          bind(make_agent, config),
+          bind(make_replay, config, 'replay'),
+          bind(make_batched_env, config),   # <-- returns (env, driver_kwargs)
+          bind(make_stream, config),
+          bind(make_logger, config),
+          args,
+          batched_env=True)                 # signal to run.train
+    else:
+      raise NotImplementedError(
+          f'ManiSkill only supports script=train for now, got {config.script}')
+    return
+
+  # ------------------------------------------------------------------ #
+  #  All other envs: original code unchanged
+  # ------------------------------------------------------------------ #
   if config.script == 'train':
     embodied.run.train(
         bind(make_agent, config),
@@ -126,7 +153,11 @@ def main(argv=None):
 
 def make_agent(config):
   from .agent import Agent
-  env = make_env(config, 0)
+  suite = config.task.split('_', 1)[0]
+  if suite == 'maniskill':
+    env = make_batched_env(config)
+  else:
+    env = make_env(config, 0)
   notlog = lambda k: not k.startswith('log/')
   obs_space = {k: v for k, v in env.obs_space.items() if notlog(k)}
   act_space = {k: v for k, v in env.act_space.items() if k != 'reset'}
@@ -147,6 +178,25 @@ def make_agent(config):
       replica=config.replica,
       replicas=config.replicas,
   ))
+
+
+def make_batched_env(config):
+  """
+  Construct a single ManiSkill GPU-vectorized env for batched Driver mode.
+  Returns the env directly (not a factory fn) — Driver receives it as-is.
+  wrap_env() is applied so NormalizeAction / UnifyDtypes / ClipAction run
+  on per-step scalar transitions (the Driver splits the batch before calling
+  callbacks, so wrappers see individual transitions, not [N,...] batches).
+  """
+  from embodied.envs.maniskill import ManiSkill
+  task = config.task.split('_', 1)[1]
+  kwargs = dict(config.env.get('maniskill', {}))
+  env = ManiSkill(task, **kwargs)
+  # Note: we do NOT apply wrap_env here because the wrappers expect scalar
+  # observations, but ManiSkill.step() returns [N,...] batches. The Driver
+  # splits them into scalar transitions before firing callbacks / replay.add.
+  # If you need NormalizeAction, apply it inside ManiSkill.step() instead.
+  return env
 
 
 def make_logger(config):
@@ -215,22 +265,24 @@ def make_env(config, index, **overrides):
     from embodied.envs import from_gym
     import memory_maze  # noqa
   ctor = {
-      'dummy': 'embodied.envs.dummy:Dummy',
-      'gym': 'embodied.envs.from_gym:FromGym',
-      'dm': 'embodied.envs.from_dmenv:FromDM',
-      'crafter': 'embodied.envs.crafter:Crafter',
-      'dmc': 'embodied.envs.dmc:DMC',
-      'atari': 'embodied.envs.atari:Atari',
-      'atari100k': 'embodied.envs.atari:Atari',
-      'dmlab': 'embodied.envs.dmlab:DMLab',
-      'minecraft': 'embodied.envs.minecraft:Minecraft',
-      'loconav': 'embodied.envs.loconav:LocoNav',
-      'pinpad': 'embodied.envs.pinpad:PinPad',
+      'dummy':    'embodied.envs.dummy:Dummy',
+      'gym':      'embodied.envs.from_gym:FromGym',
+      'dm':       'embodied.envs.from_dmenv:FromDM',
+      'crafter':  'embodied.envs.crafter:Crafter',
+      'dmc':      'embodied.envs.dmc:DMC',
+      'atari':    'embodied.envs.atari:Atari',
+      'atari100k':'embodied.envs.atari:Atari',
+      'dmlab':    'embodied.envs.dmlab:DMLab',
+      'minecraft':'embodied.envs.minecraft:Minecraft',
+      'loconav':  'embodied.envs.loconav:LocoNav',
+      'pinpad':   'embodied.envs.pinpad:PinPad',
       'langroom': 'embodied.envs.langroom:LangRoom',
-      'procgen': 'embodied.envs.procgen:ProcGen',
-      'bsuite': 'embodied.envs.bsuite:BSuite',
-      'memmaze': lambda task, **kw: from_gym.FromGym(
+      'procgen':  'embodied.envs.procgen:ProcGen',
+      'bsuite':   'embodied.envs.bsuite:BSuite',
+      'memmaze':  lambda task, **kw: from_gym.FromGym(
           f'MemoryMaze-{task}-v0', **kw),
+      # ManiSkill single-env path (used by make_agent for space discovery)
+      'maniskill': 'embodied.envs.maniskill:ManiSkill',
   }[suite]
   if isinstance(ctor, str):
     module, cls = ctor.split(':')

@@ -76,6 +76,23 @@ class Replay:
   @elements.timer.section('replay_add')
   def add(self, step, worker=0):
     step = {k: v for k, v in step.items() if not k.startswith('log/')}
+
+    # --- Batched input: values shaped [N, ...] → split into N scalar adds ---
+    # Detect batch dimension: any numpy/array value with first dim > 1.
+    # Scalar obs from normal Driver already have no leading batch dim here,
+    # so this branch only fires when ManiSkill batched mode is active.
+    first_val = next(iter(step.values()))
+    if (hasattr(first_val, '__len__')
+        and not isinstance(first_val, (str, bytes))
+        and np.asarray(first_val).ndim >= 1
+        and np.asarray(first_val).shape[0] > 1):
+      N = np.asarray(first_val).shape[0]
+      for i in range(N):
+        self.add({k: np.asarray(v)[i] for k, v in step.items()},
+                 worker=worker * N + i)
+      return
+    # --- End batched input handling ---
+
     with self.rwlock.reading:
       step = {k: np.asarray(v) for k, v in step.items()}
 
@@ -234,24 +251,6 @@ class Replay:
           chunk.update(0, used, part)
           remaining -= used
 
-  # def dataset(self, batch, length=None, consec=None, prefix=0, report=False):
-  #   length = length or self.length
-  #   consec = consec or (self.length - prefix) // length
-  #   assert consec <= (self.length - prefix) // length, (
-  #       self.length, length, consec, prefix)
-  #   limiters.wait(lambda: len(self.sampler), 'Replay buffer is empty')
-  #   # For performance, each batch should be consecutive in memory, rather than
-  #   # a non-consecutive view into a longer batch. For example, this allows
-  #   # near-instant serialization when sending over the network.
-  #   while True:
-  #     seqs, is_online = zip(*[self._sample(report) for _ in range(batch)])
-  #     for i in range(consec):
-  #       offset = i * length
-  #       data = self._assemble_batch(seqs, offset, offset + length + prefix)
-  #       data = self._annotate_batch(data, is_online, is_first=(i == 0))
-  #       data['consec'] = np.full(data['is_first'].shape, i, np.int32)
-  #       yield data
-
   @elements.timer.section('assemble_batch')
   def _assemble_batch(self, seqs, start, stop):
     shape = (len(seqs), stop - start)
@@ -277,9 +276,6 @@ class Replay:
   @elements.timer.section('annotate_batch')
   def _annotate_batch(self, data, is_online, is_first):
     data = data.copy()
-    # if self.online:
-    #   broadcasted = [[x] for x in is_online]
-    #   data['is_online'] = np.full(data['is_first'].shape, broadcasted, bool)
     if 'is_first' in data:
       if is_first:
         data['is_first'] = data['is_first'].copy()
@@ -339,9 +335,6 @@ class Replay:
     with ThreadPoolExecutor(16, 'replay_loader') as pool:
       chunks = [x for x in pool.map(load, filenames) if x]
 
-    # We need to recompute the number of items per chunk now because some
-    # chunks may be corrupted and thus not available.
-    # numitems = self._numitems(chunks + list(self.chunks.values()))
     numitems = self._numitems(chunks)
 
     with self.rwlock.writing:

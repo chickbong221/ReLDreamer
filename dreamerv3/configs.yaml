@@ -35,6 +35,14 @@ defaults:
     minecraft: {size: [64, 64], break_speed: 100.0, logs: False, length: 36000}
     dmc: {size: [64, 64], repeat: 1, proprio: True, image: True, camera: -1}
     loconav: {size: [64, 64], repeat: 1, camera: -1}
+    maniskill:
+      num_envs: 32
+      obs_mode: state
+      sim_backend: gpu
+      max_episode_steps: 200
+      image_size: 64
+      control_mode: pd_joint_delta_pos
+      num_frames: 3
 
   replay:
     size: 5e6
@@ -218,3 +226,88 @@ debug:
     .*\.hidden: 3
     .*\.blocks: 4
     .*\.depth: 2
+
+# ==========================================================================
+# ManiSkill — state-based (walltime-efficient, 32 GPU parallel envs)
+# Matches TD-MPC2 baselines.sh walltime_efficient setting for state obs.
+# Usage: python main.py --configs maniskill_state --set task=maniskill_PickCube-v1
+# ==========================================================================
+maniskill_state:
+  <<: *size12m          # ~12M params, comparable to TD-MPC2 model_size=5
+  run:
+    envs: 1             # 1 Driver worker; ManiSkill handles N internally
+    eval_envs: 1
+    train_ratio: 64.0   # TD-MPC2 ~16 updates/step * 4 for DreamerV3 overhead
+    steps: 1e7
+    log_every: 60
+    save_every: 600
+    report_every: 300
+  batch_size: 32        # 32 * 64 = 2048 transitions/update ≈ TD-MPC2 throughput
+  batch_length: 64
+  replay_context: 1
+  replay:
+    size: 1000000       # TD-MPC2 state: buffer_size=1_000_000
+    online: true
+    fracs: {uniform: 1.0, priority: 0.0, recency: 0.0}
+  jax:
+    prealloc: false     # critical: ManiSkill and JAX share GPU
+  env:
+    maniskill:
+      num_envs: 32
+      obs_mode: state
+      sim_backend: gpu
+      max_episode_steps: 200
+      image_size: 64
+      control_mode: pd_joint_delta_pos
+
+# ==========================================================================
+# ManiSkill — RGB-based (walltime-efficient, 32 GPU parallel envs)
+# Matches TD-MPC2 baselines.sh walltime_efficient setting for RGB obs.
+#
+# Encoder sizing rationale (vs TD-MPC2 model_size=5, num_channels=96):
+#   TD-MPC2 conv: 4 layers, final feature dim = 4*4*96 = 1536
+#   DreamerV3 size25m (depth=24): 4 layers + pool, final dim = 4*4*96 = 1536
+#   → size25m exactly matches TD-MPC2 encoder capacity at 64x64.
+#   size12m (depth=16) gives only 1024-dim — too weak for visual tasks.
+#   Default (depth=64) gives 4096-dim — overkill, wastes GPU memory.
+#
+# Gap vs TD-MPC2: TD-MPC2 uses ShiftAug (random pixel shift) which
+# DreamerV3 does not have for ManiSkill. The encoder kernel size (5 vs 7/5/3)
+# provides some implicit translation robustness to partially compensate.
+# Usage: python main.py --configs maniskill_rgb task=maniskill_PickCube-v1
+# ==========================================================================
+maniskill_rgb:
+  <<: *size25m          # depth=24 → final CNN dim=1536, matches TD-MPC2 exactly
+  run:
+    envs: 1
+    eval_envs: 1
+    train_ratio: 32.0   # lower than state: CNN encoder adds cost per update
+    steps: 1e7
+    log_every: 60
+    save_every: 600
+    report_every: 300
+  batch_size: 16        # smaller: [16, 64, 64, 64, 9] RGB tensors are large
+  batch_length: 64
+  replay_context: 1
+  replay:
+    size: 100000        # TD-MPC2 rgb: buffer_size=100_000 (pixels expensive)
+    online: true
+    fracs: {uniform: 1.0, priority: 0.0, recency: 0.0}
+  jax:
+    prealloc: false     # critical: ManiSkill and JAX share GPU
+  # Override encoder to use kernel=4 which gives better spatial coverage
+  # at 64x64 than default kernel=5 (avoids aliasing at pool boundaries)
+  agent:
+    enc.simple.kernel: 4
+    enc.simple.depth: 24     # redundant with size25m but explicit for clarity
+    dec.simple.kernel: 4
+    dec.simple.depth: 24
+  env:
+    maniskill:
+      num_envs: 32
+      obs_mode: rgb
+      sim_backend: gpu
+      max_episode_steps: 200
+      image_size: 64
+      control_mode: pd_joint_delta_pos
+      num_frames: 3          # 3-frame stack → 9 channels input to CNN

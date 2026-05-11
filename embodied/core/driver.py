@@ -8,7 +8,25 @@ import portal
 
 class Driver:
 
-  def __init__(self, make_env_fns, parallel=True, **kwargs):
+  def __init__(self, make_env_fns, parallel=True, batched=False,
+               num_envs=None, **kwargs):
+    # --- Batched mode: single ManiSkill GPU env handles N envs internally ---
+    self.batched = batched
+    if batched:
+      assert not isinstance(make_env_fns, list), (
+          'In batched mode, pass a single env instance, not a list.')
+      assert num_envs is not None, 'batched=True requires num_envs.'
+      self._batched_env = make_env_fns   # already-constructed env
+      self.act_space = self._batched_env.act_space
+      self.length = num_envs
+      self.parallel = False
+      self.kwargs = kwargs
+      self.callbacks = []
+      self.acts = None
+      self.carry = None
+      self.reset()
+      return
+    # --- Normal mode (unchanged) ---
     assert len(make_env_fns) >= 1
     self.parallel = parallel
     self.kwargs = kwargs
@@ -40,7 +58,9 @@ class Driver:
     self.carry = init_policy and init_policy(self.length)
 
   def close(self):
-    if self.parallel:
+    if self.batched:
+      self._batched_env.close()
+    elif self.parallel:
       [proc.kill() for proc in self.procs]
     else:
       [env.close() for env in self.envs]
@@ -54,6 +74,9 @@ class Driver:
       step, episode = self._step(policy, step, episode)
 
   def _step(self, policy, step, episode):
+    if self.batched:
+      return self._step_batched(policy, step, episode)
+    # --- Normal path (unchanged) ---
     acts = self.acts
     assert all(len(x) == self.length for x in acts.values())
     assert all(isinstance(v, np.ndarray) for v in acts.values())
@@ -80,6 +103,48 @@ class Driver:
       [fn(trn, i, **self.kwargs) for fn in self.callbacks]
     step += len(obs['is_first'])
     episode += obs['is_last'].sum()
+    return step, episode
+
+  def _step_batched(self, policy, step, episode):
+    """
+    Batched step for ManiSkill GPU vectorized env.
+    self.acts is already shaped [N, ...] — pass directly to env.step().
+    The env returns obs dict with values [N, ...].
+    Callbacks are fired N times (once per sub-env) to match normal Driver
+    behaviour so replay.add() receives single-env transitions.
+    Step counter increments by N to reflect true env throughput.
+    """
+    assert all(isinstance(v, np.ndarray) for v in self.acts.values())
+
+    # Single call returns batched obs [N, ...]
+    obs = self._batched_env.step(self.acts)
+    obs = {k: np.asarray(v) for k, v in obs.items()}
+
+    logs = {k: v for k, v in obs.items() if k.startswith('log/')}
+    obs  = {k: v for k, v in obs.items() if not k.startswith('log/')}
+
+    assert all(len(x) == self.length for x in obs.values()), obs
+
+    self.carry, acts, outs = policy(self.carry, obs, **self.kwargs)
+    assert all(k not in acts for k in outs), (
+        list(outs.keys()), list(acts.keys()))
+
+    if obs['is_last'].any():
+      mask = ~obs['is_last']
+      acts = {k: self._mask(v, mask) for k, v in acts.items()}
+
+    # Next step: envs whose episode ended get reset=True
+    self.acts = {**acts, 'reset': obs['is_last'].copy()}
+
+    # Fire one callback per sub-env so replay sees single transitions
+    trans = {**obs, **acts, **outs, **logs}
+    for i in range(self.length):
+      trn = elements.tree.map(lambda x: x[i], trans)
+      [fn(trn, i, **self.kwargs) for fn in self.callbacks]
+
+    # Advance step counter by N (not 1) to reflect parallel throughput
+    step    += self.length
+    episode += int(obs['is_last'].sum())
     return step, episode
 
   def _mask(self, value, mask):
