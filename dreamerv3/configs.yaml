@@ -29,7 +29,6 @@ defaults:
     wandb_entity: ''
     wandb_group: ''
     wandb_name: ''
-    wandb_tags: []
 
   env:
     atari: {size: [96, 96], repeat: 4, sticky: True, gray: True, actions: all, lives: unused, noops: 30, autostart: False, pooling: 2, aggregate: max, resize: pillow, clip_reward: False}
@@ -232,11 +231,6 @@ debug:
     .*\.blocks: 4
     .*\.depth: 2
 
-# ==========================================================================
-# ManiSkill — state-based (walltime-efficient, 32 GPU parallel envs)
-# Matches TD-MPC2 baselines.sh walltime_efficient setting for state obs.
-# Usage: python main.py --configs maniskill_state --set task=maniskill_PickCube-v1
-# ==========================================================================
 maniskill_state:
   <<: *size12m          # ~12M params, comparable to TD-MPC2 model_size=5
   run:
@@ -262,7 +256,6 @@ maniskill_state:
     wandb_entity: letuanhf-hanoi-university-of-science-and-technology        # set via --set logger.wandb_entity=your-entity
     wandb_group: na
     wandb_name: 'dreamerv3-PickCube-v1-state-42-walltime_efficient'          # set via --set logger.wandb_name=dreamerv3-PickCube-v1-state-42-...
-    wandb_tags: []
   env:
     maniskill:
       num_envs: 32
@@ -272,22 +265,7 @@ maniskill_state:
       image_size: 128
       control_mode: pd_joint_delta_pos
 
-# ==========================================================================
-# ManiSkill — RGB-based (walltime-efficient, 32 GPU parallel envs)
-# Matches TD-MPC2 baselines.sh walltime_efficient setting for RGB obs.
-#
-# Encoder sizing rationale (vs TD-MPC2 model_size=5, num_channels=96):
-#   TD-MPC2 conv: 4 layers, final feature dim = 4*4*96 = 1536
-#   DreamerV3 size25m (depth=24): 4 layers + pool, final dim = 4*4*96 = 1536
-#   → size25m exactly matches TD-MPC2 encoder capacity at 64x64.
-#   size12m (depth=16) gives only 1024-dim — too weak for visual tasks.
-#   Default (depth=64) gives 4096-dim — overkill, wastes GPU memory.
-#
-# Gap vs TD-MPC2: TD-MPC2 uses ShiftAug (random pixel shift) which
-# DreamerV3 does not have for ManiSkill. The encoder kernel size (5 vs 7/5/3)
-# provides some implicit translation robustness to partially compensate.
-# Usage: python main.py --configs maniskill_rgb task=maniskill_PickCube-v1
-# ==========================================================================
+
 maniskill_rgb:
   <<: *size25m          # depth=24 → final CNN dim=1536, matches TD-MPC2 exactly
   run:
@@ -320,10 +298,9 @@ maniskill_rgb:
     wandb_entity: letuanhf-hanoi-university-of-science-and-technology        # set via --set logger.wandb_entity=your-entity
     wandb_group: na
     wandb_name: 'dreamerv3-PickCube-v1-rgb-42-walltime_efficient'          # set via --set logger.wandb_name=dreamerv3-PickCube-v1-rgb-42-...
-    wandb_tags: []
   env:
     maniskill:
-      num_envs: 32
+      num_envs: 4
       obs_mode: rgb
       sim_backend: gpu
       max_episode_steps: 200

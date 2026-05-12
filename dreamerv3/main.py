@@ -249,7 +249,6 @@ def make_logger(config):
           entity=lc.get('wandb_entity') or None,
           name=lc.get('wandb_name') or '/'.join(logdir.split('/')[-4:]),
           group=lc.get('wandb_group') or None,
-          tags=list(lc.get('wandb_tags', [])) + ['dreamerv3'],
           dir=logdir,
           config=dict(config),
           resume='allow',
