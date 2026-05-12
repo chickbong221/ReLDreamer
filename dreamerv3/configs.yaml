@@ -251,13 +251,20 @@ maniskill_state:
     fracs: {uniform: 1.0, priority: 0.0, recency: 0.0}
   jax:
     prealloc: false     # critical: ManiSkill and JAX share GPU
+  logger:
+    outputs: [jsonl, wandb]
+    wandb_project: maniskill
+    wandb_entity: letuanhf-hanoi-university-of-science-and-technology        # set via --set logger.wandb_entity=your-entity
+    wandb_group: na
+    wandb_name: 'dreamerv3-PickCube-v1-state-42-walltime_efficient'          # set via --set logger.wandb_name=dreamerv3-PickCube-v1-state-42-...
+    wandb_tags: []
   env:
     maniskill:
       num_envs: 32
       obs_mode: state
       sim_backend: gpu
       max_episode_steps: 200
-      image_size: 64
+      image_size: 128
       control_mode: pd_joint_delta_pos
 
 # ==========================================================================
@@ -297,17 +304,24 @@ maniskill_rgb:
     prealloc: false     # critical: ManiSkill and JAX share GPU
   # Override encoder to use kernel=4 which gives better spatial coverage
   # at 64x64 than default kernel=5 (avoids aliasing at pool boundaries)
-  agent:
-    enc.simple.kernel: 4
-    enc.simple.depth: 24     # redundant with size25m but explicit for clarity
-    dec.simple.kernel: 4
-    dec.simple.depth: 24
+  # agent:
+  #   enc.simple.kernel: 4
+  #   enc.simple.depth: 24     # redundant with size25m but explicit for clarity
+  #   dec.simple.kernel: 4
+  #   dec.simple.depth: 24
+  logger:
+    outputs: [jsonl, wandb]
+    wandb_project: maniskill
+    wandb_entity: letuanhf-hanoi-university-of-science-and-technology        # set via --set logger.wandb_entity=your-entity
+    wandb_group: na
+    wandb_name: 'dreamerv3-PickCube-v1-rgb-42-walltime_efficient'          # set via --set logger.wandb_name=dreamerv3-PickCube-v1-rgb-42-...
+    wandb_tags: []
   env:
     maniskill:
       num_envs: 32
       obs_mode: rgb
       sim_backend: gpu
       max_episode_steps: 200
-      image_size: 64
+      image_size: 128
       control_mode: pd_joint_delta_pos
       num_frames: 1          # no frame stacking → 3 channels input to CNN

@@ -216,7 +216,15 @@ def make_logger(config):
   logdir = config.logdir
   multiplier = config.env.get(config.task.split('_')[0], {}).get('repeat', 1)
   outputs = []
-  outputs.append(elements.logger.TerminalOutput(config.logger.filter, 'Agent'))
+
+  # ── ADDED: extend filter to include epstats (success_once, fail_once, return)
+  # and fps metrics so they reach wandb, in addition to the original filter.
+  suite = config.task.split('_', 1)[0]
+  log_filter = config.logger.filter
+  if suite == 'maniskill':
+    log_filter = log_filter + '|episode/score|epstats/log/|fps/'
+
+  outputs.append(elements.logger.TerminalOutput(log_filter, 'Agent'))
   for output in config.logger.outputs:
     if output == 'jsonl':
       outputs.append(elements.logger.JSONLOutput(logdir, 'metrics.jsonl'))
@@ -232,14 +240,76 @@ def make_logger(config):
       outputs.append(elements.logger.ExpaOutput(
           exp, run, proj, config.logger.user, config.flat))
     elif output == 'wandb':
-      name = '/'.join(logdir.split('/')[-4:])
-      outputs.append(elements.logger.WandBOutput(name))
+      # ── CHANGED: init wandb with full args matching TD-MPC2 convention,
+      # then wrap WandBOutput to remap key names for comparability.
+      import wandb as _wandb
+      lc = config.logger
+      _wandb.init(
+          project=lc.get('wandb_project', 'dreamerv3'),
+          entity=lc.get('wandb_entity') or None,
+          name=lc.get('wandb_name') or '/'.join(logdir.split('/')[-4:]),
+          group=lc.get('wandb_group') or None,
+          tags=list(lc.get('wandb_tags', [])) + ['dreamerv3'],
+          dir=logdir,
+          config=dict(config),
+          resume='allow',
+      )
+      if suite == 'maniskill':
+        # Wrap WandBOutput to remap keys to TD-MPC2 names on write.
+        # DreamerV3's own keys are untouched; we only add aliases.
+        base_wandb = elements.logger.WandBOutput(
+            '/'.join(logdir.split('/')[-4:]))
+        outputs.append(_ManiSkillWandBOutput(base_wandb, step))
+      else:
+        outputs.append(elements.logger.WandBOutput(
+            '/'.join(logdir.split('/')[-4:])))
     elif output == 'scope':
       outputs.append(elements.logger.ScopeOutput(elements.Path(logdir)))
     else:
       raise NotImplementedError(output)
   logger = elements.Logger(step, outputs, multiplier)
   return logger
+
+
+# ── ADDED: key-remapping wrapper placed just before make_logger in main.py ──
+# Maps DreamerV3 aggregated episode keys → TD-MPC2 wandb key names so both
+# runs are directly comparable. Does NOT modify DreamerV3's own logged keys.
+class _ManiSkillWandBOutput:
+
+  _REMAP = {
+      'epstats/log/success_once/avg': 'train/success_once',
+      'epstats/log/fail_once/avg':    'train/fail_once',
+      'episode/score':                'train/return',
+      'fps/policy':                   'time/rollout_fps',
+  }
+
+  def __init__(self, base_output, step):
+    self._base = base_output
+    self._step = step
+
+  def __call__(self, summaries):
+    # ── ADDED: strip policy_ image summaries before passing to WandBOutput.
+    # Images from logfn (epstats/policy_{key}) are stacked uint8 frames that
+    # would be logged as video. We only want video from report (openloop/).
+    filtered = [
+        (s, k, v) for s, k, v in summaries
+        if 'policy_' not in k          # blocks epstats/policy_{key} videos
+    ]
+    self._base(filtered)               # DreamerV3 keys written unchanged
+    # Write TD-MPC2-named aliases for scalar metrics.
+    try:
+      import wandb as _wandb
+      if _wandb.run is None:
+        return
+      aliases = {}
+      for step_val, key, value in filtered:
+        if key in self._REMAP and isinstance(value, (int, float, np.floating,
+                                                       np.integer)):
+          aliases[self._REMAP[key]] = float(value)
+      if aliases:
+        _wandb.log(aliases, step=int(self._step))
+    except Exception:
+      pass
 
 
 def make_replay(config, folder, mode='train'):
