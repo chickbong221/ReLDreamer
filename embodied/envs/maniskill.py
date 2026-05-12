@@ -131,11 +131,16 @@ class ManiSkill(embodied.Env):
   @property
   def obs_space(self):
     spaces = {
-        'reward':      elements.Space(np.float32, ()),
-        'is_first':    elements.Space(bool, ()),
-        'is_last':     elements.Space(bool, ()),
-        'is_terminal': elements.Space(bool, ()),
-        'state':       elements.Space(np.float32, (self._state_dim,)),
+        'reward':           elements.Space(np.float32, ()),
+        'is_first':         elements.Space(bool, ()),
+        'is_last':          elements.Space(bool, ()),
+        'is_terminal':      elements.Space(bool, ()),
+        'state':            elements.Space(np.float32, (self._state_dim,)),
+        # log/ prefix: accumulated by logfn in train.py, excluded from world
+        # model by the notlog filter in make_agent (main.py line 192).
+        # Flows through to epstats/log/success_once/avg → wandb train/success_once.
+        'log/success_once': elements.Space(np.float32, ()),
+        'log/fail_once':    elements.Space(np.float32, ()),
     }
     if 'rgb' in self._obs_mode:
       # uint8 is required — DreamerV3 Encoder asserts dtype==uint8
@@ -189,6 +194,7 @@ class ManiSkill(embodied.Env):
           terminated = np.zeros(self._num_envs, dtype=bool),
           truncated  = np.zeros(self._num_envs, dtype=bool),
           is_first   = is_first,
+          log_metrics = {},
       )
 
     # ---- Normal step ------------------------------------------------- #
@@ -212,15 +218,33 @@ class ManiSkill(embodied.Env):
           expand = done_t.view(-1, *([1] * (obs[k].dim() - 1)))
           obs[k] = _t.where(expand.expand_as(obs[k]), final[k], obs[k])
 
+    # ---- Extract success/fail metrics from info ---------------------- #
+    # info['final_info']['episode'] is populated by record_metrics=True.
+    # Only done envs have valid episode stats; zero out the rest so logfn
+    # accumulates correct per-episode averages across the batch.
+    # The log/ prefix causes train.py logfn to accumulate these per episode
+    # and emit epstats/log/success_once/avg, which _ManiSkillWandBOutput
+    # in main.py remaps to train/success_once for wandb.
+    log_metrics = {}
+    if done.any() and 'final_info' in info:
+      ep_info = info['final_info'].get('episode', {})
+      for key in ('success_once', 'fail_once'):
+        if key in ep_info:
+          vals = ep_info[key]           # torch bool or float tensor [N]
+          arr = vals.cpu().float().numpy().astype(np.float32)
+          arr = np.where(done, arr, 0.0)
+          log_metrics[f'log/{key}'] = arr
+
     is_first        = self._prev_done.copy()
     self._prev_done = done.copy()
 
     return self._make_obs(
         obs,
-        reward     = reward.cpu().numpy().astype(np.float32),
-        terminated = terminated.cpu().numpy().astype(bool),
-        truncated  = truncated.cpu().numpy().astype(bool),
-        is_first   = is_first,
+        reward      = reward.cpu().numpy().astype(np.float32),
+        terminated  = terminated.cpu().numpy().astype(bool),
+        truncated   = truncated.cpu().numpy().astype(bool),
+        is_first    = is_first,
+        log_metrics = log_metrics,
     )
 
   # ------------------------------------------------------------------ #
@@ -277,17 +301,25 @@ class ManiSkill(embodied.Env):
     stacked = stacked.reshape(N, H, W, C * F)
     return (stacked.cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
 
-  def _make_obs(self, obs, reward, terminated, truncated, is_first):
+  def _make_obs(self, obs, reward, terminated, truncated, is_first,
+                log_metrics=None):
     done = terminated | truncated
     out = {
-        'reward':      reward,
-        'is_first':    is_first,
-        'is_last':     done,
-        'is_terminal': terminated,
-        'state':       self._extract_state(obs),
+        'reward':           reward,
+        'is_first':         is_first,
+        'is_last':          done,
+        'is_terminal':      terminated,
+        'state':            self._extract_state(obs),
+        # Always emit log/ keys so the replay schema is consistent across
+        # every step. Non-done steps get zeros; logfn ignores them correctly
+        # because it only reads these at episode boundaries (is_last=True).
+        'log/success_once': np.zeros(self._num_envs, dtype=np.float32),
+        'log/fail_once':    np.zeros(self._num_envs, dtype=np.float32),
     }
     if 'rgb' in self._obs_mode:
       out['image'] = self._stack_frames(obs)
+    if log_metrics:
+      out.update(log_metrics)   # overwrites zeros for done envs
     return out
 
   def close(self):
