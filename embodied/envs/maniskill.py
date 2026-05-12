@@ -73,6 +73,9 @@ class ManiSkill(embodied.Env):
 
     env = gym.make(**make_kwargs)
 
+    from mshab.mshab.envs.wrappers.observation import NonPrivilegedObsWrapper
+    env = NonPrivilegedObsWrapper(env)
+
     if 'rgb' in obs_mode:
       # Merges all camera RGB channels + exposes 'state' key for proprio
       env = FlattenRGBDObservationWrapper(
