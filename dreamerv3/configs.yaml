@@ -232,7 +232,6 @@ debug:
 
 maniskill_rgb:
   <<: *size25m
-  use_seed: true
   run:
     envs: 1
     eval_envs: 1
@@ -250,13 +249,6 @@ maniskill_rgb:
     fracs: {uniform: 1.0, priority: 0.0, recency: 0.0}
   jax:
     prealloc: false     # critical: ManiSkill and JAX share GPU
-  # Override encoder to use kernel=4 which gives better spatial coverage
-  # at 64x64 than default kernel=5 (avoids aliasing at pool boundaries)
-  # agent:
-  #   enc.simple.kernel: 4
-  #   enc.simple.depth: 24     # redundant with size25m but explicit for clarity
-  #   dec.simple.kernel: 4
-  #   dec.simple.depth: 24
   logger:
     outputs: [jsonl, wandb]
     wandb_project: maniskill
@@ -265,6 +257,7 @@ maniskill_rgb:
     wandb_name: 'dreamerv3-PickCube-v1-rgb-42-walltime_efficient'          # set via --set logger.wandb_name=dreamerv3-PickCube-v1-rgb-42-...
   env:
     maniskill:
+      use_seed: true
       num_envs: 32
       obs_mode: rgb
       sim_backend: gpu
