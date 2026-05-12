@@ -276,7 +276,7 @@ maniskill_rgb:
     log_every: 60
     save_every: 600
     report_every: 300
-  batch_size: 16        # smaller: [16, 64, 64, 64, 9] RGB tensors are large
+  batch_size: 8        # smaller: [16, 64, 64, 64, 9] RGB tensors are large
   batch_length: 64
   replay_context: 1
   replay:
@@ -300,7 +300,7 @@ maniskill_rgb:
     wandb_name: 'dreamerv3-PickCube-v1-rgb-42-walltime_efficient'          # set via --set logger.wandb_name=dreamerv3-PickCube-v1-rgb-42-...
   env:
     maniskill:
-      num_envs: 4
+      num_envs: 32
       obs_mode: rgb
       sim_backend: gpu
       max_episode_steps: 200
