@@ -4,8 +4,8 @@ __pycache__/
 *.py[cod]
 *.egg-info
 MUJOCO_LOG.TXT
-mshab/
-ManiSkill/
+# mshab/
+# ManiSkill/
 wandb/
 ~/
 ;
