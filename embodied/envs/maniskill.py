@@ -73,7 +73,7 @@ class ManiSkill(embodied.Env):
 
     env = gym.make(**make_kwargs)
 
-    from mshab.mshab.envs.wrappers.observation import NonPrivilegedObsWrapper
+    from embodied.envs.obs_wrappers import NonPrivilegedObsWrapper
     env = NonPrivilegedObsWrapper(env)
 
     if 'rgb' in obs_mode:
