@@ -85,7 +85,7 @@ class ManiSkill(embodied.Env):
     obs, _ = self._env.reset(seed=seed)
     self._setup_spaces(obs)
 
-    if 'rgb' in obs_mode:
+    if 'rgb' in obs_mode and num_frames > 1:
       self._setup_frame_stack(obs)
 
     # Track per-env done to compute is_first on the NEXT step
@@ -254,6 +254,9 @@ class ManiSkill(embodied.Env):
 
     Returns numpy uint8 [N, H, W, C*num_frames]  ← channels-LAST.
 
+    When num_frames=1, skips the circular buffer entirely and returns the
+    raw frame directly (no stacking overhead).
+
     DreamerV3's Encoder (rssm.py Encoder.__call__) does:
       x = jnp.concatenate(imgs, -1)   # concat on last axis → needs [H,W,C]
       B, H, W, C = x.shape            # unpacks channels-last
@@ -262,6 +265,10 @@ class ManiSkill(embodied.Env):
     """
     import torch
     rgb = obs['rgb'].float() / 255.0              # [N, H, W, C]
+
+    if self._num_frames == 1:
+      return (rgb.cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
+
     self._frame_buf[..., self._stack_ptr] = rgb
     self._stack_ptr = (self._stack_ptr + 1) % self._num_frames
 

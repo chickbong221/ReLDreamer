@@ -42,7 +42,7 @@ defaults:
       max_episode_steps: 200
       image_size: 64
       control_mode: pd_joint_delta_pos
-      num_frames: 3
+      num_frames: 1
 
   replay:
     size: 5e6
@@ -310,4 +310,4 @@ maniskill_rgb:
       max_episode_steps: 200
       image_size: 64
       control_mode: pd_joint_delta_pos
-      num_frames: 3          # 3-frame stack → 9 channels input to CNN
+      num_frames: 1          # no frame stacking → 3 channels input to CNN
