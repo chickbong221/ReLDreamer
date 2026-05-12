@@ -19,7 +19,7 @@ class NonPrivilegedObsWrapper(gym.ObservationWrapper):
         super().__init__(env)
         self._base_env: BaseEnv = env.unwrapped
         init_raw_obs = common.to_tensor(self._base_env._init_raw_obs)
-        self._base_env.update_obs_space(common.to_numpy(self.observation(init_raw_obs)))
+        self._base_env.update_obs_space(self.observation(init_raw_obs))
 
     def observation(self, obs):
         if 'extra' in obs:
