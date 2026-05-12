@@ -38,11 +38,13 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
       if value.dtype == np.uint8 and value.ndim == 3:
         if worker == 0:
           episode.add(f'policy_{key}', value, agg='stack')
-      elif key.startswith('log/'):
+      elif key.startswith('log/') and tran['is_last']:
+        # Only record at episode end — these are episode-level metrics
+        # (success_once, success_at_end, fail_once) that are non-zero only
+        # on the final step. Accumulating every step would divide by episode
+        # length (~200), producing values ~200x too small.
         assert value.ndim == 0, (key, value.shape, value.dtype)
-        episode.add(key + '/avg', value, agg='avg')
-        episode.add(key + '/max', value, agg='max')
-        episode.add(key + '/sum', value, agg='sum')
+        episode.add(key, value, agg='avg')
     if tran['is_last']:
       result = episode.result()
       logger.add({

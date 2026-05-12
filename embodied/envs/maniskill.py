@@ -31,7 +31,6 @@ class ManiSkill(embodied.Env):
       obs_mode='state',
       image_size=64,
       sim_backend='gpu',
-      max_episode_steps=200,
       control_mode=None,
       num_frames=3,
       seed=0,
@@ -63,7 +62,10 @@ class ManiSkill(embodied.Env):
         sensor_configs=dict(width=image_size, height=image_size),
         num_envs=num_envs,
         sim_backend=sim_backend,
-        max_episode_steps=max_episode_steps,
+        # Do NOT pass max_episode_steps — use the environment's registered
+        # default (e.g. @register_env("PickCube-v1", max_episode_steps=50)).
+        # This mirrors TD-MPC2's make_envs which also omits max_episode_steps
+        # and reads it back via gym_utils.find_max_episode_steps_value.
         **kwargs,
     )
     if control_mode is not None:
@@ -75,6 +77,10 @@ class ManiSkill(embodied.Env):
       # Merges all camera RGB channels + exposes 'state' key for proprio
       env = FlattenRGBDObservationWrapper(
           env, rgb=True, depth=False, state=True)
+
+    # Read the horizon the env was registered with, same as TD-MPC2.
+    from mani_skill.utils import gym_utils as _gym_utils
+    self._max_episode_steps = _gym_utils.find_max_episode_steps_value(env)
 
     # ignore_terminations=True: episodes end only on truncation (fixed length)
     # record_metrics=True: populates info['final_info']['episode']
@@ -131,16 +137,20 @@ class ManiSkill(embodied.Env):
   @property
   def obs_space(self):
     spaces = {
-        'reward':           elements.Space(np.float32, ()),
-        'is_first':         elements.Space(bool, ()),
-        'is_last':          elements.Space(bool, ()),
-        'is_terminal':      elements.Space(bool, ()),
-        'state':            elements.Space(np.float32, (self._state_dim,)),
-        # log/ prefix: accumulated by logfn in train.py, excluded from world
-        # model by the notlog filter in make_agent (main.py line 192).
-        # Flows through to epstats/log/success_once/avg → wandb train/success_once.
-        'log/success_once': elements.Space(np.float32, ()),
-        'log/fail_once':    elements.Space(np.float32, ()),
+        'reward':               elements.Space(np.float32, ()),
+        'is_first':             elements.Space(bool, ()),
+        'is_last':              elements.Space(bool, ()),
+        'is_terminal':          elements.Space(bool, ()),
+        'state':                elements.Space(np.float32, (self._state_dim,)),
+        # log/ prefix: accumulated by logfn in train.py only at is_last=True,
+        # excluded from world model by the notlog filter in make_agent.
+        # Semantics match TD-MPC2 exactly:
+        #   success_once   — OR of all success flags over the episode
+        #   success_at_end — success flag on the final step (ignore_terminations=True)
+        #   fail_once      — OR of all fail flags over the episode
+        'log/success_once':     elements.Space(np.float32, ()),
+        'log/success_at_end':   elements.Space(np.float32, ()),
+        'log/fail_once':        elements.Space(np.float32, ()),
     }
     if 'rgb' in self._obs_mode:
       # uint8 is required — DreamerV3 Encoder asserts dtype==uint8
@@ -175,18 +185,20 @@ class ManiSkill(embodied.Env):
       obs, _ = self._env.reset(options={'env_idx': reset_idx})
 
       if 'rgb' in self._obs_mode and self._num_frames > 1:
-        # Re-fill frame stack for reset envs with the new first frame
+        # Re-fill frame stack for reset envs only, using torch index (not
+        # numpy bool mask) so indexing stays on the CUDA tensor correctly.
         rgb = obs['rgb'].float() / 255.0
         for _ in range(self._num_frames):
-          self._frame_buf[reset_mask] = (
-              rgb[reset_mask]
+          self._frame_buf[reset_idx] = (
+              rgb[reset_idx]
               .unsqueeze(-1)
               .expand(-1, -1, -1, -1, self._num_frames)
               .clone()
           )
 
-      is_first   = reset_mask.copy()
-      self._prev_done = np.zeros(self._num_envs, dtype=bool)
+      is_first = reset_mask.copy()
+      # Only clear done flag for the envs that actually reset, not all envs.
+      self._prev_done[reset_mask] = False
 
       return self._make_obs(
           obs,
@@ -219,16 +231,17 @@ class ManiSkill(embodied.Env):
           obs[k] = _t.where(expand.expand_as(obs[k]), final[k], obs[k])
 
     # ---- Extract success/fail metrics from info ---------------------- #
-    # info['final_info']['episode'] is populated by record_metrics=True.
-    # Only done envs have valid episode stats; zero out the rest so logfn
-    # accumulates correct per-episode averages across the batch.
-    # The log/ prefix causes train.py logfn to accumulate these per episode
-    # and emit epstats/log/success_once/avg, which _ManiSkillWandBOutput
-    # in main.py remaps to train/success_once for wandb.
+    # ManiSkillVectorEnv with record_metrics=True populates:
+    #   info['final_info']['episode']['success_once']   — bool [N], OR over episode
+    #   info['final_info']['episode']['success_at_end'] — bool [N], last-step success
+    #   info['final_info']['episode']['fail_once']      — bool [N], OR over episode
+    # These are only valid for done envs; zero out the rest.
+    # The log/ prefix causes logfn in train.py to record these only at
+    # is_last=True, matching TD-MPC2's final_info_metrics() exactly.
     log_metrics = {}
     if done.any() and 'final_info' in info:
       ep_info = info['final_info'].get('episode', {})
-      for key in ('success_once', 'fail_once'):
+      for key in ('success_once', 'success_at_end', 'fail_once'):
         if key in ep_info:
           vals = ep_info[key]           # torch bool or float tensor [N]
           arr = vals.cpu().float().numpy().astype(np.float32)
@@ -311,10 +324,11 @@ class ManiSkill(embodied.Env):
         'is_terminal':      terminated,
         'state':            self._extract_state(obs),
         # Always emit log/ keys so the replay schema is consistent across
-        # every step. Non-done steps get zeros; logfn ignores them correctly
-        # because it only reads these at episode boundaries (is_last=True).
-        'log/success_once': np.zeros(self._num_envs, dtype=np.float32),
-        'log/fail_once':    np.zeros(self._num_envs, dtype=np.float32),
+        # every step. Non-done steps get zeros; logfn only reads these at
+        # is_last=True so zeros on non-terminal steps are harmless.
+        'log/success_once':     np.zeros(self._num_envs, dtype=np.float32),
+        'log/success_at_end':   np.zeros(self._num_envs, dtype=np.float32),
+        'log/fail_once':        np.zeros(self._num_envs, dtype=np.float32),
     }
     if 'rgb' in self._obs_mode:
       out['image'] = self._stack_frames(obs)

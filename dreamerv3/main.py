@@ -269,17 +269,14 @@ def make_logger(config):
   logger = elements.Logger(step, outputs, multiplier)
   return logger
 
-
-# ── ADDED: key-remapping wrapper placed just before make_logger in main.py ──
-# Maps DreamerV3 aggregated episode keys → TD-MPC2 wandb key names so both
-# runs are directly comparable. Does NOT modify DreamerV3's own logged keys.
 class _ManiSkillWandBOutput:
 
   _REMAP = {
-      'epstats/log/success_once/avg': 'train/success_once',
-      'epstats/log/fail_once/avg':    'train/fail_once',
-      'episode/score':                'train/return',
-      'fps/policy':                   'time/rollout_fps',
+      'epstats/log/success_once':   'train/success_once',
+      'epstats/log/success_at_end': 'train/success_at_end',
+      'epstats/log/fail_once':      'train/fail_once',
+      'episode/score':              'train/return',
+      'fps/policy':                 'time/rollout_fps',
   }
 
   def __init__(self, base_output, step):
@@ -287,9 +284,6 @@ class _ManiSkillWandBOutput:
     self._step = step
 
   def __call__(self, summaries):
-    # ── ADDED: strip policy_ image summaries before passing to WandBOutput.
-    # Images from logfn (epstats/policy_{key}) are stacked uint8 frames that
-    # would be logged as video. We only want video from report (openloop/).
     filtered = [
         (s, k, v) for s, k, v in summaries
         if 'policy_' not in k          # blocks epstats/policy_{key} videos

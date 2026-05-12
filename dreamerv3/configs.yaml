@@ -5,7 +5,7 @@ defaults:
   replicas: 1
   method: name
   task: dummy_disc
-  seed: 0
+  seed: 42
   script: train
   batch_size: 16
   batch_length: 64
@@ -43,9 +43,8 @@ defaults:
       num_envs: 32
       obs_mode: state
       sim_backend: gpu
-      max_episode_steps: 200
       image_size: 64
-      control_mode: pd_joint_delta_pos
+      control_mode: pd_ee_delta_pos
       num_frames: 1
 
   replay:
@@ -231,48 +230,14 @@ debug:
     .*\.blocks: 4
     .*\.depth: 2
 
-maniskill_state:
-  <<: *size12m          # ~12M params, comparable to TD-MPC2 model_size=5
-  run:
-    envs: 1             # 1 Driver worker; ManiSkill handles N internally
-    eval_envs: 1
-    train_ratio: 64.0   # TD-MPC2 ~16 updates/step * 4 for DreamerV3 overhead
-    steps: 1e7
-    log_every: 60
-    save_every: 600
-    report_every: 300
-  batch_size: 32        # 32 * 64 = 2048 transitions/update ≈ TD-MPC2 throughput
-  batch_length: 64
-  replay_context: 1
-  replay:
-    size: 1000000       # TD-MPC2 state: buffer_size=1_000_000
-    online: true
-    fracs: {uniform: 1.0, priority: 0.0, recency: 0.0}
-  jax:
-    prealloc: false     # critical: ManiSkill and JAX share GPU
-  logger:
-    outputs: [jsonl, wandb]
-    wandb_project: maniskill
-    wandb_entity: letuanhf-hanoi-university-of-science-and-technology        # set via --set logger.wandb_entity=your-entity
-    wandb_group: na
-    wandb_name: 'dreamerv3-PickCube-v1-state-42-walltime_efficient'          # set via --set logger.wandb_name=dreamerv3-PickCube-v1-state-42-...
-  env:
-    maniskill:
-      num_envs: 32
-      obs_mode: state
-      sim_backend: gpu
-      max_episode_steps: 200
-      image_size: 128
-      control_mode: pd_joint_delta_pos
-
-
 maniskill_rgb:
-  <<: *size25m          # depth=24 → final CNN dim=1536, matches TD-MPC2 exactly
+  <<: *size25m
+  use_seed: true
   run:
     envs: 1
     eval_envs: 1
     train_ratio: 32.0   # lower than state: CNN encoder adds cost per update
-    steps: 1e7
+    steps: 1e6
     log_every: 60
     save_every: 600
     report_every: 300
@@ -303,7 +268,6 @@ maniskill_rgb:
       num_envs: 32
       obs_mode: rgb
       sim_backend: gpu
-      max_episode_steps: 200
       image_size: 128
-      control_mode: pd_joint_delta_pos
+      control_mode: pd_ee_delta_pos
       num_frames: 1          # no frame stacking → 3 channels input to CNN
