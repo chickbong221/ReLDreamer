@@ -169,7 +169,7 @@ class ManiSkill(embodied.Env):
           np.where(reset_mask)[0], device=self._device)
       obs, _ = self._env.reset(options={'env_idx': reset_idx})
 
-      if 'rgb' in self._obs_mode:
+      if 'rgb' in self._obs_mode and self._num_frames > 1:
         # Re-fill frame stack for reset envs with the new first frame
         rgb = obs['rgb'].float() / 255.0
         for _ in range(self._num_frames):
@@ -254,9 +254,6 @@ class ManiSkill(embodied.Env):
 
     Returns numpy uint8 [N, H, W, C*num_frames]  ← channels-LAST.
 
-    When num_frames=1, skips the circular buffer entirely and returns the
-    raw frame directly (no stacking overhead).
-
     DreamerV3's Encoder (rssm.py Encoder.__call__) does:
       x = jnp.concatenate(imgs, -1)   # concat on last axis → needs [H,W,C]
       B, H, W, C = x.shape            # unpacks channels-last
@@ -264,7 +261,7 @@ class ManiSkill(embodied.Env):
     because PyTorch Conv2d expects that — do NOT copy TD-MPC2 here.
     """
     import torch
-    rgb = obs['rgb'].float() / 255.0              # [N, H, W, C]
+    rgb = obs["rgb"].float() / 255.0              # [N, H, W, C]
 
     if self._num_frames == 1:
       return (rgb.cpu().numpy() * 255).clip(0, 255).astype(np.uint8)

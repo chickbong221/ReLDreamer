@@ -83,6 +83,7 @@ View results:
 pip install -U scope
 python -m scope.viewer --basedir ~/logdir --port 8000
 ```
+ python main.py   --dataset ogb_molpcba_grouped   --method fedavg   --backbone gin_mol   --scenario domain-il   --num-tasks 25   --data-root /root/projects/FCL_copy/data   --output-root /root/projects/FCL_copy/outputs   --rounds-per-task 100   --batch-size 256   --eval-batch-size 256   --lr 0.005
 
 Scalar metrics are also writting as JSONL files.
 
