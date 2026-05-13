@@ -76,7 +76,7 @@ class ManiSkill(embodied.Env):
     if 'rgb' in obs_mode:
       # Merges all camera RGB channels + exposes 'state' key for proprio
       env = FlattenRGBDObservationWrapper(
-          env, rgb=True, depth=False, state=False)
+          env, rgb=True, depth=False, state=True)
 
     # Read the horizon the env was registered with, same as TD-MPC2.
     from mani_skill.utils import gym_utils as _gym_utils
