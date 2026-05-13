@@ -59,16 +59,15 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
       payload[f'train/{key[len("log/"):]}'] = float(np.mean(vals))
 
     if payload:
-      try:
-        import wandb
-        if wandb.run is not None:
-          wandb.log(payload, step=int(step))
-      except Exception as exc:
-        print(f'Could not log ManiSkill vector metrics to W&B: {exc}')
+      # Important:
+      # Use Dreamer's logger instead of direct wandb.log().
+      # This keeps all queued Dreamer summaries and the ManiSkill metrics
+      # in one ordered logging stream, avoiding W&B step-order warnings.
+      logger.add(payload)
+      logger.write()
 
     values.clear()
     maniskill_batch['count'] = 0
-
   @elements.timer.section('logfn')
   def logfn(tran, worker):
     episode = episodes[worker]
