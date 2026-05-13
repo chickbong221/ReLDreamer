@@ -38,14 +38,17 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
       return args.get(name, default)
     return getattr(args, name, default)
 
+  # TD-MPC2 defaults: num_eval_envs=4, eval_episodes_per_env=2.
+  # For your requested setup, keep eval_eps=1 and set eval_envs=4.
   eval_freq = int(float(_arg('eval_freq', 50000)))
+  eval_num_envs = int(_arg('eval_envs', 4))
   eval_episodes_per_env = int(_arg('eval_eps', 1))
   assert eval_episodes_per_env == 1, (
       'This TD-MPC2-compatible eval path is configured for '
       f'eval_episodes_per_env=1, got eval_eps={eval_episodes_per_env}.')
 
   # ManiSkill episode-level metrics that TD-MPC2 logs once per completed
-  # vector episode batch as mean over the vectorized envs.
+  # training vector episode batch as mean over cfg.num_envs.
   maniskill_metric_keys = (
       'log/success_once',
       'log/success_at_end',
@@ -93,8 +96,8 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
         payload[f'train/{key[len("log/"):]}'] = float(np.mean(vals))
 
     if payload:
-      # Do NOT call wandb.log() directly for train metrics. Dreamer's logger
-      # may still hold queued summaries for earlier callback steps. Logging via
+      # Do not call wandb.log() directly for train metrics. Dreamer's logger may
+      # still hold queued summaries for earlier callback steps. Logging through
       # the same logger stream prevents W&B step-order warnings.
       logger.add(payload)
       logger.write()
@@ -123,9 +126,9 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
                             key='videos/eval_video'):
     """TD-MPC2-style W&B video logging under videos/eval_video.
 
-    video_frames is a list of arrays [num_envs, height, width, 3], one per
+    video_frames is a list of arrays [num_eval_envs, height, width, 3], one per
     eval timestep. We tile vector-env frames per timestep, convert to W&B's
-    [T, C, H, W] video layout, and log at the current training step.
+    [T, C, H, W] layout, and log at the current training step.
     """
     if not video_frames:
       return
@@ -136,8 +139,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
       frames = [_to_numpy(frame) for frame in video_frames]
       frames = [frame[None] if frame.ndim == 3 else frame for frame in frames]
       frames = np.stack(frames, axis=0)  # [T, N, H, W, 3]
-      nrows = int(np.sqrt(frames.shape[1]))
-      nrows = max(1, nrows)
+      nrows = max(1, int(np.sqrt(frames.shape[1])))
       tiled = [_tile_images(rgbs, nrows=nrows) for rgbs in frames]
       tiled = np.stack(tiled, axis=0)  # [T, H, W, 3]
       _wandb_log_direct({
@@ -161,9 +163,9 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
           episode.add(f'policy_{key}', value, agg='stack')
 
       elif key.startswith('log/') and tran['is_last']:
-        # TD-MPC2 logs ManiSkill success metrics immediately once per
-        # completed vector episode batch. Do not also average them through
-        # Dreamer's epstats path.
+        # TD-MPC2 logs ManiSkill success metrics immediately once per completed
+        # vector episode batch. Do not also average them through Dreamer's
+        # epstats path.
         if getattr(driver, 'batched', False) and key in maniskill_metric_keys:
           continue
 
@@ -198,32 +200,21 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     if vector_batch_complete:
       log_maniskill_vector_batch()
 
-  # DreamerV3 ManiSkill uses one Dreamer env object that internally contains
-  # env.maniskill.num_envs GPU-vectorized sub-envs. Use Driver's batched mode
-  # when the created env exposes num_envs/is_batched.
-  if int(args.envs) == 1:
-    first_env = make_env(0)
-    if getattr(first_env, 'is_batched', False):
-      driver = embodied.Driver(
-          first_env, parallel=False, batched=True, num_envs=first_env.num_envs)
-    else:
-      driver = embodied.Driver([lambda: first_env], parallel=not args.debug)
-  else:
-    fns = [bind(make_env, i) for i in range(args.envs)]
-    driver = embodied.Driver(fns, parallel=not args.debug)
-
+  # Keep the original Driver construction. In your ManiSkill main.py,
+  # embodied.Driver is monkey-patched so this creates one Dreamer env object
+  # containing env.maniskill.num_envs GPU sub-envs for training.
+  fns = [bind(make_env, i) for i in range(args.envs)]
+  driver = embodied.Driver(fns, parallel=not args.debug)
   driver.on_step(lambda tran, _: step.increment())
   driver.on_step(lambda tran, _: policy_fps.step())
   driver.on_step(replay.add)
   driver.on_step(logfn)
 
-  # TD-MPC2 creates a separate eval env once at startup and reuses it. For
-  # Dreamer ManiSkill, run.envs=1 is only the number of Dreamer env objects;
-  # the actual GPU vector width is driver.length (= env.maniskill.num_envs).
+  # TD-MPC2 creates a separate eval env once at startup and reuses it. It uses
+  # cfg.num_eval_envs, not cfg.num_envs. Here eval_num_envs comes from
+  # run.eval_envs, which should be 4 for TD-MPC2 default comparability.
   eval_env = None
-  eval_num_envs = None
   if getattr(driver, 'batched', False):
-    eval_num_envs = driver.length
     eval_env = make_env(
         0,
         num_envs=eval_num_envs,
@@ -277,7 +268,8 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
         obs = eval_env.step(acts)
         obs = {k: np.asarray(v) for k, v in obs.items()}
 
-        # Record eval rollout frames; TD-MPC2 logs them under videos/eval_video.
+        # TD-MPC2's eval env records videos from the separate eval environment.
+        # Here we capture those eval frames directly and log videos/eval_video.
         if hasattr(eval_env, 'render'):
           try:
             video_frames.append(eval_env.render())
@@ -308,8 +300,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
                 final_metrics[name] = obs[key]
           break
 
-        logs = {k: v for k, v in obs.items() if k.startswith('log/')}
-        del logs  # log/ keys are intentionally excluded from policy input.
+        # log/ keys are intentionally excluded from policy input.
         obs_for_policy = {k: v for k, v in obs.items()
                           if not k.startswith('log/')}
         carry, acts, outs = eval_policy(carry, obs_for_policy)
@@ -392,8 +383,8 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
     train_vector_episode_done[0] = False
     driver(policy, steps=10)
 
-    # TD-MPC2 sets eval_next when entering the eval_freq window, then runs
-    # eval only when the current training vector episode has completed.
+    # TD-MPC2 sets eval_next when entering the eval_freq window, then runs eval
+    # only when the current training vector episode has completed.
     if eval_env is not None and eval_freq > 0:
       if int(step) > 0 and int(step) % eval_freq < driver.length:
         eval_next[0] = True

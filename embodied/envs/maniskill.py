@@ -1,16 +1,17 @@
 """
 ManiSkill GPU-vectorized environment wrapper for DreamerV3.
 
-Design mirrors TD-MPC2's envs/maniskill.py + envs/wrappers/pixels.py:
-  - One instance wraps N parallel GPU envs via ManiSkillVectorEnv
-  - Returns batched numpy dicts [N, ...] from step()
-  - Driver(batched=True) splits these into N per-worker replay transitions
-  - Frame stacking for RGB mode lives entirely on GPU
+This wrapper mirrors the ManiSkill parts of TD-MPC2:
+  - one instance wraps N parallel GPU envs via ManiSkillVectorEnv
+  - training env and eval env can have different vector widths
+  - eval env can be created with is_eval=True and reconfiguration_freq
+  - final_info['episode'] metrics are exposed for TD-MPC2-style logging
+  - eval render frames are available for videos/eval_video
 
 Key difference from TD-MPC2 pixel wrapper:
-  - TD-MPC2 returns channels-first [N, C*F, H, W] (PyTorch convention)
-  - DreamerV3 Encoder expects channels-last [H, W, C*F] (JAX/TF convention)
-  - Images must be uint8 (Encoder asserts this and normalises internally)
+  - TD-MPC2 returns channels-first [N, C*F, H, W] for PyTorch
+  - DreamerV3 expects channels-last [N, H, W, C*F] for JAX
+  - images are uint8; DreamerV3 normalizes internally
 """
 
 import numpy as np
@@ -32,6 +33,7 @@ class ManiSkill(embodied.Env):
       seed=0,
       is_eval=False,
       eval_reconfiguration_frequency=1,
+      render_mode=None,
       **kwargs,
   ):
     import gymnasium as gym
@@ -46,26 +48,30 @@ class ManiSkill(embodied.Env):
     self._device = 'cuda'
     self._is_eval = bool(is_eval)
 
+    # TD-MPC2 uses cfg.render_mode, default rgb_array, and the eval env gets
+    # video recording. For Dreamer, always make eval renderable; for training,
+    # RGB observations also require rgb_array rendering/sensors.
+    if render_mode is None:
+      render_mode = 'rgb_array' if ('rgb' in obs_mode or is_eval) else None
+
     # ------------------------------------------------------------------ #
-    #  Build base GPU-vectorized env, matching TD-MPC2 make_envs.
+    #  Build base GPU-vectorized env, matching TD-MPC2 make_envs().
     # ------------------------------------------------------------------ #
     make_kwargs = dict(
         id=task,
         obs_mode=obs_mode,
-        # TD-MPC2 uses render_mode='rgb_array' for eval videos. Keep it
-        # enabled for RGB training and for all eval envs, including state obs.
-        render_mode='rgb_array' if ('rgb' in obs_mode or is_eval) else None,
+        render_mode=render_mode,
         sensor_configs=dict(width=image_size, height=image_size),
         num_envs=self._num_envs,
         sim_backend=sim_backend,
-        # Do NOT pass max_episode_steps. Use the environment's registered
-        # default, same as TD-MPC2.
+        # Do not pass max_episode_steps. Use the registered default, same as
+        # TD-MPC2, which reads it back with gym_utils.find_max_episode_steps_value.
         **kwargs,
     )
     if control_mode is not None:
       make_kwargs['control_mode'] = control_mode
     if is_eval:
-      # TD-MPC2 creates a separate eval env and passes
+      # TD-MPC2 creates a separate eval env and adds
       # reconfiguration_freq=cfg.eval_reconfiguration_frequency.
       make_kwargs['reconfiguration_freq'] = eval_reconfiguration_frequency
 
@@ -75,13 +81,18 @@ class ManiSkill(embodied.Env):
     env = NonPrivilegedObsWrapper(env)
 
     if 'rgb' in obs_mode:
-      # Merges all camera RGB channels + exposes 'state' key for proprio.
+      # Matches TD-MPC2's RGB path: flatten RGBD observation into rgb + state.
       env = FlattenRGBDObservationWrapper(
           env, rgb=True, depth=False, state=True)
 
-    # Read the registered horizon, same as TD-MPC2.
+    # Read the registered horizon before vector wrapping, same as TD-MPC2.
     from mani_skill.utils import gym_utils as _gym_utils
     self._max_episode_steps = _gym_utils.find_max_episode_steps_value(env)
+
+    # Keep the pre-vector wrapper env for eval rendering. TD-MPC2's
+    # RecordEpisodeWrapper also records from the eval env before the final
+    # ManiSkillVectorEnv wrapper.
+    self._render_env = env
 
     # ignore_terminations=True: episodes end only on truncation.
     # record_metrics=True: populates info['final_info']['episode'].
@@ -95,12 +106,11 @@ class ManiSkill(embodied.Env):
     if 'rgb' in obs_mode and self._num_frames > 1:
       self._setup_frame_stack(obs)
 
-    # Track per-env done to compute is_first on the NEXT step.
+    # Track per-env done to compute is_first on the next step.
     self._prev_done = np.ones(self._num_envs, dtype=bool)
 
-    # Full ManiSkill final_info['episode'] from the most recent completed
-    # vector episode. train.py eval uses this to mirror TD-MPC2's
-    # final_info_metrics() exactly without adding these values to replay.
+    # Full ManiSkill final_info['episode'] from the most recent completed vector
+    # episode. train.py eval uses this to mirror TD-MPC2 final_info_metrics().
     self._last_episode_metrics = {}
 
   @property
@@ -117,15 +127,14 @@ class ManiSkill(embodied.Env):
 
   def _setup_spaces(self, obs):
     self._act_dim = self._env.action_space.shape[-1]
-    state = self._extract_state(obs)   # [N, state_dim] numpy
+    state = self._extract_state(obs)
     self._state_dim = state.shape[-1]
 
     if 'rgb' in self._obs_mode:
-      rgb = obs['rgb']                 # [N, H, W, C]
+      rgb = obs['rgb']
       self._img_h = rgb.shape[1]
       self._img_w = rgb.shape[2]
       self._img_c = rgb.shape[3]
-      # DreamerV3 CNN is channels-last: [H, W, C*num_frames]
       self._img_shape = (
           self._img_h,
           self._img_w,
@@ -133,7 +142,7 @@ class ManiSkill(embodied.Env):
       )
 
   def _setup_frame_stack(self, obs):
-    rgb = obs['rgb'].float() / 255.0   # [N, H, W, C]
+    rgb = obs['rgb'].float() / 255.0  # [N, H, W, C]
     self._frame_buf = (
         rgb.unsqueeze(-1)
            .expand(-1, -1, -1, -1, self._num_frames)
@@ -153,14 +162,13 @@ class ManiSkill(embodied.Env):
         'is_last': elements.Space(bool, ()),
         'is_terminal': elements.Space(bool, ()),
         'state': elements.Space(np.float32, (self._state_dim,)),
-        # log/ prefix: excluded from world model by the notlog filter in
+        # log/ prefix: excluded from the world model by the notlog filter in
         # make_agent. train.py reads these only at is_last=True.
         'log/success_once': elements.Space(np.float32, ()),
         'log/success_at_end': elements.Space(np.float32, ()),
         'log/fail_once': elements.Space(np.float32, ()),
     }
     if 'rgb' in self._obs_mode:
-      # uint8 is required; DreamerV3 Encoder normalizes internally.
       spaces['image'] = elements.Space(np.uint8, self._img_shape)
     return spaces
 
@@ -178,8 +186,8 @@ class ManiSkill(embodied.Env):
       'reset'  [N] bool
       'action' [N, act_dim] float32
 
-    Returns obs dict with all values shaped [N, ...] as numpy arrays.
-    Driver._step_batched() slices axis 0 and fires one callback per env.
+    Returns obs dict with all values shaped [N, ...]. Driver._step_batched()
+    slices axis 0 and fires one callback per sub-env.
     """
     import torch
 
@@ -214,22 +222,20 @@ class ManiSkill(embodied.Env):
 
     # ---- Normal step ------------------------------------------------- #
     act = torch.tensor(
-        np.asarray(action['action']),
-        dtype=torch.float32, device=self._device)
+        np.asarray(action['action']), dtype=torch.float32, device=self._device)
 
     obs, reward, terminated, truncated, info = self._env.step(act)
     done = (terminated | truncated).cpu().numpy().astype(bool)  # [N]
 
-    # Replace obs with final_observation for done envs so the world model
-    # bootstraps from the true last state, not the post-reset obs. This mirrors
-    # TD-MPC2's online_trainer.py handling.
+    # Replace obs with final_observation for done envs so the replay/eval code
+    # sees the true last state, mirroring TD-MPC2 online_trainer.py.
     if done.any() and 'final_observation' in info:
       final = info['final_observation']
       done_t = torch.tensor(done, dtype=torch.bool, device=self._device)
-      for k in obs:
-        if k in final:
-          expand = done_t.view(-1, *([1] * (obs[k].dim() - 1)))
-          obs[k] = torch.where(expand.expand_as(obs[k]), final[k], obs[k])
+      for key in obs:
+        if key in final:
+          expand = done_t.view(-1, *([1] * (obs[key].dim() - 1)))
+          obs[key] = torch.where(expand.expand_as(obs[key]), final[key], obs[key])
 
     # ---- Extract final_info['episode'] metrics ----------------------- #
     log_metrics = {}
@@ -237,9 +243,6 @@ class ManiSkill(embodied.Env):
       ep_info = info['final_info'].get('episode', {})
       self._last_episode_metrics = {}
       for key, vals in ep_info.items():
-        # Store complete metric set that TD-MPC2 averages in
-        # final_info_metrics(): return, episode_len, reward, success_once,
-        # success_at_end, fail_once, fail_at_end when present.
         try:
           arr = vals.cpu().float().numpy().astype(np.float32)
         except AttributeError:
@@ -275,10 +278,10 @@ class ManiSkill(embodied.Env):
     if 'state' in obs:
       return obs['state'].cpu().float().numpy()
     parts = []
-    for v in obs.get('agent', {}).values():
-      parts.append(v.reshape(v.shape[0], -1))
-    for v in obs.get('extra', {}).values():
-      parts.append(v.reshape(v.shape[0], -1))
+    for value in obs.get('agent', {}).values():
+      parts.append(value.reshape(value.shape[0], -1))
+    for value in obs.get('extra', {}).values():
+      parts.append(value.reshape(value.shape[0], -1))
     if not parts:
       raise ValueError(
           f'No state found in obs keys: {list(obs.keys())}. '
@@ -286,11 +289,7 @@ class ManiSkill(embodied.Env):
     return torch.cat(parts, dim=-1).cpu().float().numpy()
 
   def _stack_frames(self, obs):
-    """
-    Push latest RGB frame into circular buffer and return stacked image.
-
-    Returns numpy uint8 [N, H, W, C*num_frames] using channels-last layout.
-    """
+    """Return uint8 image [N, H, W, C*num_frames] in channels-last layout."""
     rgb = obs['rgb'].float() / 255.0  # [N, H, W, C]
 
     if self._num_frames == 1:
@@ -299,10 +298,9 @@ class ManiSkill(embodied.Env):
     self._frame_buf[..., self._stack_ptr] = rgb
     self._stack_ptr = (self._stack_ptr + 1) % self._num_frames
 
-    stacked = self._frame_buf.roll(
-        shifts=-self._stack_ptr, dims=-1)  # [N, H, W, C, F]
-    N, H, W, C, F = stacked.shape
-    stacked = stacked.reshape(N, H, W, C * F)
+    stacked = self._frame_buf.roll(shifts=-self._stack_ptr, dims=-1)
+    num_envs, height, width, channels, frames = stacked.shape
+    stacked = stacked.reshape(num_envs, height, width, channels * frames)
     return (stacked.cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
 
   def _make_obs(self, obs, reward, terminated, truncated, is_first,
@@ -328,14 +326,17 @@ class ManiSkill(embodied.Env):
 
   def last_episode_metrics(self):
     return {
-        k: np.array(v, copy=True)
-        for k, v in self._last_episode_metrics.items()}
+        key: np.array(value, copy=True)
+        for key, value in self._last_episode_metrics.items()}
 
   def render(self):
     """Return eval RGB frames as [num_envs, H, W, 3] for W&B video."""
     from mani_skill.utils import common
 
-    candidates = [self._env]
+    candidates = []
+    for candidate in (getattr(self, '_render_env', None), self._env):
+      if candidate is not None and candidate not in candidates:
+        candidates.append(candidate)
     for name in ('env', 'base_env', 'unwrapped'):
       try:
         candidate = getattr(self._env, name)

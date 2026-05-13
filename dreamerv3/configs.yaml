@@ -241,7 +241,7 @@ maniskill_rgb:
     eval_freq: 50000
     train_ratio: 64.0   # lower than state: CNN encoder adds cost per update
     steps: 4e6
-    log_every: 60
+    log_every: 120
     save_every: 600
     report_every: 300
   batch_size: 8        # smaller: [16, 64, 64, 64, 9] RGB tensors are large
