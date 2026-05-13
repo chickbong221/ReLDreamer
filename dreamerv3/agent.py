@@ -287,11 +287,31 @@ class Agent(embodied.jax.Agent):
         training=False)
 
     # Video preds
+    def to_report_rgb(x):
+      # ManiSkill can flatten multiple RGB cameras into the channel dimension
+      # (for example, 2 cameras -> 6 channels). The logger/report video path
+      # expects displayable RGB, so tile camera views horizontally for summaries
+      # while leaving the model input/reconstruction tensors unchanged.
+      channels = x.shape[-1]
+      if channels == 3:
+        return x
+      if channels % 3 == 0:
+        views = channels // 3
+        B_, T_, H_, W_, _ = x.shape
+        x = x.reshape((B_, T_, H_, W_, views, 3))
+        x = x.transpose((0, 1, 2, 4, 3, 5))
+        return x.reshape((B_, T_, H_, views * W_, 3))
+      if channels == 1:
+        return jnp.repeat(x, 3, axis=-1)
+      return x[..., :3]
+
     for key in self.dec.imgkeys:
       assert obs[key].dtype == jnp.uint8
       true = obs[key][:RB]
       pred = jnp.concatenate([obsrecons[key].pred(), imgrecons[key].pred()], 1)
       pred = jnp.clip(pred * 255, 0, 255).astype(jnp.uint8)
+      true = to_report_rgb(true)
+      pred = to_report_rgb(pred)
       error = ((i32(pred) - i32(true) + 255) / 2).astype(np.uint8)
       video = jnp.concatenate([true, pred, error], 2)
 

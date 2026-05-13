@@ -258,7 +258,7 @@ maniskill_rgb:
     wandb_project: maniskill
     wandb_entity: letuanhf-hanoi-university-of-science-and-technology        # set via --set logger.wandb_entity=your-entity
     wandb_group: na
-    wandb_name: 'dreamerv3-PickCube-v1-rgb-42-walltime_efficient'          # set via --set logger.wandb_name=dreamerv3-PickCube-v1-rgb-42-...
+    wandb_name: 'dreamerv3-UnitreeG1TransportBox-v1-rgb-42-walltime_efficient'          # set via --set logger.wandb_name=dreamerv3-PickCube-v1-rgb-42-...
   env:
     maniskill:
       use_seed: true
@@ -266,5 +266,5 @@ maniskill_rgb:
       obs_mode: rgb
       sim_backend: gpu
       image_size: 128
-      control_mode: pd_ee_delta_pos
+      control_mode: pd_joint_delta_pos
       num_frames: 1          # no frame stacking → 3 channels input to CNN
