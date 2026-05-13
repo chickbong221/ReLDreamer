@@ -37,9 +37,6 @@ class ManiSkill(embodied.Env):
       **kwargs,
   ):
     import os
-    # Must happen before JAX initialises to avoid OOM when sharing one GPU.
-    os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
-    os.environ.setdefault('XLA_PYTHON_CLIENT_MEM_FRACTION', '0.4')
 
     import gymnasium as gym
     import torch
@@ -79,7 +76,7 @@ class ManiSkill(embodied.Env):
     if 'rgb' in obs_mode:
       # Merges all camera RGB channels + exposes 'state' key for proprio
       env = FlattenRGBDObservationWrapper(
-          env, rgb=True, depth=False, state=True)
+          env, rgb=True, depth=False, state=False)
 
     # Read the horizon the env was registered with, same as TD-MPC2.
     from mani_skill.utils import gym_utils as _gym_utils

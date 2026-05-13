@@ -71,19 +71,6 @@ def main(argv=None):
 
   suite = config.task.split('_', 1)[0]
 
-  # ------------------------------------------------------------------ #
-  #  ManiSkill: intercept Driver construction inside run.train.
-  #
-  #  train.py does:
-  #    fns = [bind(make_env, i) for i in range(args.envs)]
-  #    driver = embodied.Driver(fns, parallel=not args.debug)
-  #
-  #  We set args.envs=1 so fns has exactly one element.
-  #  We patch embodied.Driver so that when train.py calls Driver(fns, ...),
-  #  it gets our batched Driver instead: fns[0]() builds the ManiSkill env
-  #  and _ManiSkillDriver passes it to the batched init path.
-  #  The patch is restored in a finally block so nothing else is affected.
-  # ------------------------------------------------------------------ #
   if suite == 'maniskill':
     num_envs = dict(config.env.get('maniskill', {})).get('num_envs', 32)
     args = args.update(envs=1, debug=False)  # one env call, no subprocess
@@ -118,9 +105,6 @@ def main(argv=None):
       embodied.Driver = _OrigDriver
     return
 
-  # ------------------------------------------------------------------ #
-  #  All other envs — original code unchanged
-  # ------------------------------------------------------------------ #
   if config.script == 'train':
     embodied.run.train(
         bind(make_agent, config),
@@ -128,52 +112,6 @@ def main(argv=None):
         bind(make_env, config),
         bind(make_stream, config),
         bind(make_logger, config),
-        args)
-
-  elif config.script == 'train_eval':
-    embodied.run.train_eval(
-        bind(make_agent, config),
-        bind(make_replay, config, 'replay'),
-        bind(make_replay, config, 'eval_replay', 'eval'),
-        bind(make_env, config),
-        bind(make_env, config),
-        bind(make_stream, config),
-        bind(make_logger, config),
-        args)
-
-  elif config.script == 'eval_only':
-    embodied.run.eval_only(
-        bind(make_agent, config),
-        bind(make_env, config),
-        bind(make_logger, config),
-        args)
-
-  elif config.script == 'parallel':
-    embodied.run.parallel.combined(
-        bind(make_agent, config),
-        bind(make_replay, config, 'replay'),
-        bind(make_replay, config, 'replay_eval', 'eval'),
-        bind(make_env, config),
-        bind(make_env, config),
-        bind(make_stream, config),
-        bind(make_logger, config),
-        args)
-
-  elif config.script == 'parallel_env':
-    is_eval = config.replica >= args.envs
-    embodied.run.parallel.parallel_env(
-        bind(make_env, config), config.replica, args, is_eval)
-
-  elif config.script == 'parallel_envs':
-    is_eval = config.replica >= args.envs
-    embodied.run.parallel.parallel_envs(
-        bind(make_env, config), bind(make_env, config), args)
-
-  elif config.script == 'parallel_replay':
-    embodied.run.parallel.parallel_replay(
-        bind(make_replay, config, 'replay'),
-        bind(make_replay, config, 'replay_eval', 'eval'),
-        bind(make_stream, config),
         args)
 
   else:
@@ -217,8 +155,7 @@ def make_logger(config):
   multiplier = config.env.get(config.task.split('_')[0], {}).get('repeat', 1)
   outputs = []
 
-  # ── ADDED: extend filter to include epstats (success_once, fail_once, return)
-  # and fps metrics so they reach wandb, in addition to the original filter.
+  # Keep ManiSkill metrics visible to terminal / normal logger outputs.
   suite = config.task.split('_', 1)[0]
   log_filter = config.logger.filter
   if suite == 'maniskill':
@@ -230,18 +167,20 @@ def make_logger(config):
       outputs.append(elements.logger.JSONLOutput(logdir, 'metrics.jsonl'))
       outputs.append(elements.logger.JSONLOutput(
           logdir, 'scores.jsonl', 'episode/score'))
+
     elif output == 'tensorboard':
       outputs.append(elements.logger.TensorBoardOutput(
           logdir, config.logger.fps))
+
     elif output == 'expa':
       exp = logdir.split('/')[-4]
       run = '/'.join(logdir.split('/')[-3:])
       proj = 'embodied' if logdir.startswith(('/cns/', 'gs://')) else 'debug'
       outputs.append(elements.logger.ExpaOutput(
           exp, run, proj, config.logger.user, config.flat))
+
     elif output == 'wandb':
-      # ── CHANGED: init wandb with full args matching TD-MPC2 convention,
-      # then wrap WandBOutput to remap key names for comparability.
+      # Keep your custom W&B init matching TD-MPC2 naming convention.
       import wandb as _wandb
       lc = config.logger
       _wandb.init(
@@ -253,56 +192,17 @@ def make_logger(config):
           config=dict(config),
           resume='allow',
       )
-      if suite == 'maniskill':
-        # Wrap WandBOutput to remap keys to TD-MPC2 names on write.
-        # DreamerV3's own keys are untouched; we only add aliases.
-        base_wandb = elements.logger.WandBOutput(
-            '/'.join(logdir.split('/')[-4:]))
-        outputs.append(_ManiSkillWandBOutput(base_wandb, step))
-      else:
-        outputs.append(elements.logger.WandBOutput(
-            '/'.join(logdir.split('/')[-4:])))
+      outputs.append(elements.logger.WandBOutput(
+          '/'.join(logdir.split('/')[-4:])))
+
     elif output == 'scope':
       outputs.append(elements.logger.ScopeOutput(elements.Path(logdir)))
+
     else:
       raise NotImplementedError(output)
+
   logger = elements.Logger(step, outputs, multiplier)
   return logger
-
-class _ManiSkillWandBOutput:
-
-  _REMAP = {
-      'epstats/log/success_once':   'train/success_once',
-      'epstats/log/success_at_end': 'train/success_at_end',
-      'epstats/log/fail_once':      'train/fail_once',
-      'episode/score':              'train/return',
-      'fps/policy':                 'time/rollout_fps',
-  }
-
-  def __init__(self, base_output, step):
-    self._base = base_output
-    self._step = step
-
-  def __call__(self, summaries):
-    filtered = [
-        (s, k, v) for s, k, v in summaries
-        if 'policy_' not in k          # blocks epstats/policy_{key} videos
-    ]
-    self._base(filtered)               # DreamerV3 keys written unchanged
-    # Write TD-MPC2-named aliases for scalar metrics.
-    try:
-      import wandb as _wandb
-      if _wandb.run is None:
-        return
-      aliases = {}
-      for step_val, key, value in filtered:
-        if key in self._REMAP and isinstance(value, (int, float, np.floating,
-                                                       np.integer)):
-          aliases[self._REMAP[key]] = float(value)
-      if aliases:
-        _wandb.log(aliases, step=int(self._step))
-    except Exception:
-      pass
 
 
 def make_replay(config, folder, mode='train'):
