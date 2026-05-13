@@ -404,7 +404,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
 
     if should_log(step):
       logger.add(train_agg.result())
-      logger.add(epstats.result(), prefix='epstats')
+      epstats.result()
       logger.add(replay.stats(), prefix='replay')
       logger.add(usage.stats(), prefix='usage')
       logger.add({'fps/policy': policy_fps.result()})
