@@ -223,65 +223,64 @@ All tasks below work with `--task maniskill_<ENV_ID>`.
 
 ## Running DreamerV3 on ManiSkill-HAB tasks
 
-### Additional setup — download assets and dataset
+### Setup
 
-MS-HAB requires the ReplicaCAD apartment scenes and the HAB dataset.
+MS-HAB for RL requires only the simulation assets — no large demonstration
+dataset download needed.
 
-**1. Download simulation assets** (ReplicaCAD scenes, ~few GB):
+**1. Install MS-HAB** (if not already done):
+
+```bash
+git clone https://github.com/haosulab/ManiSkill.git -b mshab --single-branch
+pip install -e ManiSkill
+pip install -e mshab   # from this repo's mshab/ subdir, or your own clone
+```
+
+**2. Download simulation assets** (ReplicaCAD scenes + rearrangement data, a few GB):
 
 ```bash
 # Default install path: ~/.maniskill/data
 # To change: export MS_ASSET_DIR=/your/path
-
-python -m mani_skill.utils.download_asset ycb
-python -m mani_skill.utils.download_asset ReplicaCAD
-python -m mani_skill.utils.download_asset ReplicaCADRearrange
+for dataset in ycb ReplicaCAD ReplicaCADRearrange; do
+    python -m mani_skill.utils.download_asset "$dataset"
+done
 ```
 
-**2. Download the HAB rearrangement dataset** (~490 GB total, HuggingFace):
+This is everything needed for RL. Task plans and spawn data are bundled inside
+the `ReplicaCADRearrange` download at
+`$MS_ASSET_DIR/data/scene_datasets/replica_cad_dataset/rearrange/`.
 
-Download only the task splits you plan to use:
+> The large HuggingFace dataset (~490 GB, `arth-shukla/MS-HAB-*`) contains
+> demonstration trajectories for behaviour cloning and diffusion policy.
+> **It is not needed for RL training.**
 
-```bash
-export MS_ASSET_DIR="~/.maniskill"
-export MSHAB_DATASET_DIR="$MS_ASSET_DIR/data/scene_datasets/replica_cad_dataset/rearrange-dataset"
+### Available environments
 
-huggingface-cli login   # authenticate once
-
-# Choose one or more:
-huggingface-cli download --repo-type dataset arth-shukla/MS-HAB-TidyHouse        --local-dir "$MSHAB_DATASET_DIR/tidy_house"
-huggingface-cli download --repo-type dataset arth-shukla/MS-HAB-PrepareGroceries  --local-dir "$MSHAB_DATASET_DIR/prepare_groceries"
-huggingface-cli download --repo-type dataset arth-shukla/MS-HAB-SetTable          --local-dir "$MSHAB_DATASET_DIR/set_table"
-```
-
-Alternatively generate the dataset locally (slower depending on bandwidth):
-
-```bash
-bash mshab/scripts/gen_dataset.sh
-```
-
-### Available MS-HAB environments
-
-| ENV_ID | Description | Episode steps | Training rewards |
+| ENV_ID | Description | Episode steps | Rewards |
 |---|---|---|---|
 | `PickSubtaskTrain-v0` | Fetch robot picks a target YCB object | 200 | Dense + normalised |
 | `PlaceSubtaskTrain-v0` | Fetch robot places held object at goal | 200 | Dense + normalised |
 | `OpenSubtaskTrain-v0` | Fetch robot opens a drawer or cabinet door | 200 | Dense + normalised |
 | `CloseSubtaskTrain-v0` | Fetch robot closes a drawer or cabinet door | 200 | Dense + normalised |
 | `NavigateSubtaskTrain-v0` | Fetch robot navigates to a goal pose | 200 | Dense + normalised |
-| `SequentialTask-v0` | Full long-horizon task (Pick → Place → …) — **evaluation only**, no rewards | — | None |
+| `SequentialTask-v0` | Full long-horizon task (Pick → Place → …) — **evaluation only** | — | None |
 
-All subtask training environments use the **Fetch** mobile manipulator robot,
-precomputed spawn states from the downloaded dataset, and `pd_joint_delta_pos`
-control.
+All subtask environments use the **Fetch** mobile manipulator with
+`pd_joint_delta_pos` control.
 
-### Command
+Available long-horizon task contexts (`mshab_task`):
 
-> **Note:** MS-HAB task IDs are registered by `import mshab.envs`. The
-> `embodied/envs/maniskill.py` wrapper currently only imports `mani_skill.envs`.
-> To use MS-HAB tasks you need to add `import mshab.envs` on the line after
-> `import mani_skill.envs` in that file (one-line change — tell me to do this
-> if you want).
+| Value | Description |
+|---|---|
+| `tidy_house` | Pick and place objects to tidy a house |
+| `prepare_groceries` | Organise groceries in a kitchen |
+| `set_table` | Set a table with plates and utensils |
+
+### Training command
+
+Pass `--env.maniskill.mshab_task` to activate MS-HAB mode. The wrapper
+automatically loads the matching task plans and spawn data from the downloaded
+assets — no manual file editing required.
 
 ```bash
 python dreamerv3/main.py \
@@ -289,38 +288,24 @@ python dreamerv3/main.py \
   --configs maniskill_rgb \
   --task maniskill_PickSubtaskTrain-v0 \
   --env.maniskill.control_mode pd_joint_delta_pos \
+  --env.maniskill.mshab_task tidy_house \
+  --env.maniskill.mshab_split train \
   --logger.wandb_project <your-project> \
   --logger.wandb_entity  <your-entity> \
   --logger.wandb_name    dreamerv3-mshab-pick-rgb-42
 ```
 
-Replace `PickSubtaskTrain-v0` with any ENV_ID from the table above.
+Replace `PickSubtaskTrain-v0` with any training ENV_ID above, and
+`mshab_task` with any of `tidy_house`, `prepare_groceries`, or `set_table`.
 
-### Passing task plans and spawn data
+**`mshab_split`** is `train` by default; set to `val` to use the validation
+scenes (21 scenes vs 63 for train).
 
-MS-HAB subtask environments require task plan files and precomputed spawn data
-at construction time. Pass them by editing the `make_kwargs` block in
-`embodied/envs/maniskill.py` before the `gym.make(...)` call:
-
-```python
-from mani_skill import ASSET_DIR
-from mshab.envs.planner import plan_data_from_file
-
-REARRANGE_DIR = ASSET_DIR / "scene_datasets/replica_cad_dataset/rearrange-dataset"
-task    = "tidy_house"   # "tidy_house" | "prepare_groceries" | "set_table"
-subtask = "pick"         # "pick" | "place" | "open" | "close" | "navigate"
-split   = "train"        # "train" | "val"
-
-plan_data    = plan_data_from_file(
-    REARRANGE_DIR / "task_plans" / task / subtask / split / "all.json"
-)
-spawn_data_fp = REARRANGE_DIR / "spawn_data" / task / subtask / split / "spawn_data.pt"
-
-# Add to make_kwargs:
-# task_plans=plan_data.plans,
-# scene_builder_cls=plan_data.dataset,
-# spawn_data_fp=spawn_data_fp,
-```
+**`num_envs` recommendation:** the train split has 63 scenes and the val split
+has 21. For balanced scene coverage use a multiple of 63 (e.g. 63, 126, 189)
+for train or a multiple of 21 for val. Any other value still works — the
+wrapper disables the scene-balance assertion automatically — but some scenes
+will be sampled more than others.
 
 ---
 

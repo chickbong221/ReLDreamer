@@ -34,6 +34,8 @@ class ManiSkill(embodied.Env):
       is_eval=False,
       eval_reconfiguration_frequency=1,
       render_mode=None,
+      mshab_task=None,
+      mshab_split='train',
       **kwargs,
   ):
     import gymnasium as gym
@@ -70,6 +72,26 @@ class ManiSkill(embodied.Env):
     )
     if control_mode is not None:
       make_kwargs['control_mode'] = control_mode
+
+    if mshab_task is not None:
+      import mshab.envs  # noqa: F401 registers mshab tasks
+      from mani_skill import ASSET_DIR
+      from mshab.envs.planner import plan_data_from_file
+      subtask = task.split('SubtaskTrain')[0].lower()
+      rearrange_dir = ASSET_DIR / 'scene_datasets/replica_cad_dataset/rearrange'
+      plan_data = plan_data_from_file(
+          rearrange_dir / 'task_plans' / mshab_task / subtask / mshab_split / 'all.json'
+      )
+      make_kwargs['task_plans'] = plan_data.plans
+      make_kwargs['scene_builder_cls'] = plan_data.dataset
+      make_kwargs['spawn_data_fp'] = (
+          rearrange_dir / 'spawn_data' / mshab_task / subtask / mshab_split / 'spawn_data.pt'
+      )
+      # mshab envs assert num_envs % num_scenes == 0 by default (63 train / 21 val).
+      # Disable so any num_envs works (make_agent uses 1 for shape discovery).
+      make_kwargs['require_build_configs_repeated_equally_across_envs'] = False
+      # Use normalised rewards matching mshab's own training code.
+      make_kwargs.setdefault('reward_mode', 'normalized_dense')
     if is_eval:
       # TD-MPC2 creates a separate eval env and adds
       # reconfiguration_freq=cfg.eval_reconfiguration_frequency.
