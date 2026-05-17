@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git log *)",
+      "Bash(git -C E:/Code/dreamerv3-maniskill-hab/ManiSkill log --oneline -5)",
+      "Bash(git -C E:/Code/dreamerv3-maniskill-hab/ManiSkill branch)",
+      "Bash(git -C E:/Code/dreamerv3-maniskill-hab/mshab log --oneline -5)",
+      "Bash(git -C E:/Code/dreamerv3-maniskill-hab/mshab remote -v)",
+      "Bash(sed 's/.py//')",
+      "Bash(xargs -I{} basename {} .py)",
+      "Bash(xargs grep *)",
+      "Bash(python -c \"import sys; sys.path.insert\\(0,'E:/Code/dreamerv3-maniskill-hab'\\); import elements; import inspect; print\\(inspect.getsource\\(elements.Checkpoint\\)\\)\")",
+      "Bash(python -c ' *)"
+    ]
+  }
+}

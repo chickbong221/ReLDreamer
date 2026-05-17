@@ -1,124 +1,535 @@
-# Mastering Diverse Domains through World Models
+# DreamerV3 + ManiSkill (GPU Parallel Rendering)
 
-A reimplementation of [DreamerV3][paper], a scalable and general reinforcement
-learning algorithm that masters a wide range of applications with fixed
-hyperparameters.
+A fork of [DreamerV3](https://arxiv.org/pdf/2301.04104) extended to support
+[ManiSkill3](https://github.com/haosulab/ManiSkill) GPU-vectorised environments,
+including [ManiSkill-HAB](https://arxiv.org/abs/2412.13211) home-rearrangement tasks.
 
-![DreamerV3 Tasks](https://user-images.githubusercontent.com/2111293/217647148-cbc522e2-61ad-4553-8e14-1ecdc8d9438b.gif)
+---
 
-If you find this code useful, please reference in your paper:
+## What this fork adds
+
+| File | Purpose |
+|---|---|
+| `embodied/envs/maniskill.py` | GPU-batched env wrapper around `ManiSkillVectorEnv`. Supports `rgb` observation mode with optional frame stacking. Exposes episode metrics (`success_once`, `success_at_end`, `fail_once`). |
+| `dreamerv3/configs.yaml` | `maniskill_rgb` config block with tuned hyperparameters for GPU pixel-based training. |
+| `dreamerv3/main.py` | Monkey-patches `embodied.Driver` so the single batched GPU env is used directly instead of multiple subprocesses. Sets `XLA_PYTHON_CLIENT_PREALLOCATE=false` and `XLA_PYTHON_CLIENT_MEM_FRACTION=0.4` before JAX initialises so JAX and ManiSkill share the GPU cleanly. |
+
+---
+
+## Repository layout
 
 ```
+dreamerv3-maniskill-hab/
+├── dreamerv3/          # DreamerV3 agent and configs
+├── embodied/           # Environment wrappers (maniskill.py lives here)
+├── sequential/         # Sequential training pipeline (self-contained)
+│   ├── train_sequential.py
+│   ├── eval_multitask.py
+│   └── config.yaml
+├── tdmpc2/             # Patched TD-MPC2 baseline (moved into ManiSkill by install.sh)
+├── ManiSkill/          # ManiSkill3 simulator  ← cloned separately (in .gitignore)
+├── mshab/              # ManiSkill-HAB tasks    ← cloned separately (in .gitignore)
+├── requirements.txt    # DreamerV3 Python deps
+├── install.sh          # One-shot installation script (see below)
+└── README.md
+```
+
+`ManiSkill/` and `mshab/` are **not tracked** by this repository (listed in
+`.gitignore`). They must be cloned separately — `install.sh` does this for
+you automatically.
+
+`tdmpc2/` contains modifications to ManiSkill's stock TD-MPC2 baseline.
+`install.sh` copies it into `ManiSkill/examples/baselines/tdmpc2/` and then
+removes the root-level folder to keep the working tree clean.
+
+---
+
+## Prerequisites
+
+| Requirement | Notes |
+|---|---|
+| Linux | GPU simulation requires Linux. Windows/Mac support CPU-only. |
+| NVIDIA GPU | CUDA 12 recommended |
+| CUDA 12 toolkit | Must match the JAX and PyTorch wheel versions |
+| [conda](https://docs.conda.io/) | For environment management |
+| Vulkan driver | Required by ManiSkill for rendering (see Vulkan note below) |
+
+---
+
+## Cloning
+
+Clone only this repository (no submodules needed):
+
+```bash
+git clone <this-repo-url>
+cd dreamerv3-maniskill-hab
+```
+
+`ManiSkill/` and `mshab/` will be cloned automatically when you run
+`install.sh` in the next step.
+
+If you prefer to clone them manually before running the script:
+
+```bash
+git clone https://github.com/haosulab/ManiSkill.git
+git clone https://github.com/arth-shukla/mshab.git
+```
+
+Both folders must be placed directly inside the repository root.
+
+---
+
+## Installation
+
+Run the provided script from the repository root:
+
+```bash
+bash install.sh
+```
+
+The script performs the following steps in order:
+
+| Step | What it does |
+|---|---|
+| 1 | Creates a conda environment named `dreamer` with Python 3.11 |
+| 2 | Clones `ManiSkill/` from `https://github.com/haosulab/ManiSkill.git` (skips if already present) |
+| 3 | Clones `mshab/` from `https://github.com/arth-shukla/mshab.git` (skips if already present) |
+| 4 | Copies `tdmpc2/` → `ManiSkill/examples/baselines/tdmpc2/`, then deletes root `tdmpc2/` |
+| 5 | Installs PyTorch with CUDA 12.1 |
+| 6 | Installs ManiSkill3 from the local clone (`pip install -e ManiSkill`) |
+| 7 | Reminds you to install Vulkan (cannot be automated — see note below) |
+| 8 | Installs DreamerV3 Python dependencies (`requirements.txt`) including JAX CUDA 12 |
+| 9 | Installs the DreamerV3 package (`pip install -e .`) |
+| 10 | Installs ManiSkill-HAB from the local clone (`pip install -e mshab`) |
+
+**Vulkan** must be installed separately on your system. On a headless server:
+
+```bash
+sudo apt-get install -y libvulkan1 vulkan-tools
+vulkaninfo --summary   # verify
+```
+
+Full Vulkan setup guide:
+https://maniskill.readthedocs.io/en/latest/user_guide/getting_started/installation.html#vulkan
+
+---
+
+## Running DreamerV3 on ManiSkill tasks (RGB)
+
+### Command format
+
+```bash
+python dreamerv3/main.py \
+  --logdir ~/logdir/dreamer/{timestamp} \
+  --configs maniskill_rgb \
+  --task maniskill_<ENV_ID> \
+  --logger.wandb_project <your-project> \
+  --logger.wandb_entity  <your-entity> \
+  --logger.wandb_name    dreamerv3-<ENV_ID>-rgb-42
+```
+
+Replace `<ENV_ID>` with any task ID from the tables below,
+e.g. `--task maniskill_PickCube-v1`.
+
+To continue a stopped run, reuse the same `--logdir`.
+
+### What `maniskill_rgb` sets
+
+| Config key | Value | Meaning |
+|---|---|---|
+| `env.maniskill.obs_mode` | `rgb` | RGB pixel observations from onboard camera sensors |
+| `env.maniskill.image_size` | `128` | Camera resolution — 128 × 128 pixels per sensor |
+| `env.maniskill.num_envs` | `32` | Parallel GPU environments batched in one call |
+| `env.maniskill.sim_backend` | `gpu` | PhysX GPU-accelerated simulation |
+| `env.maniskill.control_mode` | `pd_joint_delta_pos` | Joint-space delta position control |
+| `env.maniskill.num_frames` | `1` | No frame stacking — 3-channel RGB to CNN encoder |
+| `batch_size` | `8` | Small batch due to large `[N, 128, 128, 3]` tensors |
+| `replay.size` | `100000` | Compact replay buffer (pixel storage is expensive) |
+| `run.train_ratio` | `128` | Gradient steps per environment step |
+| `run.steps` | `4e6` | Total environment steps |
+| `jax.prealloc` | `false` | JAX does not preallocate VRAM — required to share GPU with ManiSkill |
+
+Any key can be overridden from the command line, e.g.:
+
+```bash
+--env.maniskill.num_envs 16 --env.maniskill.image_size 64
+```
+
+### Model size presets
+
+Combine a size preset with the config to scale the world model:
+
+```bash
+--configs maniskill_rgb size25m   # ~25M parameters (default for maniskill_rgb)
+--configs maniskill_rgb size50m   # ~50M parameters
+--configs maniskill_rgb size100m  # ~100M parameters
+```
+
+---
+
+## Available ManiSkill tasks
+
+All tasks below work with `--task maniskill_<ENV_ID>`.
+
+### Tabletop manipulation (Panda robot)
+
+| ENV_ID | Description |
+|---|---|
+| `PickCube-v1` | Pick a red cube and lift it to a target height |
+| `PushCube-v1` | Push a cube to a goal position on the table |
+| `StackCube-v1` | Stack a red cube on top of a green cube |
+| `StackPyramid-v1` | Stack three cubes into a pyramid |
+| `PokeCube-v1` | Poke a cube through a target hole |
+| `PullCube-v1` | Pull a cube towards the robot |
+| `PullCubeTool-v1` | Use a T-shaped tool to pull a cube |
+| `PlaceSphere-v1` | Place a sphere into a bowl |
+| `RollBall-v1` | Roll a ball to a goal position |
+| `PushT-v1` | Push a T-shaped block to a target pose |
+| `LiftPegUpright-v1` | Reorient a peg to stand upright |
+| `PegInsertionSide-v1` | Insert a peg into a box from the side |
+| `PlugCharger-v1` | Insert a charger plug into a socket |
+| `TwoRobotPickCube-v1` | Two Pandas cooperatively pick a cube |
+| `TwoRobotStackCube-v1` | Two Pandas cooperatively stack cubes |
+| `PickSingleYCB-v1` | Pick one of many YCB household objects *(needs YCB assets — see below)* |
+
+> `PickSingleYCB-v1` requires the YCB asset pack:
+> ```bash
+> python -m mani_skill.utils.download_asset ycb
+> ```
+
+### Mobile manipulation (Unitree G1 / H1 humanoid)
+
+| ENV_ID | Description |
+|---|---|
+| `UnitreeG1TransportBox-v1` | G1 humanoid transports a box across the scene |
+| `UnitreeG1PlaceAppleInBowl-v1` | G1 humanoid places an apple in a bowl |
+| `UnitreeG1Stand-v1` | G1 humanoid balance / stand task |
+| `UnitreeH1Stand-v1` | H1 humanoid balance / stand task |
+| `OpenCabinetDoor-v1` | Mobile manipulator opens a cabinet door |
+
+### Locomotion / classical control
+
+| ENV_ID | Description |
+|---|---|
+| `MS-CartpoleBalance-v1` | Classic cartpole balance |
+| `MS-CartpoleSwingUp-v1` | Cartpole swing-up from hanging |
+| `MS-AntWalk-v1` | Ant quadruped walks forward |
+| `MS-AntRun-v1` | Ant quadruped runs forward |
+| `MS-HopperStand-v1` | Hopper stands upright |
+| `MS-HopperHop-v1` | Hopper hops forward |
+| `MS-HumanoidStand-v1` | Humanoid stands upright |
+| `MS-HumanoidWalk-v1` | Humanoid walks forward |
+| `MS-HumanoidRun-v1` | Humanoid runs forward |
+| `MS-HumanoidStandHard-v1` | Humanoid stand (harder variant) |
+| `MS-HumanoidWalkHard-v1` | Humanoid walk (harder variant) |
+| `MS-HumanoidRunHard-v1` | Humanoid run (harder variant) |
+
+### Quadruped
+
+| ENV_ID | Description |
+|---|---|
+| `AnymalC-Reach-v1` | AnymalC reaches a target position |
+| `AnymalC-Spin-v1` | AnymalC spins in place |
+| `UnitreeGo2-Reach-v1` | Unitree Go2 reaches a target position |
+
+### Dexterity
+
+| ENV_ID | Description |
+|---|---|
+| `RotateSingleObjectInHandLevel0-v1` | In-hand object rotation — easiest |
+| `RotateSingleObjectInHandLevel1-v1` | In-hand object rotation — harder |
+| `RotateValveLevel0-v1` | Rotate a valve — level 0 |
+| `RotateValveLevel1-v1` | Rotate a valve — level 1 |
+| `RotateValveLevel2-v1` | Rotate a valve — level 2 |
+| `RotateValveLevel3-v1` | Rotate a valve — level 3 |
+| `RotateValveLevel4-v1` | Rotate a valve — level 4 |
+
+---
+
+## Running DreamerV3 on ManiSkill-HAB tasks
+
+### Additional setup — download assets and dataset
+
+MS-HAB requires the ReplicaCAD apartment scenes and the HAB dataset.
+
+**1. Download simulation assets** (ReplicaCAD scenes, ~few GB):
+
+```bash
+# Default install path: ~/.maniskill/data
+# To change: export MS_ASSET_DIR=/your/path
+
+python -m mani_skill.utils.download_asset ycb
+python -m mani_skill.utils.download_asset ReplicaCAD
+python -m mani_skill.utils.download_asset ReplicaCADRearrange
+```
+
+**2. Download the HAB rearrangement dataset** (~490 GB total, HuggingFace):
+
+Download only the task splits you plan to use:
+
+```bash
+export MS_ASSET_DIR="~/.maniskill"
+export MSHAB_DATASET_DIR="$MS_ASSET_DIR/data/scene_datasets/replica_cad_dataset/rearrange-dataset"
+
+huggingface-cli login   # authenticate once
+
+# Choose one or more:
+huggingface-cli download --repo-type dataset arth-shukla/MS-HAB-TidyHouse        --local-dir "$MSHAB_DATASET_DIR/tidy_house"
+huggingface-cli download --repo-type dataset arth-shukla/MS-HAB-PrepareGroceries  --local-dir "$MSHAB_DATASET_DIR/prepare_groceries"
+huggingface-cli download --repo-type dataset arth-shukla/MS-HAB-SetTable          --local-dir "$MSHAB_DATASET_DIR/set_table"
+```
+
+Alternatively generate the dataset locally (slower depending on bandwidth):
+
+```bash
+bash mshab/scripts/gen_dataset.sh
+```
+
+### Available MS-HAB environments
+
+| ENV_ID | Description | Episode steps | Training rewards |
+|---|---|---|---|
+| `PickSubtaskTrain-v0` | Fetch robot picks a target YCB object | 200 | Dense + normalised |
+| `PlaceSubtaskTrain-v0` | Fetch robot places held object at goal | 200 | Dense + normalised |
+| `OpenSubtaskTrain-v0` | Fetch robot opens a drawer or cabinet door | 200 | Dense + normalised |
+| `CloseSubtaskTrain-v0` | Fetch robot closes a drawer or cabinet door | 200 | Dense + normalised |
+| `NavigateSubtaskTrain-v0` | Fetch robot navigates to a goal pose | 200 | Dense + normalised |
+| `SequentialTask-v0` | Full long-horizon task (Pick → Place → …) — **evaluation only**, no rewards | — | None |
+
+All subtask training environments use the **Fetch** mobile manipulator robot,
+precomputed spawn states from the downloaded dataset, and `pd_joint_delta_pos`
+control.
+
+### Command
+
+> **Note:** MS-HAB task IDs are registered by `import mshab.envs`. The
+> `embodied/envs/maniskill.py` wrapper currently only imports `mani_skill.envs`.
+> To use MS-HAB tasks you need to add `import mshab.envs` on the line after
+> `import mani_skill.envs` in that file (one-line change — tell me to do this
+> if you want).
+
+```bash
+python dreamerv3/main.py \
+  --logdir ~/logdir/dreamer/{timestamp} \
+  --configs maniskill_rgb \
+  --task maniskill_PickSubtaskTrain-v0 \
+  --env.maniskill.control_mode pd_joint_delta_pos \
+  --logger.wandb_project <your-project> \
+  --logger.wandb_entity  <your-entity> \
+  --logger.wandb_name    dreamerv3-mshab-pick-rgb-42
+```
+
+Replace `PickSubtaskTrain-v0` with any ENV_ID from the table above.
+
+### Passing task plans and spawn data
+
+MS-HAB subtask environments require task plan files and precomputed spawn data
+at construction time. Pass them by editing the `make_kwargs` block in
+`embodied/envs/maniskill.py` before the `gym.make(...)` call:
+
+```python
+from mani_skill import ASSET_DIR
+from mshab.envs.planner import plan_data_from_file
+
+REARRANGE_DIR = ASSET_DIR / "scene_datasets/replica_cad_dataset/rearrange-dataset"
+task    = "tidy_house"   # "tidy_house" | "prepare_groceries" | "set_table"
+subtask = "pick"         # "pick" | "place" | "open" | "close" | "navigate"
+split   = "train"        # "train" | "val"
+
+plan_data    = plan_data_from_file(
+    REARRANGE_DIR / "task_plans" / task / subtask / split / "all.json"
+)
+spawn_data_fp = REARRANGE_DIR / "spawn_data" / task / subtask / split / "spawn_data.pt"
+
+# Add to make_kwargs:
+# task_plans=plan_data.plans,
+# scene_builder_cls=plan_data.dataset,
+# spawn_data_fp=spawn_data_fp,
+```
+
+---
+
+## Viewing results
+
+Scalar metrics are written as JSONL to the log directory. To view interactively:
+
+```bash
+pip install -U scope
+python -m scope.viewer --basedir ~/logdir --port 8000
+```
+
+WandB metrics (when enabled) include `episode/score`,
+`epstats/log/success_once`, `epstats/log/success_at_end`,
+and `epstats/log/fail_once`.
+
+---
+
+## Sequential Training and Transfer Evaluation
+
+This feature trains a DreamerV3 agent sequentially on a set of tasks, then
+fine-tunes on a new task starting from the pretrained checkpoint. The goal is
+to test whether pretraining on Phase 1 tasks accelerates learning on the new
+task and to measure how much the agent forgets Phase 1 tasks after Phase 2.
+
+### Pattern
+
+```
+Phase 1:  TaskA → ckpt_A → TaskB (from ckpt_A) → ckpt_B → ... → ckpt_N
+Phase 2a: TaskNew (from ckpt_N)       ← pretrained branch
+Phase 2b: TaskNew (from scratch)      ← baseline branch (optional)
+Eval:     pretrained checkpoint evaluated on {TaskA … TaskN, TaskNew}
+```
+
+Phases 2a and 2b both log eval metrics during training via the existing
+`evalfn` in `train.py`. Overlapping their W&B runs under the same group shows
+the transfer advantage directly on the x-axis of training steps.
+
+### Compatibility requirement
+
+All Phase 1 tasks **and** the Phase 2 task must share the **same obs/act
+space** — same robot, same `control_mode`, same `obs_mode`. If state
+dimensions differ between tasks, `eval_multitask.py` will skip incompatible
+tasks with a warning.
+
+Recommended task groups:
+- **ManiSkill-HAB subtasks** — all use the Fetch robot + `pd_joint_delta_pos`
+- **Panda tabletop tasks** — tasks that happen to share the same state dim
+
+### Files (all inside `sequential/`)
+
+```
+sequential/
+├── train_sequential.py   # orchestrates all phases, calls eval_multitask.py
+├── eval_multitask.py     # loads a checkpoint, evals on each task, prints table
+└── config.yaml           # config file for the pipeline
+```
+
+No existing files are modified. All sequential training logs are written under
+`~/logdir/sequential/` (configurable), kept separate from normal DreamerV3
+training logs which go to `~/logdir/dreamer/`.
+
+### Setup
+
+Edit `sequential/config.yaml` to define your tasks and steps:
+
+```yaml
+logdir_base: ~/logdir/sequential/run1   # separate from ~/logdir/dreamer/
+
+dreamer_configs:
+  - maniskill_rgb
+
+phase1_tasks:
+  - PickCube-v1
+  - PushCube-v1
+  - StackCube-v1
+
+phase2_task: PlugCharger-v1
+
+steps_per_phase1_task: 2_000_000
+phase2_steps:          2_000_000
+
+run_baseline: false    # set true or use --run_baseline flag
+
+eval_episodes: 5
+eval_envs: 4
+
+extra_flags:           # passed verbatim to dreamerv3/main.py for every run
+  - --logger.wandb_project
+  - my-project
+  - --logger.wandb_group
+  - sequential_run1
+```
+
+### Run (from repo root)
+
+```bash
+# Sequential training without baseline
+python sequential/train_sequential.py --config sequential/config.yaml
+
+# With baseline (also trains Phase 2 from scratch for comparison)
+python sequential/train_sequential.py --config sequential/config.yaml --run_baseline
+```
+
+`train_sequential.py` launches each DreamerV3 training run as a **separate
+subprocess**. This gives each phase a clean JAX/CUDA/ManiSkill state and
+allows the pipeline to be interrupted and resumed — re-running the script
+will skip phases whose logdir already exists (DreamerV3 auto-resumes from
+checkpoint if the logdir is present).
+
+### Logdir layout
+
+```
+~/logdir/sequential/run1/          ← separate from ~/logdir/dreamer/
+├── phase1/
+│   ├── PickCube-v1/    ← full DreamerV3 logdir (metrics.jsonl, ckpt/, config.yaml)
+│   ├── PushCube-v1/    ← loaded PickCube-v1 checkpoint, trained on PushCube-v1
+│   └── StackCube-v1/   ← loaded PushCube-v1 checkpoint — final Phase 1 checkpoint
+├── phase2/
+│   ├── pretrained/     ← loaded Phase 1 final ckpt, trained on PlugCharger-v1
+│   └── baseline/       ← trained on PlugCharger-v1 from scratch (if --run_baseline)
+└── eval/
+    ├── pretrained/
+    │   └── results.json   ← per-task metrics for pretrained checkpoint
+    └── baseline/
+        └── results.json   ← per-task metrics for baseline checkpoint
+```
+
+### Standalone evaluation (from repo root)
+
+You can run `eval_multitask.py` independently on any checkpoint:
+
+```bash
+python sequential/eval_multitask.py \
+  --checkpoint ~/logdir/sequential/run1/phase2/pretrained/ckpt \
+  --train_task PlugCharger-v1 \
+  --tasks PickCube-v1 PushCube-v1 StackCube-v1 PlugCharger-v1 \
+  --configs maniskill_rgb \
+  --episodes 5 \
+  --eval_envs 4 \
+  --logdir ~/logdir/sequential/run1/eval/pretrained \
+  --wandb_project my-project
+```
+
+`--train_task` must be the task the checkpoint was last trained on — it sets
+the obs/act space the agent expects. `--tasks` is the list to evaluate; any
+task whose obs/act space does not match is skipped with a warning.
+
+The script prints a summary table and saves `results.json`:
+
+```
+----------------------------------------------------------------
+Task                            success_once        return
+----------------------------------------------------------------
+PickCube-v1                     0.82                0.63
+PushCube-v1                     0.74                0.57
+StackCube-v1                    0.61                0.44
+PlugCharger-v1                  0.55                0.39
+----------------------------------------------------------------
+```
+
+---
+
+## Citation
+
+```bibtex
 @article{hafner2025dreamerv3,
   title={Mastering diverse control tasks through world models},
   author={Hafner, Danijar and Pasukonis, Jurgis and Ba, Jimmy and Lillicrap, Timothy},
   journal={Nature},
-  pages={1--7},
-  year={2025},
-  publisher={Nature Publishing Group}
+  year={2025}
+}
+
+@article{taomaniskill3,
+  title={ManiSkill3: GPU Parallelized Robotics Simulation and Rendering for Generalizable Embodied AI},
+  author={Stone Tao and Fanbo Xiang and Arth Shukla and others},
+  journal={Robotics: Science and Systems},
+  year={2025}
+}
+
+@inproceedings{shukla2025mshab,
+  title={ManiSkill-HAB: A Benchmark for Low-Level Manipulation in Home Rearrangement Tasks},
+  author={Shukla, Arth and Tao, Stone and Su, Hao},
+  booktitle={ICLR},
+  year={2025}
 }
 ```
-
-To learn more:
-
-- [Research paper][paper]
-- [Project website][website]
-- [Twitter summary][tweet]
-
-## DreamerV3
-
-DreamerV3 learns a world model from experiences and uses it to train an actor
-critic policy from imagined trajectories. The world model encodes sensory
-inputs into categorical representations and predicts future representations and
-rewards given actions.
-
-![DreamerV3 Method Diagram](https://user-images.githubusercontent.com/2111293/217355673-4abc0ce5-1a4b-4366-a08d-64754289d659.png)
-
-DreamerV3 masters a wide range of domains with a fixed set of hyperparameters,
-outperforming specialized methods. Removing the need for tuning reduces the
-amount of expert knowledge and computational resources needed to apply
-reinforcement learning.
-
-![DreamerV3 Benchmark Scores](https://github.com/danijar/dreamerv3/assets/2111293/0fe8f1cf-6970-41ea-9efc-e2e2477e7861)
-
-Due to its robustness, DreamerV3 shows favorable scaling properties. Notably,
-using larger models consistently increases not only its final performance but
-also its data-efficiency. Increasing the number of gradient steps further
-increases data efficiency.
-
-![DreamerV3 Scaling Behavior](https://user-images.githubusercontent.com/2111293/217356063-0cf06b17-89f0-4d5f-85a9-b583438c98dd.png)
-
-# Instructions
-
-The code has been tested on Linux and Mac and requires Python 3.11+.
-
-## Docker
-
-You can either use the provided `Dockerfile` that contains instructions or
-follow the manual instructions below.
-
-## Manual
-
-Install [JAX][jax] and then the other dependencies:
-
-```sh
-pip install -U -r requirements.txt
-```
-
-Training script:
-
-```sh
-python dreamerv3/main.py \
-  --logdir ~/logdir/dreamer/{timestamp} \
-  --configs crafter \
-  --run.train_ratio 32
-```
-
-To reproduce results, train on the desired task using the corresponding config,
-such as `--configs atari --task atari_pong`.
-
-View results:
-
-```sh
-pip install -U scope
-python -m scope.viewer --basedir ~/logdir --port 8000
-```
- python main.py   --dataset ogb_molpcba_grouped   --method fedavg   --backbone gin_mol   --scenario domain-il   --num-tasks 25   --data-root /root/projects/FCL_copy/data   --output-root /root/projects/FCL_copy/outputs   --rounds-per-task 100   --batch-size 256   --eval-batch-size 256   --lr 0.005
-
-Scalar metrics are also writting as JSONL files.
-
-# Tips
-
-- All config options are listed in `dreamerv3/configs.yaml` and you can
-  override them as flags from the command line.
-- The `debug` config block reduces the network size, batch size, duration
-  between logs, and so on for fast debugging (but does not learn a good model).
-- By default, the code tries to run on GPU. You can switch to CPU or TPU using
-  the `--jax.platform cpu` flag.
-- You can use multiple config blocks that will override defaults in the
-  order they are specified, for example `--configs crafter size50m`.
-- By default, metrics are printed to the terminal, appended to a JSON lines
-  file, and written as Scope summaries. Other outputs like WandB and
-  TensorBoard can be enabled in the training script.
-- If you get a `Too many leaves for PyTreeDef` error, it means you're
-  reloading a checkpoint that is not compatible with the current config. This
-  often happens when reusing an old logdir by accident.
-- If you are getting CUDA errors, scroll up because the cause is often just an
-  error that happened earlier, such as out of memory or incompatible JAX and
-  CUDA versions. Try `--batch_size 1` to rule out an out of memory error.
-- Many environments are included, some of which require installing additional
-  packages. See the `Dockerfile` for reference.
-- To continue stopped training runs, simply run the same command line again and
-  make sure that the `--logdir` points to the same directory.
-
-# Disclaimer
-
-This repository contains a reimplementation of DreamerV3 based on the open
-source DreamerV2 code base. It is unrelated to Google or DeepMind. The
-implementation has been tested to reproduce the official results on a range of
-environments.
-
-[jax]: https://github.com/google/jax#pip-installation-gpu-cuda
-[paper]: https://arxiv.org/pdf/2301.04104
-[website]: https://danijar.com/dreamerv3
-[tweet]: https://twitter.com/danijarh/status/1613161946223677441

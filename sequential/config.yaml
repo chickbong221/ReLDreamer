@@ -1,0 +1,55 @@
+# Sequential pretraining config for DreamerV3 + ManiSkill
+# Run (from repo root):
+#   python sequential/train_sequential.py --config sequential/config.yaml
+#   python sequential/train_sequential.py --config sequential/config.yaml --run_baseline
+
+# ── Output directories ──────────────────────────────────────────────────────
+# Logs are written under ~/logdir/sequential/ to keep them separate from
+# normal DreamerV3 training logs (which go to ~/logdir/dreamer/ by default).
+logdir_base: ~/logdir/sequential/run1
+
+# ── DreamerV3 config ────────────────────────────────────────────────────────
+# Passed verbatim as --configs to dreamerv3/main.py for every training run.
+dreamer_configs:
+  - maniskill_rgb
+
+# ── Phase 1: sequential pretraining tasks ───────────────────────────────────
+# Tasks are trained one after another. Each run loads the previous checkpoint.
+# All tasks MUST share the same obs/act space (same robot + control_mode).
+# Recommended: ManiSkill-HAB subtasks (all use Fetch + pd_joint_delta_pos).
+phase1_tasks:
+  - PickCube-v1
+  - PushCube-v1
+  - StackCube-v1
+
+# Steps to train on each Phase 1 task.
+steps_per_phase1_task: 2_000_000
+
+# ── Phase 2: transfer task ──────────────────────────────────────────────────
+# Trained starting from the Phase 1 final checkpoint (pretrained branch).
+# Must share the same obs/act space as the Phase 1 tasks.
+phase2_task: PlugCharger-v1
+
+# Steps for Phase 2 training.
+phase2_steps: 2_000_000
+
+# Whether to also train Phase 2 from scratch for comparison (default: false).
+# Can also be enabled at runtime with --run_baseline.
+run_baseline: false
+
+# ── Post-training evaluation ─────────────────────────────────────────────────
+eval_episodes: 5   # episodes per task
+eval_envs: 4       # parallel eval envs per task
+
+# ── W&B (optional) ──────────────────────────────────────────────────────────
+# Uncomment to enable W&B logging for post-training evaluation results.
+# wandb_project: my-project
+# wandb_entity:  my-entity
+
+# ── Extra flags forwarded to dreamerv3/main.py for every training run ────────
+# Each flag and its value must be a separate list item.
+extra_flags:
+  - --logger.wandb_project
+  - my-project
+  - --logger.wandb_group
+  - sequential_run1
