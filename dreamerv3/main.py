@@ -31,7 +31,7 @@ def main(argv=None):
   for name in parsed.configs:
     config = config.update(configs[name])
   config = elements.Flags(config).parse(other)
-  config = config.update(logdir=(
+  config = config.update(logdir=os.path.expanduser(
       config.logdir.format(timestamp=elements.timestamp())))
 
   if 'JOB_COMPLETION_INDEX' in os.environ:

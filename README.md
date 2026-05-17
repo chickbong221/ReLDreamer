@@ -48,6 +48,12 @@ e.g. `--task maniskill_PickCube-v1`.
 
 To continue a stopped run, reuse the same `--logdir`.
 
+For example, if you use letuan wandb and have logged in
+```bash
+python dreamerv3/main.py --configs maniskill_rgb --task maniskill_PickCube-v1
+```
+
+
 ### What `maniskill_rgb` sets
 
 | Config key | Value | Meaning |
