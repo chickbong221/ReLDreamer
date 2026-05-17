@@ -13,6 +13,7 @@ removes the root-level folder to keep the working tree clean.
 Run the provided script from the repository root:
 
 ```bash
+cd dreamerv3-maniskill-hab 
 bash install.sh
 ```
 
