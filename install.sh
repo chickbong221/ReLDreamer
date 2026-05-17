@@ -54,7 +54,7 @@ fi
 
 # ── 4. Install PyTorch (CUDA 12.1) ──────────────────────────────────────────
 # See https://pytorch.org/get-started/locally/ for other CUDA versions.
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 
 # ── 5. Install ManiSkill3 ───────────────────────────────────────────────────
 # Installing from the local clone ensures the exact version used in this repo.
