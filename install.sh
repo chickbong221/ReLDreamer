@@ -8,6 +8,12 @@ set -e
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── 0. Conda environment ────────────────────────────────────────────────────
+# Source conda's shell hook so that `conda activate` works inside this script.
+# This is necessary because conda activate is only available in interactive
+# shells by default; bash scripts need the hook loaded explicitly.
+CONDA_BASE="$(conda info --base)"
+source "${CONDA_BASE}/etc/profile.d/conda.sh"
+
 conda create -n dreamer python=3.11 -y
 conda activate dreamer
 
