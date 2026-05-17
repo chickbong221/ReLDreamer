@@ -54,31 +54,6 @@ removes the root-level folder to keep the working tree clean.
 | [conda](https://docs.conda.io/) | For environment management |
 | Vulkan driver | Required by ManiSkill for rendering (see Vulkan note below) |
 
----
-
-## Cloning
-
-Clone only this repository (no submodules needed):
-
-```bash
-git clone <this-repo-url>
-cd dreamerv3-maniskill-hab
-```
-
-`ManiSkill/` and `mshab/` will be cloned automatically when you run
-`install.sh` in the next step.
-
-If you prefer to clone them manually before running the script:
-
-```bash
-git clone https://github.com/haosulab/ManiSkill.git
-git clone https://github.com/arth-shukla/mshab.git
-```
-
-Both folders must be placed directly inside the repository root.
-
----
-
 ## Installation
 
 Run the provided script from the repository root:
