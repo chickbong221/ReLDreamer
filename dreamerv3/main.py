@@ -180,20 +180,37 @@ def make_logger(config):
           exp, run, proj, config.logger.user, config.flat))
 
     elif output == 'wandb':
-      # Keep your custom W&B init matching TD-MPC2 naming convention.
+      import os
       import wandb as _wandb
       lc = config.logger
-      _wandb.init(
-          project=lc.get('wandb_project', 'dreamerv3'),
-          entity=lc.get('wandb_entity') or None,
-          name=lc.get('wandb_name') or '/'.join(logdir.split('/')[-4:]),
-          group=lc.get('wandb_group') or None,
-          dir=logdir,
-          config=dict(config),
-          resume='allow',
-      )
+      run_name = lc.get('wandb_name') or '/'.join(logdir.split('/')[-4:])
+      # Configure via env vars so WandBOutput's own wandb.init() call picks
+      # them up. Calling wandb.init() ourselves first then letting WandBOutput
+      # call it again triggers "run is active" warnings.
+      os.environ['WANDB_PROJECT'] = lc.get('wandb_project', 'dreamerv3')
+      if lc.get('wandb_entity'):
+        os.environ['WANDB_ENTITY'] = lc.get('wandb_entity')
+      os.environ['WANDB_NAME'] = run_name
+      if lc.get('wandb_group'):
+        os.environ['WANDB_RUN_GROUP'] = lc.get('wandb_group')
+      os.environ['WANDB_RESUME'] = 'allow'
+      os.environ['WANDB_DIR'] = logdir
       outputs.append(elements.logger.WandBOutput(
           '/'.join(logdir.split('/')[-4:])))
+      # If WandBOutput started the run, attach the full config.
+      # If it didn't call wandb.init() itself, start the run here.
+      if _wandb.run is None:
+        _wandb.init(
+            project=lc.get('wandb_project', 'dreamerv3'),
+            entity=lc.get('wandb_entity') or None,
+            name=run_name,
+            group=lc.get('wandb_group') or None,
+            dir=logdir,
+            config=dict(config),
+            resume='allow',
+        )
+      else:
+        _wandb.run.config.update(dict(config), allow_val_change=True)
 
     elif output == 'scope':
       outputs.append(elements.logger.ScopeOutput(elements.Path(logdir)))

@@ -229,6 +229,11 @@ python dreamerv3/main.py \
 Replace `PickSubtaskTrain-v0` with any training ENV_ID above, and
 `mshab_task` with any of `tidy_house`, `prepare_groceries`, or `set_table`.
 
+For example, if you have logged in letuan wandb
+```bash
+python dreamerv3/main.py   --configs maniskill_rgb   --task maniskill_PickSubtaskTrain-v0   --env.maniskill.control_mode pd_joint_delta_pos   --env.maniskill.mshab_task tidy_house   --env.maniskill.mshab_split train    --logger.wandb_name    dreamerv3-mshab-pick-rgb-42
+```
+
 **`mshab_split`** is `train` by default; set to `val` to use the validation
 scenes (21 scenes vs 63 for train).
 

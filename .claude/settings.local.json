@@ -10,7 +10,9 @@
       "Bash(xargs -I{} basename {} .py)",
       "Bash(xargs grep *)",
       "Bash(python -c \"import sys; sys.path.insert\\(0,'E:/Code/dreamerv3-maniskill-hab'\\); import elements; import inspect; print\\(inspect.getsource\\(elements.Checkpoint\\)\\)\")",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import elements; print\\(elements.__file__\\)\")",
+      "Bash(pip show *)"
     ]
   }
 }
