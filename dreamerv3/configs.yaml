@@ -47,6 +47,8 @@ defaults:
       image_size: 64
       control_mode: pd_ee_delta_pos
       num_frames: 1
+      mshab_task: 'none'
+      mshab_split: train
 
   replay:
     size: 5e6

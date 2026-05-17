@@ -73,7 +73,7 @@ class ManiSkill(embodied.Env):
     if control_mode is not None:
       make_kwargs['control_mode'] = control_mode
 
-    if mshab_task is not None:
+    if mshab_task is not None and mshab_task != 'none':
       import mshab.envs  # noqa: F401 registers mshab tasks
       from mani_skill import ASSET_DIR
       from mshab.envs.planner import plan_data_from_file
