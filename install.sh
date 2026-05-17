@@ -46,8 +46,7 @@ if [ -d "$TDMPC2_SRC" ]; then
   echo ">>> Replacing ManiSkill/examples/baselines/tdmpc2 with patched version..."
   rm -rf "$TDMPC2_DST"
   cp -r "$TDMPC2_SRC" "$TDMPC2_DST"
-  rm -rf "$TDMPC2_SRC"
-  echo ">>> tdmpc2/ moved into ManiSkill and removed from repo root."
+  echo ">>> tdmpc2/ moved into ManiSkill."
 else
   echo ">>> tdmpc2/ not found at repo root — skipping (already applied?)."
 fi
