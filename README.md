@@ -1,39 +1,5 @@
 # DreamerV3 + ManiSkill (GPU Parallel Rendering)
 
-A fork of [DreamerV3](https://arxiv.org/pdf/2301.04104) extended to support
-[ManiSkill3](https://github.com/haosulab/ManiSkill) GPU-vectorised environments,
-including [ManiSkill-HAB](https://arxiv.org/abs/2412.13211) home-rearrangement tasks.
-
----
-
-## What this fork adds
-
-| File | Purpose |
-|---|---|
-| `embodied/envs/maniskill.py` | GPU-batched env wrapper around `ManiSkillVectorEnv`. Supports `rgb` observation mode with optional frame stacking. Exposes episode metrics (`success_once`, `success_at_end`, `fail_once`). |
-| `dreamerv3/configs.yaml` | `maniskill_rgb` config block with tuned hyperparameters for GPU pixel-based training. |
-| `dreamerv3/main.py` | Monkey-patches `embodied.Driver` so the single batched GPU env is used directly instead of multiple subprocesses. Sets `XLA_PYTHON_CLIENT_PREALLOCATE=false` and `XLA_PYTHON_CLIENT_MEM_FRACTION=0.4` before JAX initialises so JAX and ManiSkill share the GPU cleanly. |
-
----
-
-## Repository layout
-
-```
-dreamerv3-maniskill-hab/
-├── dreamerv3/          # DreamerV3 agent and configs
-├── embodied/           # Environment wrappers (maniskill.py lives here)
-├── sequential/         # Sequential training pipeline (self-contained)
-│   ├── train_sequential.py
-│   ├── eval_multitask.py
-│   └── config.yaml
-├── tdmpc2/             # Patched TD-MPC2 baseline (moved into ManiSkill by install.sh)
-├── ManiSkill/          # ManiSkill3 simulator  ← cloned separately (in .gitignore)
-├── mshab/              # ManiSkill-HAB tasks    ← cloned separately (in .gitignore)
-├── requirements.txt    # DreamerV3 Python deps
-├── install.sh          # One-shot installation script (see below)
-└── README.md
-```
-
 `ManiSkill/` and `mshab/` are **not tracked** by this repository (listed in
 `.gitignore`). They must be cloned separately — `install.sh` does this for
 you automatically.
@@ -61,21 +27,6 @@ Run the provided script from the repository root:
 ```bash
 bash install.sh
 ```
-
-The script performs the following steps in order:
-
-| Step | What it does |
-|---|---|
-| 1 | Creates a conda environment named `dreamer` with Python 3.11 |
-| 2 | Clones `ManiSkill/` from `https://github.com/haosulab/ManiSkill.git` (skips if already present) |
-| 3 | Clones `mshab/` from `https://github.com/arth-shukla/mshab.git` (skips if already present) |
-| 4 | Copies `tdmpc2/` → `ManiSkill/examples/baselines/tdmpc2/`, then deletes root `tdmpc2/` |
-| 5 | Installs PyTorch with CUDA 12.1 |
-| 6 | Installs ManiSkill3 from the local clone (`pip install -e ManiSkill`) |
-| 7 | Reminds you to install Vulkan (cannot be automated — see note below) |
-| 8 | Installs DreamerV3 Python dependencies (`requirements.txt`) including JAX CUDA 12 |
-| 9 | Installs the DreamerV3 package (`pip install -e .`) |
-| 10 | Installs ManiSkill-HAB from the local clone (`pip install -e mshab`) |
 
 **Vulkan** must be installed separately on your system. On a headless server:
 
@@ -129,18 +80,6 @@ Any key can be overridden from the command line, e.g.:
 ```bash
 --env.maniskill.num_envs 16 --env.maniskill.image_size 64
 ```
-
-### Model size presets
-
-Combine a size preset with the config to scale the world model:
-
-```bash
---configs maniskill_rgb size25m   # ~25M parameters (default for maniskill_rgb)
---configs maniskill_rgb size50m   # ~50M parameters
---configs maniskill_rgb size100m  # ~100M parameters
-```
-
----
 
 ## Available ManiSkill tasks
 
@@ -225,9 +164,6 @@ All tasks below work with `--task maniskill_<ENV_ID>`.
 
 ### Setup
 
-MS-HAB for RL requires only the simulation assets — no large demonstration
-dataset download needed.
-
 **1. Install MS-HAB** (if not already done):
 
 ```bash
@@ -306,23 +242,6 @@ has 21. For balanced scene coverage use a multiple of 63 (e.g. 63, 126, 189)
 for train or a multiple of 21 for val. Any other value still works — the
 wrapper disables the scene-balance assertion automatically — but some scenes
 will be sampled more than others.
-
----
-
-## Viewing results
-
-Scalar metrics are written as JSONL to the log directory. To view interactively:
-
-```bash
-pip install -U scope
-python -m scope.viewer --basedir ~/logdir --port 8000
-```
-
-WandB metrics (when enabled) include `episode/score`,
-`epstats/log/success_once`, `epstats/log/success_at_end`,
-and `epstats/log/fail_once`.
-
----
 
 ## Sequential Training and Transfer Evaluation
 
@@ -465,31 +384,4 @@ PushCube-v1                     0.74                0.57
 StackCube-v1                    0.61                0.44
 PlugCharger-v1                  0.55                0.39
 ----------------------------------------------------------------
-```
-
----
-
-## Citation
-
-```bibtex
-@article{hafner2025dreamerv3,
-  title={Mastering diverse control tasks through world models},
-  author={Hafner, Danijar and Pasukonis, Jurgis and Ba, Jimmy and Lillicrap, Timothy},
-  journal={Nature},
-  year={2025}
-}
-
-@article{taomaniskill3,
-  title={ManiSkill3: GPU Parallelized Robotics Simulation and Rendering for Generalizable Embodied AI},
-  author={Stone Tao and Fanbo Xiang and Arth Shukla and others},
-  journal={Robotics: Science and Systems},
-  year={2025}
-}
-
-@inproceedings{shukla2025mshab,
-  title={ManiSkill-HAB: A Benchmark for Low-Level Manipulation in Home Rearrangement Tasks},
-  author={Shukla, Arth and Tao, Stone and Su, Hao},
-  booktitle={ICLR},
-  year={2025}
-}
 ```
