@@ -8,18 +8,6 @@ you automatically.
 `install.sh` copies it into `ManiSkill/examples/baselines/tdmpc2/` and then
 removes the root-level folder to keep the working tree clean.
 
----
-
-## Prerequisites
-
-| Requirement | Notes |
-|---|---|
-| Linux | GPU simulation requires Linux. Windows/Mac support CPU-only. |
-| NVIDIA GPU | CUDA 12 recommended |
-| CUDA 12 toolkit | Must match the JAX and PyTorch wheel versions |
-| [conda](https://docs.conda.io/) | For environment management |
-| Vulkan driver | Required by ManiSkill for rendering (see Vulkan note below) |
-
 ## Installation
 
 Run the provided script from the repository root:
