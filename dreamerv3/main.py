@@ -19,7 +19,6 @@ import numpy as np
 import portal
 import ruamel.yaml as yaml
 
-
 def main(argv=None):
   from .agent import Agent
   [elements.print(line) for line in Agent.banner]
@@ -200,6 +199,7 @@ def make_logger(config):
       # If WandBOutput started the run, attach the full config.
       # If it didn't call wandb.init() itself, start the run here.
       if _wandb.run is None:
+        _wandb.login(key="b1d6eed8871c7668a889ae74a621b5dbd2f3b070")
         _wandb.init(
             project=lc.get('wandb_project', 'dreamerv3'),
             entity=lc.get('wandb_entity') or None,
