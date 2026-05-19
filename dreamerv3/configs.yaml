@@ -270,3 +270,8 @@ maniskill_rgb:
       image_size: 128
       control_mode: pd_joint_delta_pos
       num_frames: 1          # no frame stacking → 3 channels input to CNN
+
+mshab:
+  batch_size: 16
+  run:
+    steps: 10e6
