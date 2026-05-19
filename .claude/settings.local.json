@@ -12,7 +12,10 @@
       "Bash(python -c \"import sys; sys.path.insert\\(0,'E:/Code/dreamerv3-maniskill-hab'\\); import elements; import inspect; print\\(inspect.getsource\\(elements.Checkpoint\\)\\)\")",
       "Bash(python -c ' *)",
       "Bash(python -c \"import elements; print\\(elements.__file__\\)\")",
-      "Bash(pip show *)"
+      "Bash(pip show *)",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, 'E:/Code/dreamerv3-maniskill-hab'\\); import inspect; import embodied; print\\(inspect.getfile\\(embodied.logger.WandBOutput\\)\\)\")",
+      "Bash(python *)",
+      "Bash(python3 -c \"import inspect; from mani_skill.utils.download_asset import download; print\\(inspect.signature\\(download\\)\\)\")"
     ]
   }
 }
