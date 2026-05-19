@@ -95,17 +95,10 @@ python -m dreamerv3.main \
   --configs maniskill_rgb size100m mshab \
   --task maniskill_OpenSubtaskTrain-v0 \
   --env.maniskill.control_mode pd_joint_delta_pos \
-  --env.maniskill.mshab_task tidy_house \
+  --env.maniskill.mshab_task set_table \
   --env.maniskill.mshab_split train \
-  --logger.wandb_name dreamerv3-mshab-open-tidy-house-rgb-42
-
-python -m dreamerv3.main \
-  --configs maniskill_rgb size100m mshab \
-  --task maniskill_OpenSubtaskTrain-v0 \
-  --env.maniskill.control_mode pd_joint_delta_pos \
-  --env.maniskill.mshab_task prepare_groceries \
-  --env.maniskill.mshab_split train \
-  --logger.wandb_name dreamerv3-mshab-open-prepare-groceries-rgb-42
+  --env.maniskill.mshab_obj kitchen_counter \
+  --logger.wandb_name dreamerv3-mshab-open-set-table-kitchen-counter-rgb-42
 
 python -m dreamerv3.main \
   --configs maniskill_rgb size100m mshab \
@@ -113,23 +106,8 @@ python -m dreamerv3.main \
   --env.maniskill.control_mode pd_joint_delta_pos \
   --env.maniskill.mshab_task set_table \
   --env.maniskill.mshab_split train \
-  --logger.wandb_name dreamerv3-mshab-open-set-table-rgb-42
-
-python -m dreamerv3.main \
-  --configs maniskill_rgb size100m mshab \
-  --task maniskill_CloseSubtaskTrain-v0 \
-  --env.maniskill.control_mode pd_joint_delta_pos \
-  --env.maniskill.mshab_task tidy_house \
-  --env.maniskill.mshab_split train \
-  --logger.wandb_name dreamerv3-mshab-close-tidy-house-rgb-42
-
-python -m dreamerv3.main \
-  --configs maniskill_rgb size100m mshab \
-  --task maniskill_CloseSubtaskTrain-v0 \
-  --env.maniskill.control_mode pd_joint_delta_pos \
-  --env.maniskill.mshab_task prepare_groceries \
-  --env.maniskill.mshab_split train \
-  --logger.wandb_name dreamerv3-mshab-close-prepare-groceries-rgb-42
+  --env.maniskill.mshab_obj fridge \
+  --logger.wandb_name dreamerv3-mshab-open-set-table-fridge-rgb-42
 
 python -m dreamerv3.main \
   --configs maniskill_rgb size100m mshab \
@@ -137,7 +115,17 @@ python -m dreamerv3.main \
   --env.maniskill.control_mode pd_joint_delta_pos \
   --env.maniskill.mshab_task set_table \
   --env.maniskill.mshab_split train \
-  --logger.wandb_name dreamerv3-mshab-close-set-table-rgb-42
+  --env.maniskill.mshab_obj kitchen_counter \
+  --logger.wandb_name dreamerv3-mshab-close-set-table-kitchen-counter-rgb-42
+
+python -m dreamerv3.main \
+  --configs maniskill_rgb size100m mshab \
+  --task maniskill_CloseSubtaskTrain-v0 \
+  --env.maniskill.control_mode pd_joint_delta_pos \
+  --env.maniskill.mshab_task set_table \
+  --env.maniskill.mshab_split train \
+  --env.maniskill.mshab_obj fridge \
+  --logger.wandb_name dreamerv3-mshab-close-set-table-fridge-rgb-42
 
 python -m dreamerv3.main \
   --configs maniskill_rgb size100m mshab \

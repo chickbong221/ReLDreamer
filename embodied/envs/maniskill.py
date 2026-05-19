@@ -36,6 +36,7 @@ class ManiSkill(embodied.Env):
       render_mode=None,
       mshab_task=None,
       mshab_split='train',
+      mshab_obj='all',
       **kwargs,
   ):
     import gymnasium as gym
@@ -80,7 +81,7 @@ class ManiSkill(embodied.Env):
       subtask = task.split('SubtaskTrain')[0].lower()
       rearrange_dir = ASSET_DIR / 'scene_datasets/replica_cad_dataset/rearrange'
       plan_data = plan_data_from_file(
-          rearrange_dir / 'task_plans' / mshab_task / subtask / mshab_split / 'all.json'
+          rearrange_dir / 'task_plans' / mshab_task / subtask / mshab_split / f'{mshab_obj}.json'
       )
       make_kwargs['task_plans'] = plan_data.plans
       make_kwargs['scene_builder_cls'] = plan_data.dataset
