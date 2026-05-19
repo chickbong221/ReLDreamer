@@ -275,4 +275,4 @@ maniskill_rgb:
 mshab:
   batch_size: 16
   run:
-    steps: 10e6
+    steps: 20e6
