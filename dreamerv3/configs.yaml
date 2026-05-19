@@ -250,7 +250,7 @@ maniskill_rgb:
   batch_length: 64
   replay_context: 1
   replay:
-    size: 100000        # TD-MPC2 rgb: buffer_size=100_000 (pixels expensive)
+    size: 200000        # TD-MPC2 rgb: buffer_size=100_000 (pixels expensive)
     online: true
     fracs: {uniform: 1.0, priority: 0.0, recency: 0.0}
   jax:
@@ -264,7 +264,7 @@ maniskill_rgb:
   env:
     maniskill:
       use_seed: true
-      num_envs: 64
+      num_envs: 128
       obs_mode: rgb
       sim_backend: gpu
       image_size: 128
