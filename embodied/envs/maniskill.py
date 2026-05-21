@@ -98,6 +98,20 @@ class ManiSkill(embodied.Env):
       # reconfiguration_freq=cfg.eval_reconfiguration_frequency.
       make_kwargs['reconfiguration_freq'] = eval_reconfiguration_frequency
 
+    if sim_backend == 'gpu':
+      sim_config = dict(make_kwargs.get('sim_config') or {})
+      gpu_memory_config = dict(sim_config.get('gpu_memory_config') or {})
+
+      old_collision_stack_size = int(
+          gpu_memory_config.get('collision_stack_size', 0))
+      gpu_memory_config['collision_stack_size'] = max(
+          old_collision_stack_size,
+          8 * 1024 * 1024,
+      )
+
+      sim_config['gpu_memory_config'] = gpu_memory_config
+      make_kwargs['sim_config'] = sim_config
+
     env = gym.make(**make_kwargs)
 
     from embodied.envs.obs_wrappers import NonPrivilegedObsWrapper

@@ -241,17 +241,17 @@ maniskill_rgb:
     envs: 1
     eval_envs: 4
     eval_eps: 1
-    eval_freq: 50000
-    train_ratio: 128.0   # lower than state: CNN encoder adds cost per update
-    steps: 4e6
-    log_every: 120
-    save_every: 600
-    report_every: 300
+    eval_freq: 100000
+    train_ratio: 256.0   # lower than state: CNN encoder adds cost per update
+    steps: 2e6
+    log_every: 720
+    save_every: 10000
+    report_every: 2000
   batch_size: 8        # smaller: [16, 64, 64, 64, 9] RGB tensors are large
   batch_length: 64
   replay_context: 1
   replay:
-    size: 200000        # TD-MPC2 rgb: buffer_size=100_000 (pixels expensive)
+    size: 300000        # TD-MPC2 rgb: buffer_size=100_000 (pixels expensive)
     online: true
     fracs: {uniform: 1.0, priority: 0.0, recency: 0.0}
   jax:
@@ -275,4 +275,4 @@ maniskill_rgb:
 mshab:
   batch_size: 16
   run:
-    steps: 20e6
+    steps: 10e6
