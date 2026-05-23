@@ -1,6 +1,6 @@
 defaults:
 
-  logdir: ~/logdir/{timestamp}
+  logdir: /mnt/data/tuannl/logdir/{timestamp}
   replica: 0
   replicas: 1
   method: name
@@ -247,7 +247,7 @@ maniskill_rgb:
     log_every: 1500
     save_every: 100000
     report_every: 10000
-  batch_size: 8        # smaller: [16, 64, 64, 64, 9] RGB tensors are large
+  batch_size: 16        # smaller: [16, 64, 64, 64, 9] RGB tensors are large
   batch_length: 64
   replay_context: 1
   replay:
