@@ -14,7 +14,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONDA_BASE="$(conda info --base)"
 source "${CONDA_BASE}/etc/profile.d/conda.sh"
 
-conda create -n dreamer python=3.11 -y
+# conda create -n dreamer python=3.11 -y
 conda activate dreamer
 
 # ── 1. Clone ManiSkill3 ─────────────────────────────────────────────────────
@@ -88,7 +88,13 @@ pip install -e "$REPO_ROOT"
 # Registers PickSubtaskTrain-v0, PlaceSubtaskTrain-v0, OpenSubtaskTrain-v0,
 # CloseSubtaskTrain-v0, NavigateSubtaskTrain-v0, and SequentialTask-v0.
 pip install -e "$REPO_ROOT/mshab"
+python -m pip uninstall -y \
+  opencv-python \
+  opencv-contrib-python \
+  opencv-python-headless \
+  opencv-contrib-python-headless
 
+python -m pip install --no-cache-dir opencv-python-headless
 echo ""
 echo ">>> Installation complete."
 echo "    Next steps for ManiSkill-HAB tasks: download assets (see README.md)."
