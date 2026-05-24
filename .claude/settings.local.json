@@ -19,7 +19,9 @@
       "Bash(where python *)",
       "Bash(py -c \"import elements; print\\(elements.__file__\\)\")",
       "Bash(/c/Users/Lenovo/miniconda3/python.exe -c \"import elements; print\\(elements.__file__\\)\")",
-      "Read(//c/Users/Lenovo/**)"
+      "Read(//c/Users/Lenovo/**)",
+      "Bash(python3 -c \"import elements; import elements.when; import inspect; print\\(inspect.getsource\\(elements.when.Ratio\\)\\)\")",
+      "Bash(python3 -c \"import elements; print\\(elements.__file__\\)\")"
     ]
   }
 }
