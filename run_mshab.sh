@@ -66,7 +66,7 @@ python -m dreamerv3.main \
   --logdir /mnt/data/$USERNAME/logdir/maniskill/$TIMESTAMP \
   --env.maniskill.control_mode pd_joint_delta_pos \
   --env.maniskill.mshab_task set_table \
-  --logger.wandb_name dreamerv3-mshab-place-set-table-200m
+  --logger.wandb_name dreamerv3-mshab-place-set-table
 
 # python -m dreamerv3.main \
 #   --configs maniskill_rgb mshab \

@@ -64,43 +64,43 @@ python -m dreamerv3.main \
   --configs maniskill_rgb \
   --task maniskill_PushCube-v1 \
   --logdir /mnt/data/$USERNAME/logdir/maniskill/$TIMESTAMP \
-  --logger.wandb_name dreamerv3-PushCube-v1-rgb
+  --logger.wandb_name dreamerv3-PushCube
 
 python -m dreamerv3.main \
   --configs maniskill_rgb \
   --task maniskill_PickCube-v1 \
   --logdir /mnt/data/$USERNAME/logdir/maniskill/$TIMESTAMP \
-  --logger.wandb_name dreamerv3-PickCube-v1-rgb
+  --logger.wandb_name dreamerv3-PickCube
 
 python -m dreamerv3.main \
   --configs maniskill_rgb \
   --task maniskill_StackCube-v1 \
   --logdir /mnt/data/$USERNAME/logdir/maniskill/$TIMESTAMP \
-  --logger.wandb_name dreamerv3-StackCube-v1-rgb
+  --logger.wandb_name dreamerv3-StackCube
 
 python -m dreamerv3.main \
   --configs maniskill_rgb \
   --task maniskill_PegInsertionSide-v1 \
   --logdir /mnt/data/$USERNAME/logdir/maniskill/$TIMESTAMP \
-  --logger.wandb_name dreamerv3-PegInsertionSide-v1-rgb
+  --logger.wandb_name dreamerv3-PegInsertionSide
 
 python -m dreamerv3.main \
   --configs maniskill_rgb \
   --task maniskill_PushT-v1 \
   --logdir /mnt/data/$USERNAME/logdir/maniskill/$TIMESTAMP \
-  --logger.wandb_name dreamerv3-PushT-v1-rgb
+  --logger.wandb_name dreamerv3-PushT
 
 python -m dreamerv3.main \
   --configs maniskill_rgb \
   --task maniskill_AnymalC-Reach-v1 \
   --logdir /mnt/data/$USERNAME/logdir/maniskill/$TIMESTAMP \
-  --logger.wandb_name dreamerv3-AnymalC-Reach-v1-rgb
+  --logger.wandb_name dreamerv3-AnymalC-Reach
 
 python -m dreamerv3.main \
   --configs maniskill_rgb \
   --task maniskill_UnitreeG1TransportBox-v1 \
   --logdir /mnt/data/$USERNAME/logdir/maniskill/$TIMESTAMP \
-  --logger.wandb_name dreamerv3-UnitreeG1TransportBox-v1-rgb
+  --logger.wandb_name dreamerv3-UnitreeG1TransportBox
 
 # Stop GPU monitor
 kill $GPU_MONITOR_PID
