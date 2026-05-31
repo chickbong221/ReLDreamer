@@ -5,8 +5,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
 #SBATCH --time=0
-#SBATCH --output=/home/tuannl/mnt_data/output/%x_%j.out
-#SBATCH --error=/home/tuannl/mnt_data/output/%x_%j.err
+#SBATCH --output=/home/%u/output/%x_%j.out
+#SBATCH --error=/home/%u/output/%x_%j.err
 
 echo "================================="
 echo "Job started on $(hostname)"
