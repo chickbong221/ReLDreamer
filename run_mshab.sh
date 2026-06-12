@@ -69,65 +69,65 @@ python -m dreamerv3.main \
   --env.maniskill.mshab_task set_table \
   --logger.wandb_name dreamerv3-mshab-place-set-table
 
-# python -m dreamerv3.main \
-#   --configs maniskill_rgb mshab \
-#   --task maniskill_OpenSubtaskTrain-v0 \
-#   --logdir $HOME/logdir/maniskill/$TIMESTAMP/open-set-table-kitchen-counter \
-#   --env.maniskill.control_mode pd_joint_delta_pos \
-#   --env.maniskill.mshab_task set_table \
-#   --env.maniskill.mshab_obj kitchen_counter \
-#   --logger.wandb_name dreamerv3-mshab-open-set-table-kitchen-counter
+python -m dreamerv3.main \
+  --configs maniskill_rgb mshab \
+  --task maniskill_OpenSubtaskTrain-v0 \
+  --logdir $HOME/logdir/maniskill/$TIMESTAMP/open-set-table-kitchen-counter \
+  --env.maniskill.control_mode pd_joint_delta_pos \
+  --env.maniskill.mshab_task set_table \
+  --env.maniskill.mshab_obj kitchen_counter \
+  --logger.wandb_name dreamerv3-mshab-open-set-table-kitchen-counter
 
-# python -m dreamerv3.main \
-#   --configs maniskill_rgb mshab \
-#   --task maniskill_OpenSubtaskTrain-v0 \
-#   --logdir $HOME/logdir/maniskill/$TIMESTAMP/open-set-table-fridge \
-#   --env.maniskill.control_mode pd_joint_delta_pos \
-#   --env.maniskill.mshab_task set_table \
-#   --env.maniskill.mshab_obj fridge \
-#   --logger.wandb_name dreamerv3-mshab-open-set-table-fridge
+python -m dreamerv3.main \
+  --configs maniskill_rgb mshab \
+  --task maniskill_OpenSubtaskTrain-v0 \
+  --logdir $HOME/logdir/maniskill/$TIMESTAMP/open-set-table-fridge \
+  --env.maniskill.control_mode pd_joint_delta_pos \
+  --env.maniskill.mshab_task set_table \
+  --env.maniskill.mshab_obj fridge \
+  --logger.wandb_name dreamerv3-mshab-open-set-table-fridge
 
-# python -m dreamerv3.main \
-#   --configs maniskill_rgb mshab \
-#   --task maniskill_CloseSubtaskTrain-v0 \
-#   --logdir $HOME/logdir/maniskill/$TIMESTAMP/close-set-table-kitchen-counter \
-#   --env.maniskill.control_mode pd_joint_delta_pos \
-#   --env.maniskill.mshab_task set_table \
-#   --env.maniskill.mshab_obj kitchen_counter \
-#   --logger.wandb_name dreamerv3-mshab-close-set-table-kitchen-counter
+python -m dreamerv3.main \
+  --configs maniskill_rgb mshab \
+  --task maniskill_CloseSubtaskTrain-v0 \
+  --logdir $HOME/logdir/maniskill/$TIMESTAMP/close-set-table-kitchen-counter \
+  --env.maniskill.control_mode pd_joint_delta_pos \
+  --env.maniskill.mshab_task set_table \
+  --env.maniskill.mshab_obj kitchen_counter \
+  --logger.wandb_name dreamerv3-mshab-close-set-table-kitchen-counter
 
-# python -m dreamerv3.main \
-#   --configs maniskill_rgb size100m mshab \
-#   --task maniskill_CloseSubtaskTrain-v0 \
-#   --logdir $HOME/logdir/maniskill/$TIMESTAMP/close-set-table-fridge \
-#   --env.maniskill.control_mode pd_joint_delta_pos \
-#   --env.maniskill.mshab_task set_table \
-#   --env.maniskill.mshab_obj fridge \
-#   --logger.wandb_name dreamerv3-mshab-close-set-table-fridge
+python -m dreamerv3.main \
+  --configs maniskill_rgb size100m mshab \
+  --task maniskill_CloseSubtaskTrain-v0 \
+  --logdir $HOME/logdir/maniskill/$TIMESTAMP/close-set-table-fridge \
+  --env.maniskill.control_mode pd_joint_delta_pos \
+  --env.maniskill.mshab_task set_table \
+  --env.maniskill.mshab_obj fridge \
+  --logger.wandb_name dreamerv3-mshab-close-set-table-fridge
 
-# python -m dreamerv3.main \
-#   --configs maniskill_rgb mshab \
-#   --task maniskill_NavigateSubtaskTrain-v0 \
-#   --logdir $HOME/logdir/maniskill/$TIMESTAMP/navigate-tidy-house \
-#   --env.maniskill.control_mode pd_joint_delta_pos \
-#   --env.maniskill.mshab_task tidy_house \
-#   --logger.wandb_name dreamerv3-mshab-navigate-tidy-house
+python -m dreamerv3.main \
+  --configs maniskill_rgb mshab \
+  --task maniskill_NavigateSubtaskTrain-v0 \
+  --logdir $HOME/logdir/maniskill/$TIMESTAMP/navigate-tidy-house \
+  --env.maniskill.control_mode pd_joint_delta_pos \
+  --env.maniskill.mshab_task tidy_house \
+  --logger.wandb_name dreamerv3-mshab-navigate-tidy-house
 
-# python -m dreamerv3.main \
-#   --configs maniskill_rgb mshab \
-#   --task maniskill_NavigateSubtaskTrain-v0 \
-#   --logdir $HOME/logdir/maniskill/$TIMESTAMP/navigate-prepare-groceries \
-#   --env.maniskill.control_mode pd_joint_delta_pos \
-#   --env.maniskill.mshab_task prepare_groceries \
-#   --logger.wandb_name dreamerv3-mshab-navigate-prepare-groceries
+python -m dreamerv3.main \
+  --configs maniskill_rgb mshab \
+  --task maniskill_NavigateSubtaskTrain-v0 \
+  --logdir $HOME/logdir/maniskill/$TIMESTAMP/navigate-prepare-groceries \
+  --env.maniskill.control_mode pd_joint_delta_pos \
+  --env.maniskill.mshab_task prepare_groceries \
+  --logger.wandb_name dreamerv3-mshab-navigate-prepare-groceries
 
-# python -m dreamerv3.main \
-#   --configs maniskill_rgb mshab \
-#   --task maniskill_NavigateSubtaskTrain-v0 \
-#   --logdir $HOME/logdir/maniskill/$TIMESTAMP/navigate-set-table \
-#   --env.maniskill.control_mode pd_joint_delta_pos \
-#   --env.maniskill.mshab_task set_table \
-#   --logger.wandb_name dreamerv3-mshab-navigate-set-table
+python -m dreamerv3.main \
+  --configs maniskill_rgb mshab \
+  --task maniskill_NavigateSubtaskTrain-v0 \
+  --logdir $HOME/logdir/maniskill/$TIMESTAMP/navigate-set-table \
+  --env.maniskill.control_mode pd_joint_delta_pos \
+  --env.maniskill.mshab_task set_table \
+  --logger.wandb_name dreamerv3-mshab-navigate-set-table
 
 # Stop GPU monitor
 kill $GPU_MONITOR_PID
