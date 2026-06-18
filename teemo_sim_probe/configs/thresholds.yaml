@@ -1,0 +1,57 @@
+# TEEMO sim-probe thresholds. Two scale profiles:
+#   tabletop   -> ManiSkill PickCube-v1 (small workspace)
+#   room_scale -> MS-HAB (Fetch navigates room-scale scenes)
+#
+# All distances in metres. Bin edges are upper-exclusive ascending; the label
+# for the last bin applies to everything >= its lower edge.
+
+temporal:
+  K: 5                       # horizon for temporal labels (frames)
+
+contact:
+  eps_force: 0.05            # N; |pairwise force| above this == contact
+
+grasp:
+  max_angle: 30             # MS-HAB convention for agent.is_grasping
+
+support:
+  r_support: 0.25           # m; xy centre distance for "above" test
+  eps_z: 0.02               # m; min vertical separation
+
+profiles:
+
+  tabletop:
+    planar_distance:        # ee-object, |xy|
+      edges:  [0.03, 0.08, 0.20, 0.50]
+      labels: [very-near, near, medium, far, very-far]
+    height_offset:          # ee-object, z_ee - z_obj (signed)
+      edges:  [-0.10, -0.03, 0.03, 0.10]
+      labels: [far-below, below, level, above, far-above]
+    planar_distance_change: # signed delta over K
+      edges:  [-0.10, -0.04, -0.01, 0.01, 0.04, 0.10]
+      labels: [approach-fast, approach-medium, approach-slow,
+               stable-distance,
+               recede-slow, recede-medium, recede-fast]
+    height_offset_change:
+      edges:  [-0.10, -0.04, -0.01, 0.01, 0.04, 0.10]
+      labels: [move-down-fast, move-down-medium, move-down-slow,
+               stable-height,
+               move-up-slow, move-up-medium, move-up-fast]
+
+  room_scale:
+    planar_distance:
+      edges:  [0.05, 0.20, 0.75, 2.00]
+      labels: [very-near, near, medium, far, very-far]
+    height_offset:
+      edges:  [-0.10, -0.03, 0.03, 0.10]
+      labels: [far-below, below, level, above, far-above]
+    planar_distance_change:
+      edges:  [-0.30, -0.12, -0.03, 0.03, 0.12, 0.30]
+      labels: [approach-fast, approach-medium, approach-slow,
+               stable-distance,
+               recede-slow, recede-medium, recede-fast]
+    height_offset_change:
+      edges:  [-0.10, -0.04, -0.01, 0.01, 0.04, 0.10]
+      labels: [move-down-fast, move-down-medium, move-down-slow,
+               stable-height,
+               move-up-slow, move-up-medium, move-up-fast]
