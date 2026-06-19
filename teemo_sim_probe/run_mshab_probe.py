@@ -35,7 +35,7 @@ from .viz.overlay import render_overlay
 from .viz.graph_draw import render_graph
 from .viz.video_writer import write_video
 from .viz.palette import ColorMap
-from .adapters.policy_loader import load_ppo_policy
+from .adapters.policy_loader import load_policy
 
 
 def parse_args():
@@ -120,7 +120,7 @@ def main():
     venv = ManiSkillVectorEnv(env, ignore_terminations=True)
 
     eval_obs, _ = venv.reset(seed=args.seed, options=dict(reconfigure=True))
-    policy = load_ppo_policy(args.ckpt_dir, venv, eval_obs, device=args.device)
+    policy = load_policy(args.ckpt_dir, venv, eval_obs, device=args.device)
     print(f"[policy] kind={policy.kind}")
 
     cfg = load_config("room_scale")
