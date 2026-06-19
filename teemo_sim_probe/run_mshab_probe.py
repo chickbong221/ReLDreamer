@@ -35,6 +35,7 @@ from .viz.overlay import render_overlay
 from .viz.graph_draw import render_graph
 from .viz.video_writer import write_video
 from .viz.palette import ColorMap
+from .viz.eval_view import render_eval_view, save_image, SuccessTracker
 from .adapters.policy_loader import load_policy
 
 
@@ -47,10 +48,20 @@ def parse_args():
     p.add_argument("--subtask", default="pick")
     p.add_argument("--split", default="train")
     p.add_argument("--steps", type=int, default=60)
-    p.add_argument("--probe-camera", default="fetch_head",
-                   help="camera the scene graph is built from")
-    p.add_argument("--width", type=int, default=128)
-    p.add_argument("--height", type=int, default=128)
+    p.add_argument("--probe-cameras", nargs="+",
+                   default=["fetch_head", "fetch_hand"],
+                   help="cameras to build overlays/graphs for")
+    p.add_argument("--save-every", type=int, default=20,
+                   help="save outputs every N steps (policy still steps every frame)")
+    p.add_argument("--width", type=int, default=256,
+                   help="probe camera width (independent of policy obs)")
+    p.add_argument("--height", type=int, default=256,
+                   help="probe camera height (independent of policy obs)")
+    p.add_argument("--overlay-size", type=float, default=6.0,
+                   help="overlay figure size in inches (display size)")
+    p.add_argument("--eval-view", action="store_true", default=True,
+                   help="save third-person evaluation-camera frames")
+    p.add_argument("--no-eval-view", dest="eval_view", action="store_false")
     p.add_argument("--frame-stack", type=int, default=3)
     p.add_argument("--include-goals", action="store_true")
     p.add_argument("--include-background", action="store_true",
@@ -128,61 +139,91 @@ def main():
     print(f"[policy] kind={policy.kind}")
 
     cfg = load_config("room_scale")
-    builder = GraphBuilder(
-        venv, cfg, env_idx=0, env_id=env_id,
-        camera=args.probe_camera, include_goals=args.include_goals,
-        include_background=args.include_background,
-        include_static_scene=args.include_static_scene,
-    )
+    cameras = list(args.probe_cameras)
+    # One GraphBuilder per camera (separate temporal buffers + visibility).
+    builders = {
+        cam: GraphBuilder(
+            venv, cfg, env_idx=0, env_id=env_id,
+            camera=cam, include_goals=args.include_goals,
+            include_background=args.include_background,
+            include_static_scene=args.include_static_scene,
+        )
+        for cam in cameras
+    }
+    # One shared colormap per camera so object colors are stable within a camera.
+    colormaps = {cam: ColorMap() for cam in cameras}
+
+    success = SuccessTracker(env_idx=0)
+    # collect saved frame paths per camera for optional video
+    overlay_paths = {cam: [] for cam in cameras}
+    graph_paths = {cam: [] for cam in cameras}
 
     obs = eval_obs
-    colormap = ColorMap()   # shared so colors stay stable across frames
-    overlay_paths, graph_paths = [], []
+    info = {}
     for frame in range(args.steps):
-        # Read segmentation + depth (+ rgb) straight from the unwrapped env.
-        seg, depth, rgb_sensor = read_unwrapped_sensor(
-            venv, args.probe_camera, env_idx=0
-        )
-        if args.backdrop == "rgb" and rgb_sensor is not None:
-            backdrop = rgb_sensor
-        elif args.backdrop == "depth-gray" and depth is not None:
-            backdrop = depth_to_gray_rgb(depth)
-        elif depth is not None:
-            backdrop = depth_to_color_rgb(depth)   # default / "depth-color"
-        else:
-            backdrop = None
+        save_now = (frame % args.save_every == 0) or (frame == args.steps - 1)
 
-        graph, masks, cam, rgb = builder.step(
-            obs, frame,
-            seg_override=seg, rgb_override=backdrop,
-            camera_override=args.probe_camera,
-        )
+        if save_now:
+            for cam in cameras:
+                seg, depth, rgb_sensor = read_unwrapped_sensor(
+                    venv, cam, env_idx=0
+                )
+                if args.backdrop == "rgb" and rgb_sensor is not None:
+                    backdrop = rgb_sensor
+                elif args.backdrop == "depth-gray" and depth is not None:
+                    backdrop = depth_to_gray_rgb(depth)
+                elif depth is not None:
+                    backdrop = depth_to_color_rgb(depth)
+                else:
+                    backdrop = None
 
-        graph.save(os.path.join(args.out, f"graph_{frame:04d}.json"))
-        op = render_overlay(
-            rgb, graph, masks,
-            os.path.join(args.out, f"overlay_{frame:04d}.png"),
-            colormap=colormap,
-        )
-        gp = render_graph(
-            graph, os.path.join(args.out, f"graph_{frame:04d}.png"),
-            colormap=colormap,
-        )
-        overlay_paths.append(op)
-        graph_paths.append(gp)
+                graph, masks, cam_name, rgb = builders[cam].step(
+                    obs, frame,
+                    seg_override=seg, rgb_override=backdrop,
+                    camera_override=cam,
+                )
 
-        if frame == 0:
-            _print_mshab_summary(venv, args.probe_camera)
+                graph.save(os.path.join(args.out, f"graph_{cam}_{frame:04d}.json"))
+                op = render_overlay(
+                    rgb, graph, masks,
+                    os.path.join(args.out, f"overlay_{cam}_{frame:04d}.png"),
+                    colormap=colormaps[cam], target_inches=args.overlay_size,
+                )
+                gp = render_graph(
+                    graph, os.path.join(args.out, f"graph_{cam}_{frame:04d}.png"),
+                    colormap=colormaps[cam],
+                )
+                overlay_paths[cam].append(op)
+                graph_paths[cam].append(gp)
+
+            # Third-person evaluation-camera frame.
+            if args.eval_view:
+                ev = render_eval_view(venv, env_idx=0)
+                if ev is not None:
+                    save_image(ev, os.path.join(
+                        args.out, f"eval_view_{frame:04d}.png"))
+
+            if frame == 0:
+                _print_mshab_summary(venv, cameras[0])
 
         action = policy.act(obs)
         obs, reward, terminated, truncated, info = venv.step(action)
+        success.update(info, frame)
+
+    # success_once line figure + csv.
+    success.save_plot(os.path.join(args.out, "success_once.png"),
+                      title=f"{env_id} success_once")
+    success.save_csv(os.path.join(args.out, "success_once.csv"))
+    print(f"[success] ever_succeeded={success.success_once[-1] if success.success_once else 0}")
 
     if args.video:
-        vid = write_video(
-            overlay_paths, graph_paths,
-            os.path.join(args.out, "probe.mp4"), fps=5,
-        )
-        print("video:", vid)
+        for cam in cameras:
+            if overlay_paths[cam]:
+                vid = write_video(
+                    overlay_paths[cam], graph_paths[cam],
+                    os.path.join(args.out, f"probe_{cam}.mp4"), fps=2,
+                )
+                print(f"video[{cam}]:", vid)
 
     venv.close()
     print(f"wrote {args.steps} frames to {args.out}")

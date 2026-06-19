@@ -36,6 +36,9 @@ def render_overlay(
     out_path: str,
     alpha: float = 0.55,
     colormap: Optional[ColorMap] = None,
+    target_inches: float = 6.0,
+    dpi: int = 200,
+    label_fontsize: Optional[float] = None,
 ) -> str:
     import matplotlib
     matplotlib.use("Agg")
@@ -58,9 +61,21 @@ def render_overlay(
         outline = _mask_outline(m)
         blended[outline] = color
 
-    fig, ax = plt.subplots(figsize=(W / 100, H / 100), dpi=140)
-    ax.imshow(np.clip(blended, 0, 1))
+    # Figure sized to ``target_inches`` on the long side, preserving aspect.
+    # This decouples display size from the (often small) sensor resolution, so a
+    # 128x128 sensor still produces a large, legible overlay.
+    aspect = H / W
+    if W >= H:
+        figsize = (target_inches, target_inches * aspect)
+    else:
+        figsize = (target_inches / aspect, target_inches)
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    # interpolation="nearest" keeps mask edges crisp when upscaling small images
+    ax.imshow(np.clip(blended, 0, 1), interpolation="nearest")
     ax.axis("off")
+
+    # Font scales with figure size so labels stay proportional at any resolution.
+    fs = label_fontsize if label_fontsize is not None else max(4.0, target_inches * 1.4)
 
     # Labels at centroids, colored to match, with a small stagger.
     placed = []  # (cx, cy) already used, to nudge collisions
@@ -80,7 +95,7 @@ def render_overlay(
         tag = "ee" if node.node_type == "ee" else node.name
         ax.text(
             cx, cy, tag,
-            color="white", fontsize=5.5, fontweight="bold",
+            color="white", fontsize=fs, fontweight="bold",
             ha="center", va="center",
             bbox=dict(facecolor=color, alpha=0.85, pad=0.8,
                       edgecolor="white", linewidth=0.3),

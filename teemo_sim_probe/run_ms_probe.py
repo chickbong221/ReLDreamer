@@ -33,6 +33,7 @@ def parse_args():
     p.add_argument("--actions", choices=["random", "zero"], default="random")
     p.add_argument("--camera", default=None, help="sensor name; auto if unset")
     p.add_argument("--width", type=int, default=256)
+    p.add_argument("--overlay-size", type=float, default=6.0)
     p.add_argument("--height", type=int, default=256)
     p.add_argument("--include-goals", action="store_true")
     p.add_argument("--include-background", action="store_true")
@@ -82,7 +83,7 @@ def main():
         op = render_overlay(
             rgb, graph, masks,
             os.path.join(args.out, f"overlay_{frame:04d}.png"),
-            colormap=colormap,
+            colormap=colormap, target_inches=args.overlay_size,
         )
         gp = render_graph(
             graph, os.path.join(args.out, f"graph_{frame:04d}.png"),
