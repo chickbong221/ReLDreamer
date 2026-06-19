@@ -60,12 +60,18 @@ class PrivilegedState:
     active_subtask_type: Optional[str] = None
 
     # ----- queries the relation rules call ------------------------------- #
+    def pairwise_force_vector(self, a: Any, b: Any) -> np.ndarray:
+        """World-frame contact-force vector between two entities."""
+        if a is None or b is None:
+            return np.zeros(3, dtype=float)
+        forces = _to_np(self.scene.get_pairwise_contact_forces(a, b))
+        if forces.ndim == 1:
+            return forces.astype(float)
+        return np.asarray(forces[self.env_idx], dtype=float)
+
     def pairwise_force(self, a: Any, b: Any) -> float:
         """Scalar contact-force magnitude between two entities for this env."""
-        if a is None or b is None:
-            return 0.0
-        f = self.scene.get_pairwise_contact_forces(a, b)      # [num_envs, 3]
-        return float(np.linalg.norm(_to_np(f)[self.env_idx]))
+        return float(np.linalg.norm(self.pairwise_force_vector(a, b)))
 
     def ee_object_contact_force(self, obj: Any) -> float:
         """Sum of both finger contact forces against ``obj`` (MS-HAB style)."""
@@ -146,7 +152,90 @@ def _subtask_type(subtask) -> Optional[str]:
     return getattr(subtask, "type", None)
 
 
-def _active_mshab_handles(env, env_idx: int) -> Dict[str, Any]:
+def _entity_for_env(entity, env_idx: int):
+    """Return the underlying simulator entity represented at ``env_idx``."""
+    if entity is None:
+        return None
+    objs = getattr(entity, "_objs", None)
+    if objs is None:
+        return entity
+
+    try:
+        scene_idxs = _to_np(entity._scene_idxs).reshape(-1).tolist()
+        return objs[scene_idxs.index(env_idx)]
+    except (AttributeError, ValueError, IndexError, TypeError):
+        pass
+
+    try:
+        if len(objs) == 1:
+            return objs[0]
+        return objs[env_idx]
+    except (IndexError, TypeError):
+        return entity
+
+
+def _resolve_actual_entity(entity, seg_id_map: Dict[int, Any], env_idx: int):
+    """Map an MS-HAB merged handle to its per-env segmentation wrapper.
+
+    MS-HAB names task-level merged actors ``obj_0``, ``obj_1``, etc. The
+    segmentation map contains another ManiSkill wrapper around the same SAPIEN
+    entity, but with its actual scene name (for example
+    ``env-0_024_bowl-3``). Returning that wrapper keeps pose/contact APIs valid
+    and lets the persistent target merge with its visible segmentation node.
+    """
+    if entity is None:
+        return None
+    target = _entity_for_env(entity, env_idx)
+    target_name = getattr(target, "name", None)
+
+    for candidate in seg_id_map.values():
+        candidate_target = _entity_for_env(candidate, env_idx)
+        if candidate_target is target:
+            return candidate
+
+    # Identity is the reliable path, but matching the concrete SAPIEN name is
+    # a useful fallback across wrapper/proxy implementations.
+    if target_name is not None:
+        for candidate in seg_id_map.values():
+            candidate_target = _entity_for_env(candidate, env_idx)
+            if getattr(candidate_target, "name", None) == target_name:
+                return candidate
+    return entity
+
+
+def _alias_segmentation_entity(
+    seg_id_map: Dict[int, Any], alias, env_idx: int
+) -> Dict[int, Any]:
+    """Use a merged MS-HAB handle for matching segmentation entries.
+
+    This is the inverse of ``_resolve_actual_entity``. It preserves every
+    segmentation id and mask while ensuring merged-name mode creates only the
+    ``obj_x`` node, rather than both ``obj_x`` and the actual-name node.
+    """
+    if alias is None:
+        return seg_id_map
+    target = _entity_for_env(alias, env_idx)
+    target_name = getattr(target, "name", None)
+    aliased = dict(seg_id_map)
+
+    for seg_id, candidate in seg_id_map.items():
+        candidate_target = _entity_for_env(candidate, env_idx)
+        same_entity = candidate_target is target
+        same_name = (
+            target_name is not None
+            and getattr(candidate_target, "name", None) == target_name
+        )
+        if same_entity or same_name:
+            aliased[seg_id] = alias
+    return aliased
+
+
+def _active_mshab_handles(
+    env,
+    env_idx: int,
+    seg_id_map: Optional[Dict[int, Any]] = None,
+    object_name: str = "actual",
+) -> Dict[str, Any]:
     """Resolve the current subtask's object / articulation / handle link.
 
     Robust to None entries: close & navigate subtasks have ``subtask_objs[i] is
@@ -184,14 +273,33 @@ def _active_mshab_handles(env, env_idx: int) -> Dict[str, Any]:
             out["active_handle_link"] = art.links[handle_idx]
         except Exception:
             out["active_handle_link"] = None
+
+    if object_name == "actual":
+        seg_id_map = seg_id_map or {}
+        out["active_obj"] = _resolve_actual_entity(
+            out["active_obj"], seg_id_map, env_idx
+        )
+        out["active_handle_link"] = _resolve_actual_entity(
+            out["active_handle_link"], seg_id_map, env_idx
+        )
     return out
 
 
 # --------------------------------------------------------------------------- #
 # Public entry point
 # --------------------------------------------------------------------------- #
-def get_privileged_state(env, env_idx: int = 0) -> PrivilegedState:
+def get_privileged_state(
+    env,
+    env_idx: int = 0,
+    *,
+    mshab_object_name: str = "actual",
+) -> PrivilegedState:
     """Gather a typed privileged snapshot from a (possibly wrapped) env."""
+    if mshab_object_name not in ("actual", "merged"):
+        raise ValueError(
+            "mshab_object_name must be 'actual' or 'merged', got "
+            f"{mshab_object_name!r}"
+        )
     e = env.unwrapped
     agent = e.agent
     scene = e.scene
@@ -209,10 +317,22 @@ def get_privileged_state(env, env_idx: int = 0) -> PrivilegedState:
     )
 
     if state.is_mshab:
-        handles = _active_mshab_handles(e, env_idx)
+        handles = _active_mshab_handles(
+            e,
+            env_idx,
+            seg_id_map=state.seg_id_map,
+            object_name=mshab_object_name,
+        )
         state.active_obj = handles["active_obj"]
         state.active_articulation = handles["active_articulation"]
         state.active_handle_link = handles["active_handle_link"]
         state.active_subtask_type = handles["active_subtask_type"]
+        if mshab_object_name == "merged":
+            state.seg_id_map = _alias_segmentation_entity(
+                state.seg_id_map, state.active_obj, env_idx
+            )
+            state.seg_id_map = _alias_segmentation_entity(
+                state.seg_id_map, state.active_handle_link, env_idx
+            )
 
     return state

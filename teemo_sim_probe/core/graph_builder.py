@@ -32,6 +32,7 @@ class GraphBuilder:
         include_goals: bool = False,
         include_background: bool = False,
         include_static_scene: bool = False,
+        mshab_object_name: str = "actual",
     ):
         self.env = env
         self.cfg = cfg
@@ -41,6 +42,7 @@ class GraphBuilder:
         self.include_goals = include_goals
         self.include_background = include_background
         self.include_static_scene = include_static_scene
+        self.mshab_object_name = mshab_object_name
         self.temporal = TemporalBuffer(K=cfg["temporal"]["K"])
         self._last_seen: Dict[str, int] = {}     # node_id -> frame last visible
         self._first_unseen: Dict[str, int] = {}  # node_id -> frame first appeared unseen
@@ -50,7 +52,11 @@ class GraphBuilder:
         *,
         seg_override=None, rgb_override=None, camera_override=None,
     ) -> Tuple[Graph, MaskAccumulator, str, np.ndarray]:
-        state = get_privileged_state(self.env, self.env_idx)
+        state = get_privileged_state(
+            self.env,
+            self.env_idx,
+            mshab_object_name=self.mshab_object_name,
+        )
 
         nodes, masks, cam, rgb = build_nodes(
             obs,
@@ -87,6 +93,7 @@ class GraphBuilder:
             meta=dict(
                 is_mshab=state.is_mshab,
                 active_subtask=state.active_subtask_type,
+                mshab_object_name=self.mshab_object_name,
             ),
         )
 

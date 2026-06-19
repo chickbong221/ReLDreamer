@@ -15,8 +15,8 @@ grasp:
   max_angle: 30             # MS-HAB convention for agent.is_grasping
 
 support:
-  r_support: 0.25           # m; xy centre distance for "above" test
-  eps_z: 0.02               # m; min vertical separation
+  eps_z: 0.02               # m; supporter centre must be lower by this amount
+  min_vertical_force_ratio: 0.5  # |Fz| / |F|; rejects side-only contact
 
 profiles:
 

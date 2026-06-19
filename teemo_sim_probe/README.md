@@ -51,10 +51,13 @@ actors live in `_hidden_objects` and are excluded by default.
 ## Relations (core/relation_rules.py, core/temporal_buffer.py)
 
 - `ee-object`: planar-distance, height-offset (5-bin), contact, grasp
-- `object-object`: contact, support
+- `object-object`: mutually exclusive contact or directed support. Support is
+  emitted as `supporter -> supported` for vertical load-bearing contact; other
+  touching remains contact.
 - temporal (horizon K=5): signed-change bins for continuous relations;
   gain / lose / maintain / maintain-no for binary predicates.
-  `maintain-no-*` is kept in JSON but `masked=True` (never drawn).
+  `maintain-no-*` is an internal background class and is not exported as a
+  semantic graph edge.
 - `orientation-alignment` and `containment` are intentionally deferred until
   the basic demo validates.
 
@@ -125,6 +128,18 @@ python -m teemo_sim_probe.run_mshab_probe \
     --height 128 \
     --video
 ```
+
+MS-HAB merges each subtask target under an internal name such as `obj_0`. By
+default, the probe resolves this handle to the actual per-environment actor name
+such as `env-0_024_bowl-3`, so the active target and visible segmentation object
+share one graph node. To preserve the internal MS-HAB name instead, add:
+
+```bash
+--mshab-object-name merged
+```
+
+The default can be stated explicitly with `--mshab-object-name actual`.
+In either mode, the graph includes exactly one of the two names, never both.
 
 If `policy.pt` is missing the MS-HAB runner falls back to random actions so the
 graph pipeline can still be exercised.

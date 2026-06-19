@@ -6,8 +6,8 @@ at each frame, compare value[t] vs value[t-K], discretize the signed change.
 For binary predicates (contact, grasp, support): compare predicate[t-K] vs
 predicate[t] -> gain / lose / maintain / maintain-no.
 
-``maintain-no-*`` edges are produced (the draft uses them as a background
-training class) but flagged ``masked=True`` so they are never drawn.
+``maintain-no-*`` is an internal/background class. It is not exported as a
+semantic graph edge.
 """
 
 from __future__ import annotations
@@ -45,6 +45,9 @@ class TemporalBuffer:
 
     # ---- ingest one frame's absolute edges ------------------------------ #
     def update(self, graph: Graph) -> None:
+        current_bools: Dict[Tuple[str, str, str], bool] = {}
+
+        # Positive/negative binary predicates explicitly present in this frame.
         for e in graph.edges:
             if e.temporal:
                 continue
@@ -55,20 +58,49 @@ class TemporalBuffer:
                 )
             elif e.relation in _BINARY:
                 positive = e.label == e.relation  # "contact"==relation, etc.
-                self._bools.setdefault(key, deque(maxlen=self.K + 1)).append(
-                    bool(positive)
-                )
+                current_bools[key] = bool(positive)
+
+        # Support is directed and sparse in the absolute graph: only true
+        # support edges are emitted. Seed/update all currently visible object
+        # pairs with False unless support is true, so old support histories can
+        # become lose-support instead of stale maintain-support.
+        object_ids = [n.node_id for n in graph.nodes if n.node_type == "object"]
+        for src in object_ids:
+            for dst in object_ids:
+                if src == dst:
+                    continue
+                key = _edge_key(src, dst, "support")
+                current_bools.setdefault(key, False)
+
+        # For any previously tracked binary relation whose endpoints still
+        # exist, absence from the absolute graph means the predicate is false.
+        node_ids = set(graph.node_ids())
+        for key in list(self._bools):
+            src, dst, relation = key
+            if (
+                relation in _BINARY
+                and key not in current_bools
+                and src in node_ids
+                and dst in node_ids
+            ):
+                current_bools[key] = False
+
+        for key, positive in current_bools.items():
+            self._bools.setdefault(key, deque(maxlen=self.K + 1)).append(positive)
 
     # ---- emit temporal edges for current frame -------------------------- #
     def temporal_edges(self, graph: Graph, cfg: dict) -> List[Edge]:
         prof = cfg["profile"]
         out: List[Edge] = []
+        node_ids = set(graph.node_ids())
 
         # Continuous signed-change.
         for key, hist in self._values.items():
             if len(hist) <= self.K:
                 continue
             src, dst, relation = key
+            if src not in node_ids or dst not in node_ids:
+                continue
             change = hist[-1] - hist[0]          # value[t] - value[t-K]
             change_rel = _CONTINUOUS[relation]
             spec = prof.get(change_rel)
@@ -84,8 +116,12 @@ class TemporalBuffer:
             if len(hist) <= self.K:
                 continue
             src, dst, relation = key
+            if src not in node_ids or dst not in node_ids:
+                continue
             prev, now = hist[0], hist[-1]
             label, masked = _transition_label(relation, prev, now)
+            if masked:
+                continue
             out.append(
                 Edge(
                     src, dst, f"{relation}-transition", label,

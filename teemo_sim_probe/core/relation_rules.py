@@ -162,8 +162,8 @@ def object_object_edges(
     graph: Graph, state: PrivilegedState, cfg: dict
 ) -> List[Edge]:
     eps_contact = cfg["contact"]["eps_force"]
-    r_support = cfg["support"]["r_support"]
     eps_z = cfg["support"]["eps_z"]
+    min_vertical_ratio = cfg["support"].get("min_vertical_force_ratio", 0.5)
 
     objs = [n for n in graph.nodes if n.node_type == "object"]
     edges: List[Edge] = []
@@ -173,34 +173,44 @@ def object_object_edges(
             ea = _resolve_entity(a, state)
             eb = _resolve_entity(b, state)
 
-            force = state.pairwise_force(ea, eb)
+            force_vector = state.pairwise_force_vector(ea, eb)
+            force = float(np.linalg.norm(force_vector))
             in_contact = force > eps_contact
-            edges.append(
-                Edge(
-                    a.node_id, b.node_id, "contact",
-                    "contact" if in_contact else "no-contact",
-                    force,
-                    masked=(not in_contact),
-                )
-            )
 
-            # support: contact + vertical ordering + xy proximity.
-            # Emit a directed edge (higher supported-by lower) when it holds.
-            if in_contact:
-                pa, pb = _xyz(a), _xyz(b)
-                if pa is not None and pb is not None:
-                    xy = float(np.linalg.norm(pa[:2] - pb[:2]))
-                    if xy < r_support:
-                        if pa[2] > pb[2] + eps_z:
-                            edges.append(
-                                Edge(a.node_id, b.node_id, "support",
-                                     "support", force)
-                            )
-                        elif pb[2] > pa[2] + eps_z:
-                            edges.append(
-                                Edge(b.node_id, a.node_id, "support",
-                                     "support", force)
-                            )
+            # Support is a load-bearing contact: the force must be primarily
+            # vertical and the supporter must be below the supported object.
+            # Contact and support are exclusive semantic graph relations.
+            support_pair = None
+            if in_contact and force > 0.0:
+                vertical_ratio = abs(float(force_vector[2])) / force
+                if vertical_ratio >= min_vertical_ratio:
+                    pa, pb = _xyz(a), _xyz(b)
+                    if pa is not None and pb is not None:
+                        if pa[2] + eps_z < pb[2]:
+                            support_pair = (a, b)
+                        elif pb[2] + eps_z < pa[2]:
+                            support_pair = (b, a)
+
+            if support_pair is not None:
+                supporter, supported = support_pair
+                edges.append(
+                    Edge(
+                        supporter.node_id,
+                        supported.node_id,
+                        "support",
+                        "support",
+                        force,
+                    )
+                )
+            else:
+                edges.append(
+                    Edge(
+                        a.node_id, b.node_id, "contact",
+                        "contact" if in_contact else "no-contact",
+                        force,
+                        masked=(not in_contact),
+                    )
+                )
     return edges
 
 

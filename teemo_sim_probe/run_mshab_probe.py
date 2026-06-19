@@ -35,6 +35,7 @@ from .viz.video_writer import write_video
 from .viz.palette import ColorMap
 from .viz.eval_view import render_eval_view, save_image, SuccessTracker
 from .adapters.policy_loader import load_policy, detect_algo
+from .adapters.privileged_state import get_privileged_state
 
 
 def parse_args():
@@ -79,6 +80,13 @@ def parse_args():
                    help="keep scene_background actor (filtered by default)")
     p.add_argument("--include-static-scene", action="store_true",
                    help="keep static furniture / apartment props (filtered by default)")
+    p.add_argument(
+        "--mshab-object-name",
+        choices=["actual", "merged"],
+        default="actual",
+        help="name active targets by their actual per-env actor name (default) "
+             "or MS-HAB's merged obj_x name",
+    )
     p.add_argument("--backdrop", choices=["rgb", "depth-color", "depth-gray"],
                    default="rgb",
                    help="overlay background: rgb (if available), turbo-colored "
@@ -199,6 +207,7 @@ def main():
             camera=cam, include_goals=args.include_goals,
             include_background=args.include_background,
             include_static_scene=args.include_static_scene,
+            mshab_object_name=args.mshab_object_name,
         )
         for cam in cameras
     }
@@ -256,7 +265,9 @@ def main():
                         args.out, f"eval_view_{frame:04d}.png"))
 
             if frame == 0:
-                _print_mshab_summary(venv, cameras[0])
+                _print_mshab_summary(
+                    venv, cameras[0], args.mshab_object_name
+                )
 
         action = policy.act(obs)
         obs, reward, terminated, truncated, info = venv.step(action)
@@ -281,7 +292,7 @@ def main():
     print(f"wrote {args.steps} frames to {args.out}")
 
 
-def _print_mshab_summary(venv, camera):
+def _print_mshab_summary(venv, camera, mshab_object_name="actual"):
     e = venv.unwrapped
     print("--- segmentation_id_map (excluding id 0) ---")
     for sid, ent in sorted(e.segmentation_id_map.items()):
@@ -298,7 +309,19 @@ def _print_mshab_summary(venv, camera):
     arts = getattr(e, "subtask_articulations", [])
     if ptr < len(objs):
         o = objs[ptr]
-        print(f"  active_obj = {getattr(o, 'name', None) if o is not None else None}")
+        merged_name = getattr(o, "name", None) if o is not None else None
+        state = get_privileged_state(
+            venv, env_idx=0, mshab_object_name=mshab_object_name
+        )
+        graph_name = (
+            getattr(state.active_obj, "name", None)
+            if state.active_obj is not None else None
+        )
+        print(f"  active_obj_merged = {merged_name}")
+        print(
+            f"  active_obj_graph = {graph_name} "
+            f"(mode={mshab_object_name})"
+        )
     if ptr < len(arts):
         a = arts[ptr]
         print(f"  active_articulation = "
