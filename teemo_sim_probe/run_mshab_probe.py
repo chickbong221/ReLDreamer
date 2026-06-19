@@ -53,6 +53,10 @@ def parse_args():
     p.add_argument("--height", type=int, default=128)
     p.add_argument("--frame-stack", type=int, default=3)
     p.add_argument("--include-goals", action="store_true")
+    p.add_argument("--include-background", action="store_true",
+                   help="keep scene_background actor (filtered by default)")
+    p.add_argument("--include-static-scene", action="store_true",
+                   help="keep static furniture / apartment props (filtered by default)")
     p.add_argument("--backdrop", choices=["rgb", "depth-color", "depth-gray"],
                    default="rgb",
                    help="overlay background: rgb (if available), turbo-colored "
@@ -127,6 +131,8 @@ def main():
     builder = GraphBuilder(
         venv, cfg, env_idx=0, env_id=env_id,
         camera=args.probe_camera, include_goals=args.include_goals,
+        include_background=args.include_background,
+        include_static_scene=args.include_static_scene,
     )
 
     obs = eval_obs

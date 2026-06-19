@@ -30,6 +30,8 @@ class GraphBuilder:
         env_id: str = "env",
         camera: Optional[str] = None,
         include_goals: bool = False,
+        include_background: bool = False,
+        include_static_scene: bool = False,
     ):
         self.env = env
         self.cfg = cfg
@@ -37,6 +39,8 @@ class GraphBuilder:
         self.env_id = env_id
         self.camera = camera
         self.include_goals = include_goals
+        self.include_background = include_background
+        self.include_static_scene = include_static_scene
         self.temporal = TemporalBuffer(K=cfg["temporal"]["K"])
         self._last_seen: Dict[str, int] = {}     # node_id -> frame last visible
         self._first_unseen: Dict[str, int] = {}  # node_id -> frame first appeared unseen
@@ -53,6 +57,8 @@ class GraphBuilder:
             state,
             camera=self.camera,
             include_goals=self.include_goals,
+            include_background=self.include_background,
+            include_static_scene=self.include_static_scene,
             min_pixels=self.cfg.get("node", {}).get("min_pixels", 32),
             min_area_ratio=self.cfg.get("node", {}).get("min_area_ratio", 0.0005),
             seg_override=seg_override,

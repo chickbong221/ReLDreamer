@@ -64,10 +64,32 @@ def _is_ee_link(entity, ee_links: List[Any]) -> bool:
 # Substrings that mark a helper/goal/visualization actor (R5).
 _GOAL_HINTS = ("goal", "ee_rest", "site", "marker", "target_site")
 
+# Substrings that mark scene background / static furniture clutter.
+# MS-HAB exposes these as actors (e.g. "scs-[0]_scene_background",
+# "scs-[0]_frl_apartment_table_02-4"); the draft keeps only the end-effector
+# and manipulation-relevant objects, so these are filtered by default.
+_BACKGROUND_HINTS = (
+    "scene_background", "background", "_bg",
+)
+_STATIC_SCENE_HINTS = (
+    "frl_apartment", "apartment_", "_wall", "_floor", "_ceiling",
+    "room_", "stage", "arena",
+)
+
 
 def _is_helper_goal(entity) -> bool:
     name = _entity_name(entity).lower()
     return any(h in name for h in _GOAL_HINTS)
+
+
+def _is_background(entity) -> bool:
+    name = _entity_name(entity).lower()
+    return any(h in name for h in _BACKGROUND_HINTS)
+
+
+def _is_static_scene(entity) -> bool:
+    name = _entity_name(entity).lower()
+    return any(h in name for h in _STATIC_SCENE_HINTS)
 
 
 def canonical_object_key(entity) -> str:
@@ -137,6 +159,8 @@ def build_nodes(
     *,
     camera: Optional[str] = None,
     include_goals: bool = False,
+    include_background: bool = False,
+    include_static_scene: bool = False,
     min_pixels: int = 32,
     min_area_ratio: float = 0.0005,
     seg_override: Optional[np.ndarray] = None,
@@ -183,6 +207,14 @@ def build_nodes(
 
         # R5: helper/goal actors excluded unless requested.
         if _is_helper_goal(entity) and not include_goals:
+            continue
+
+        # Background scene actor excluded unless requested (draft filters bg).
+        if _is_background(entity) and not include_background:
+            continue
+
+        # Static scene furniture (apartment props, walls) excluded by default.
+        if _is_static_scene(entity) and not include_static_scene:
             continue
 
         # R6: area threshold.

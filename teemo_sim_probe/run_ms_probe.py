@@ -35,6 +35,8 @@ def parse_args():
     p.add_argument("--width", type=int, default=256)
     p.add_argument("--height", type=int, default=256)
     p.add_argument("--include-goals", action="store_true")
+    p.add_argument("--include-background", action="store_true")
+    p.add_argument("--include-static-scene", action="store_true")
     p.add_argument("--out", default=os.path.join(os.path.dirname(__file__),
                                                  "outputs", "ms"))
     p.add_argument("--sim-backend", default="gpu")
@@ -65,6 +67,8 @@ def main():
     builder = GraphBuilder(
         env, cfg, env_idx=0, env_id=args.env_id,
         camera=args.camera, include_goals=args.include_goals,
+        include_background=args.include_background,
+        include_static_scene=args.include_static_scene,
     )
 
     obs, info = env.reset(seed=args.seed)

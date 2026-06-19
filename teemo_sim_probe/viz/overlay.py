@@ -80,10 +80,10 @@ def render_overlay(
         tag = "ee" if node.node_type == "ee" else node.name
         ax.text(
             cx, cy, tag,
-            color="white", fontsize=9, fontweight="bold",
+            color="white", fontsize=5.5, fontweight="bold",
             ha="center", va="center",
-            bbox=dict(facecolor=color, alpha=0.85, pad=1.5,
-                      edgecolor="white", linewidth=0.5),
+            bbox=dict(facecolor=color, alpha=0.85, pad=0.8,
+                      edgecolor="white", linewidth=0.3),
         )
 
     fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
