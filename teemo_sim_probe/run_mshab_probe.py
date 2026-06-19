@@ -1,15 +1,13 @@
-"""Run the TEEMO sim-probe on MS-HAB (default PickSubtaskTrain-v0) with the PPO
-checkpoint, mirroring mshab.envs.make.make_env and mshab/evaluate.py.
+"""Run the TEEMO sim-probe on MS-HAB checkpoints.
 
-Design (verified against installed mshab):
-  * Env built in obs_mode="depth+segmentation": the depth wrapper + framestack
-    feed the PPO policy exactly the obs it was trained on, while segmentation
-    rides along in the unwrapped env's sensor_data for the probe.
+Design:
+  * Env built in obs_mode="rgb+depth+segmentation": the depth wrapper +
+    framestack feed the policy the depth/state obs it was trained on, while
+    RGB and segmentation ride along in unwrapped sensor_data for the probe.
   * Wrapper stack copied from make_env: FetchDepthObservationWrapper(cat_state)
-    -> FrameStack(num_stack=3, keys=[fetch_head_depth, fetch_hand_depth])
-    -> ManiSkillVectorEnv(ignore_terminations=True).
-  * Policy: PPOAgent(eval_obs, single_action_space.shape),
-    get_action(obs, deterministic=True).
+    -> FrameStack(...) -> FetchActionWrapper -> ManiSkillVectorEnv
+    -> VectorRecordEpisodeStatistics.
+  * Policy: PPO and SAC checkpoints are auto-detected from config.yml.
   * Probe reads segmentation from env.unwrapped.get_obs()["sensor_data"]
     ["fetch_head"]["segmentation"] each step.
 
@@ -36,7 +34,7 @@ from .viz.graph_draw import render_graph
 from .viz.video_writer import write_video
 from .viz.palette import ColorMap
 from .viz.eval_view import render_eval_view, save_image, SuccessTracker
-from .adapters.policy_loader import load_policy
+from .adapters.policy_loader import load_policy, detect_algo
 
 
 def parse_args():
@@ -44,9 +42,17 @@ def parse_args():
     p.add_argument("--ckpt-dir",
                    default="mshab_checkpoints/rl/tidy_house/pick/all",
                    help="dir with the PPO .pt (policy.pt / latest.pt / best.pt)")
-    p.add_argument("--task", default="tidy_house")
-    p.add_argument("--subtask", default="pick")
-    p.add_argument("--split", default="train")
+    p.add_argument("--task", default=None,
+                   help="MS-HAB task name. Defaults to ckpt path/config, then tidy_house.")
+    p.add_argument("--subtask", default=None,
+                   help="MS-HAB subtask. Defaults to ckpt path/config, then pick.")
+    p.add_argument("--split", default=None,
+                   help="MS-HAB split. Defaults to ckpt config, then train.")
+    p.add_argument("--obj", default=None,
+                   help="Task-plan object file stem, e.g. 024_bowl. "
+                        "Defaults to ckpt path/config, then all.")
+    p.add_argument("--plan-index", type=int, default=0,
+                   help="which plan from the selected task-plan JSON to run")
     p.add_argument("--steps", type=int, default=60)
     p.add_argument("--probe-cameras", nargs="+",
                    default=["fetch_head", "fetch_hand"],
@@ -63,6 +69,11 @@ def parse_args():
                    help="save third-person evaluation-camera frames")
     p.add_argument("--no-eval-view", dest="eval_view", action="store_false")
     p.add_argument("--frame-stack", type=int, default=3)
+    p.add_argument("--fetch-action-wrapper", choices=["auto", "on", "off"],
+                   default="auto",
+                   help="apply MS-HAB FetchActionWrapper; auto matches MS-HAB default")
+    p.add_argument("--free-head", action="store_true",
+                   help="when FetchActionWrapper is enabled, do not zero head actions")
     p.add_argument("--include-goals", action="store_true")
     p.add_argument("--include-background", action="store_true",
                    help="keep scene_background actor (filtered by default)")
@@ -91,14 +102,29 @@ def main():
     import mshab.envs  # noqa: F401  registers MS-HAB envs
     from mshab.envs.planner import plan_data_from_file
     from mshab.envs.wrappers import FetchDepthObservationWrapper, FrameStack
+    from mshab.envs.wrappers.vector import VectorRecordEpisodeStatistics
 
-    task, subtask, split = args.task, args.subtask, args.split
-    print(f"[env] task={task} subtask={subtask} split={split}")
+    algo_hint = detect_algo(args.ckpt_dir)
+    task, subtask, split, obj = _resolve_mshab_selection(args)
+    print(f"[env] task={task} subtask={subtask} split={split} obj={obj}")
+    print(f"[policy] config algo hint = {algo_hint}")
 
     RD = ASSET_DIR / "scene_datasets/replica_cad_dataset/rearrange"
-    plan_data = plan_data_from_file(
-        RD / "task_plans" / task / subtask / split / "all.json"
-    )
+    plan_fp = RD / "task_plans" / task / subtask / split / f"{obj}.json"
+    if not plan_fp.exists():
+        raise FileNotFoundError(
+            f"MS-HAB task plan not found: {plan_fp}. "
+            f"For object-specific checkpoints such as .../{obj}, the probe "
+            f"must use the matching task-plan JSON. Pass --obj all only if "
+            f"you intentionally want the aggregate plan file."
+        )
+    print(f"[env] task_plan={plan_fp}")
+    plan_data = plan_data_from_file(plan_fp)
+    if not (0 <= args.plan_index < len(plan_data.plans)):
+        raise IndexError(
+            f"--plan-index {args.plan_index} outside selected plan range "
+            f"[0, {len(plan_data.plans) - 1}] for {plan_fp}"
+        )
     spawn_data_fp = RD / "spawn_data" / task / subtask / split / "spawn_data.pt"
 
     env_id = f"{subtask.capitalize()}SubtaskTrain-v0"
@@ -117,14 +143,17 @@ def main():
         render_mode="all",
         shader_dir="minimal",
         max_episode_steps=200,
-        task_plans=plan_data.plans[:1],
+        task_plans=[plan_data.plans[args.plan_index]],
         scene_builder_cls=plan_data.dataset,
         spawn_data_fp=spawn_data_fp,
+        require_build_configs_repeated_equally_across_envs=False,
         add_event_tracker_info=True,
         sensor_configs=dict(width=args.width, height=args.height),
     )
 
-    # Wrapper stack copied from mshab.envs.make.make_env (PPO path).
+    # Wrapper stack copied from mshab.envs.make.make_env. Released Fetch
+    # checkpoints use stationary_head=True, so keep the same action masking
+    # unless the user explicitly disables it.
     env = FetchDepthObservationWrapper(env, cat_state=True, cat_pixels=False)
     if args.frame_stack:
         env = FrameStack(
@@ -132,7 +161,30 @@ def main():
             num_stack=args.frame_stack,
             stacking_keys=["fetch_head_depth", "fetch_hand_depth"],
         )
-    venv = ManiSkillVectorEnv(env, ignore_terminations=True)
+    use_fetch_action_wrapper = (
+        args.fetch_action_wrapper == "on"
+        or args.fetch_action_wrapper == "auto"
+    )
+    if use_fetch_action_wrapper:
+        from mshab.envs.wrappers import FetchActionWrapper
+        env = FetchActionWrapper(
+            env,
+            stationary_base=False,
+            stationary_torso=False,
+            stationary_head=not args.free_head,
+        )
+        print(
+            "[env] FetchActionWrapper enabled "
+            f"(stationary_head={not args.free_head})"
+        )
+    else:
+        print("[env] FetchActionWrapper disabled")
+    venv = ManiSkillVectorEnv(
+        env,
+        ignore_terminations=True,
+        max_episode_steps=200,
+    )
+    venv = VectorRecordEpisodeStatistics(venv, max_episode_steps=200)
 
     eval_obs, _ = venv.reset(seed=args.seed, options=dict(reconfigure=True))
     policy = load_policy(args.ckpt_dir, venv, eval_obs, device=args.device)
@@ -251,6 +303,98 @@ def _print_mshab_summary(venv, camera):
         a = arts[ptr]
         print(f"  active_articulation = "
               f"{getattr(a, 'name', None) if a is not None else None}")
+
+
+def _resolve_mshab_selection(args):
+    cfg = _load_ckpt_config(args.ckpt_dir)
+    task_p, subtask_p, obj_p = _infer_selection_from_ckpt_path(args.ckpt_dir)
+    task = args.task or _find_config_value(
+        cfg, ("mshab_task", "hab_task", "task_name")
+    ) or task_p or "tidy_house"
+    subtask = args.subtask or _find_config_value(
+        cfg, ("subtask", "subtask_name")
+    ) or subtask_p or "pick"
+    split = args.split or _find_config_value(
+        cfg, ("mshab_split", "split", "eval_split")
+    ) or "train"
+    obj = args.obj or _find_config_value(
+        cfg, ("mshab_obj", "obj", "object", "object_id", "task_plan")
+    ) or obj_p or "all"
+
+    # Some configs store the Gym env id as "task"; prefer the explicit subtask
+    # parsed from it when no --subtask was passed.
+    if args.subtask is None:
+        env_id = _find_config_value(cfg, ("env_id", "task"))
+        inferred = _subtask_from_env_id(env_id)
+        if inferred:
+            subtask = inferred
+
+    return str(task), str(subtask), str(split), _clean_obj_name(str(obj))
+
+
+def _load_ckpt_config(ckpt_dir):
+    cfg_path = ckpt_dir
+    if os.path.isfile(cfg_path):
+        cfg_path = os.path.dirname(cfg_path)
+    cfg_path = os.path.join(cfg_path, "config.yml")
+    if not os.path.exists(cfg_path):
+        return {}
+    try:
+        import yaml
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+
+def _infer_selection_from_ckpt_path(ckpt_dir):
+    path = ckpt_dir
+    if os.path.isfile(path):
+        path = os.path.dirname(path)
+    parts = os.path.normpath(path).split(os.sep)
+    if "rl" in parts:
+        i = parts.index("rl")
+        if len(parts) > i + 3:
+            task = parts[i + 1]
+            subtask = parts[i + 2]
+            obj = parts[i + 3]
+            return task, subtask, _clean_obj_name(obj)
+    if len(parts) >= 3:
+        return None, parts[-2], _clean_obj_name(parts[-1])
+    return None, None, None
+
+
+def _find_config_value(value, keys):
+    if isinstance(value, dict):
+        for key in keys:
+            if key in value and value[key] not in (None, ""):
+                return value[key]
+        for child in value.values():
+            found = _find_config_value(child, keys)
+            if found not in (None, ""):
+                return found
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            found = _find_config_value(child, keys)
+            if found not in (None, ""):
+                return found
+    return None
+
+
+def _subtask_from_env_id(env_id):
+    if not env_id:
+        return None
+    text = str(env_id)
+    suffix = "SubtaskTrain-v0"
+    if text.endswith(suffix):
+        return text[: -len(suffix)].lower()
+    return None
+
+
+def _clean_obj_name(obj):
+    if obj.endswith(".json"):
+        return obj[:-5]
+    return obj
 
 
 if __name__ == "__main__":

@@ -49,9 +49,10 @@ def write_video(
 
     try:
         import imageio.v2 as imageio
-        # Pad all frames to a common size.
-        H = max(f.shape[0] for f in frames)
-        W = max(f.shape[1] for f in frames)
+        # Pad all frames to a common size that is divisible by 16 so ffmpeg
+        # does not silently resize the video for codec compatibility.
+        H = _round_up(max(f.shape[0] for f in frames), 16)
+        W = _round_up(max(f.shape[1] for f in frames), 16)
         padded = []
         for f in frames:
             out = np.full((H, W, 3), 253, dtype=np.uint8)
@@ -66,3 +67,7 @@ def write_video(
         png = out_path.rsplit(".", 1)[0] + "_contactsheet.png"
         mpimg.imsave(png, sheet)
         return png
+
+
+def _round_up(value: int, multiple: int) -> int:
+    return ((value + multiple - 1) // multiple) * multiple

@@ -55,9 +55,7 @@ class SuccessTracker:
         self._ever = 0
 
     def update(self, info: dict, frame: int) -> None:
-        s = 0
-        if "success" in info:
-            s = int(bool(_to_np(info["success"]).reshape(-1)[self.env_idx]))
+        s = _success_from_info(info, self.env_idx)
         self._ever = max(self._ever, s)
         self.steps.append(frame)
         self.success.append(s)
@@ -93,3 +91,21 @@ class SuccessTracker:
             for s, su, so in zip(self.steps, self.success, self.success_once):
                 w.writerow([s, su, so])
         return path
+
+
+def _success_from_info(info: dict, env_idx: int) -> int:
+    if "success" in info:
+        return int(bool(_to_np(info["success"]).reshape(-1)[env_idx]))
+
+    final_info = info.get("final_info", {})
+    episode = final_info.get("episode", {}) if isinstance(final_info, dict) else {}
+    for key in ("success_once", "success_at_end", "success"):
+        if key in episode:
+            return int(bool(_to_np(episode[key]).reshape(-1)[env_idx]))
+
+    episode = info.get("episode", {})
+    if isinstance(episode, dict):
+        for key in ("s_o", "s_e", "success_once", "success_at_end", "success"):
+            if key in episode:
+                return int(bool(_to_np(episode[key]).reshape(-1)[env_idx]))
+    return 0

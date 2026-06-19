@@ -61,13 +61,14 @@ actors live in `_hidden_objects` and are excluded by default.
 Thresholds live in `configs/thresholds.yaml`, with separate `tabletop`
 (ManiSkill) and `room_scale` (MS-HAB) profiles.
 
-## obs_mode vs. the PPO policy
+## obs_mode vs. the released policies
 
-The PPO checkpoint was trained on `obs_mode="rgbd"`. The probe needs
-segmentation. Resolution: build the env in `rgb+depth+segmentation`; the probe
-reads `segmentation`, and `adapters/policy_loader.strip_segmentation` drops the
-seg channel before the policy sees obs. `ManiSkillVectorEnv` does **not** hide
-task internals — the probe reaches them via `env.unwrapped`.
+The MS-HAB release includes PPO and SAC checkpoints. The probe builds the env in
+`rgb+depth+segmentation`; the policy receives the wrapped depth/state
+observation, while the probe reads `segmentation` and RGB directly from
+`env.unwrapped` for graph extraction. SAC Fetch checkpoints also use MS-HAB's
+`FetchActionWrapper` by default, matching the stationary-head action masking
+used during training.
 
 ## Usage
 
@@ -78,7 +79,7 @@ python -m teemo_sim_probe.run_ms_probe \
     --env-id PickCube-v1 --steps 40 --actions random --video
 ```
 
-MS-HAB with the PPO checkpoint (task/subtask/split read from `config.yml`):
+MS-HAB with a released checkpoint:
 
 ```bash
 # download checkpoints first:
@@ -86,6 +87,16 @@ MS-HAB with the PPO checkpoint (task/subtask/split read from `config.yml`):
 python -m teemo_sim_probe.run_mshab_probe \
     --ckpt-dir mshab_checkpoints/rl/tidy_house/pick/all \
     --steps 60 --video
+```
+
+For object-specific SAC checkpoints, keep the task plan matched to the
+checkpoint object. The runner infers this from the checkpoint path, so this uses
+`task_plans/set_table/pick/train/024_bowl.json`:
+
+```bash
+python -m teemo_sim_probe.run_mshab_probe \
+    --ckpt-dir mshab_checkpoints/rl/set_table/pick/024_bowl \
+    --steps 200 --save-every 20 --width 128 --height 128 --video
 ```
 
 If `policy.pt` is missing the MS-HAB runner falls back to random actions so the
