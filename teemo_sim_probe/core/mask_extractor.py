@@ -69,6 +69,8 @@ def read_unwrapped_sensor(env, camera: str, env_idx: int = 0):
     Used when the observation wrappers (e.g. MS-HAB depth + framestack) have
     stripped segmentation from the policy obs. The unwrapped env still computes
     the full sensor_data when obs_mode includes segmentation.
+
+    Returns (seg[H,W], depth[H,W] or None, rgb[H,W,3] uint8 or None).
     """
     u = env.unwrapped
     full = u.get_obs()
@@ -77,7 +79,13 @@ def read_unwrapped_sensor(env, camera: str, env_idx: int = 0):
     depth = None
     if "depth" in cam:
         depth = _to_np(cam["depth"])[env_idx].squeeze(-1).astype(np.float32)
-    return seg, depth
+    rgb = None
+    if "rgb" in cam:
+        r = _to_np(cam["rgb"])[env_idx]
+        if r.dtype != np.uint8:
+            r = np.clip(r, 0, 255).astype(np.uint8)
+        rgb = r
+    return seg, depth, rgb
 
 
 def depth_to_gray_rgb(depth: np.ndarray) -> np.ndarray:
@@ -92,6 +100,26 @@ def depth_to_gray_rgb(depth: np.ndarray) -> np.ndarray:
         g = np.clip(1.0 - g, 0, 1)        # near = bright
     gray = (g * 255).astype(np.uint8)
     return np.stack([gray, gray, gray], axis=-1)
+
+
+def depth_to_color_rgb(depth: np.ndarray, cmap_name: str = "turbo") -> np.ndarray:
+    """Turn a [H,W] depth map into a vivid [H,W,3] uint8 colormapped backdrop.
+
+    Near = warm, far = cool (turbo). Used when no RGB sensor is available so the
+    depth-mode overlay still reads like a real scene rather than flat gray.
+    """
+    import matplotlib.cm as cm
+
+    d = depth.astype(np.float32)
+    finite = d[np.isfinite(d)]
+    if finite.size == 0:
+        norm = np.zeros_like(d)
+    else:
+        lo, hi = float(finite.min()), float(finite.max())
+        norm = np.clip((d - lo) / (hi - lo + 1e-6), 0, 1)
+        norm = 1.0 - norm            # near = high end of colormap
+    colored = cm.get_cmap(cmap_name)(norm)[..., :3]   # [H,W,3] float
+    return (colored * 255).astype(np.uint8)
 
 
 def mask_for_id(seg: np.ndarray, seg_id: int) -> np.ndarray:

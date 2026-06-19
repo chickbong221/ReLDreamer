@@ -21,6 +21,7 @@ from .core.graph_builder import GraphBuilder
 from .viz.overlay import render_overlay
 from .viz.graph_draw import render_graph
 from .viz.video_writer import write_video
+from .viz.palette import ColorMap
 
 
 def parse_args():
@@ -68,6 +69,7 @@ def main():
 
     obs, info = env.reset(seed=args.seed)
 
+    colormap = ColorMap()   # shared so colors stay stable across frames
     overlay_paths, graph_paths = [], []
     for frame in range(args.steps):
         graph, masks, cam, rgb = builder.step(obs, frame)
@@ -76,9 +78,11 @@ def main():
         op = render_overlay(
             rgb, graph, masks,
             os.path.join(args.out, f"overlay_{frame:04d}.png"),
+            colormap=colormap,
         )
         gp = render_graph(
             graph, os.path.join(args.out, f"graph_{frame:04d}.png"),
+            colormap=colormap,
         )
         overlay_paths.append(op)
         graph_paths.append(gp)

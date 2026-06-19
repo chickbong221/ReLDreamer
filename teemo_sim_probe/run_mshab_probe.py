@@ -28,10 +28,13 @@ import numpy as np
 
 from .configs.loader import load_config
 from .core.graph_builder import GraphBuilder
-from .core.mask_extractor import read_unwrapped_sensor, depth_to_gray_rgb
+from .core.mask_extractor import (
+    read_unwrapped_sensor, depth_to_gray_rgb, depth_to_color_rgb,
+)
 from .viz.overlay import render_overlay
 from .viz.graph_draw import render_graph
 from .viz.video_writer import write_video
+from .viz.palette import ColorMap
 from .adapters.policy_loader import load_ppo_policy
 
 
@@ -50,6 +53,10 @@ def parse_args():
     p.add_argument("--height", type=int, default=128)
     p.add_argument("--frame-stack", type=int, default=3)
     p.add_argument("--include-goals", action="store_true")
+    p.add_argument("--backdrop", choices=["rgb", "depth-color", "depth-gray"],
+                   default="rgb",
+                   help="overlay background: rgb (if available), turbo-colored "
+                        "depth, or grayscale depth")
     p.add_argument("--device", default="cuda")
     p.add_argument("--out", default=os.path.join(os.path.dirname(__file__),
                                                  "outputs", "mshab"))
@@ -81,13 +88,13 @@ def main():
 
     env_id = f"{subtask.capitalize()}SubtaskTrain-v0"
 
-    # Build the env in depth+segmentation. The depth wrapper ignores the extra
-    # segmentation texture, so the policy obs is unchanged; the probe reads the
-    # segmentation from the unwrapped env.
+    # Build the env in rgb+depth+segmentation. The depth wrapper only reads the
+    # depth texture, so the policy obs is unchanged; the probe reads segmentation
+    # (for masks) and rgb (for the overlay backdrop) from the unwrapped env.
     env = gym.make(
         env_id,
         num_envs=1,
-        obs_mode="depth+segmentation",
+        obs_mode="rgb+depth+segmentation",
         sim_backend="gpu",
         robot_uids="fetch",
         control_mode="pd_joint_delta_pos",
@@ -123,11 +130,21 @@ def main():
     )
 
     obs = eval_obs
+    colormap = ColorMap()   # shared so colors stay stable across frames
     overlay_paths, graph_paths = [], []
     for frame in range(args.steps):
-        # Read segmentation + depth straight from the unwrapped env.
-        seg, depth = read_unwrapped_sensor(venv, args.probe_camera, env_idx=0)
-        backdrop = depth_to_gray_rgb(depth) if depth is not None else None
+        # Read segmentation + depth (+ rgb) straight from the unwrapped env.
+        seg, depth, rgb_sensor = read_unwrapped_sensor(
+            venv, args.probe_camera, env_idx=0
+        )
+        if args.backdrop == "rgb" and rgb_sensor is not None:
+            backdrop = rgb_sensor
+        elif args.backdrop == "depth-gray" and depth is not None:
+            backdrop = depth_to_gray_rgb(depth)
+        elif depth is not None:
+            backdrop = depth_to_color_rgb(depth)   # default / "depth-color"
+        else:
+            backdrop = None
 
         graph, masks, cam, rgb = builder.step(
             obs, frame,
@@ -139,9 +156,11 @@ def main():
         op = render_overlay(
             rgb, graph, masks,
             os.path.join(args.out, f"overlay_{frame:04d}.png"),
+            colormap=colormap,
         )
         gp = render_graph(
             graph, os.path.join(args.out, f"graph_{frame:04d}.png"),
+            colormap=colormap,
         )
         overlay_paths.append(op)
         graph_paths.append(gp)
