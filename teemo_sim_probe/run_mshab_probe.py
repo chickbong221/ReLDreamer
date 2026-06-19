@@ -102,7 +102,7 @@ def main():
     import mshab.envs  # noqa: F401  registers MS-HAB envs
     from mshab.envs.planner import plan_data_from_file
     from mshab.envs.wrappers import FetchDepthObservationWrapper, FrameStack
-    from mshab.envs.wrappers.vector import VectorRecordEpisodeStatistics
+    VectorRecordEpisodeStatistics = _load_vector_stats_wrapper()
 
     algo_hint = detect_algo(args.ckpt_dir)
     task, subtask, split, obj = _resolve_mshab_selection(args)
@@ -303,6 +303,135 @@ def _print_mshab_summary(venv, camera):
         a = arts[ptr]
         print(f"  active_articulation = "
               f"{getattr(a, 'name', None) if a is not None else None}")
+
+
+def _load_vector_stats_wrapper():
+    try:
+        from mshab.envs.wrappers.vector import VectorRecordEpisodeStatistics
+        return VectorRecordEpisodeStatistics
+    except ImportError as exc:
+        print(
+            "[env] MS-HAB VectorRecordEpisodeStatistics import failed "
+            f"({exc}); using local compatibility wrapper"
+        )
+        return _CompatVectorRecordEpisodeStatistics
+
+
+class _CompatVectorRecordEpisodeStatistics:
+    """Small compatibility replacement for older MS-HAB + newer Gymnasium."""
+
+    def __init__(self, env, max_episode_steps: int = -1, extra_stat_keys=None):
+        self.env = env
+        self.max_episode_steps = max_episode_steps
+        self.extra_stat_keys = extra_stat_keys or []
+        self.reset_queues()
+
+    def __getattr__(self, name):
+        return getattr(self.env, name)
+
+    @property
+    def unwrapped(self):
+        return self.env.unwrapped
+
+    @property
+    def num_envs(self):
+        return self.unwrapped.num_envs
+
+    def reset_queues(self):
+        self.return_queue = []
+        self.length_queue = []
+        self.success_once_queue = []
+        self.success_at_end_queue = []
+        self.extra_stats = {k: [] for k in self.extra_stat_keys}
+
+    def reset(self, *args, **kwargs):
+        obs, info = self.env.reset(*args, **kwargs)
+        import torch
+        device = getattr(self.unwrapped, "device", None)
+        self.episode_returns = torch.zeros(
+            self.num_envs, dtype=torch.float32, device=device
+        )
+        self.episode_lengths = torch.zeros(
+            self.num_envs, dtype=torch.int32, device=device
+        )
+        self.episode_success_onces = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=device
+        )
+        self.episode_success_at_ends = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=device
+        )
+        return obs, info
+
+    def step(self, actions):
+        import torch
+
+        observations, rewards, terminations, truncations, infos = self.env.step(actions)
+        device = self.episode_returns.device
+        rewards_t = _as_torch(rewards, device=device, dtype=torch.float32)
+        term_t = _as_torch(terminations, device=device, dtype=torch.bool)
+        trunc_t = _as_torch(truncations, device=device, dtype=torch.bool)
+        dones = torch.logical_or(term_t, trunc_t)
+
+        self.episode_returns += rewards_t
+        self.episode_lengths += 1
+
+        success = torch.zeros(self.num_envs, dtype=torch.bool, device=device)
+        if "success" in infos:
+            success = _as_torch(infos["success"], device=device, dtype=torch.bool)
+            if "_success" in infos:
+                success = torch.logical_and(
+                    success,
+                    _as_torch(infos["_success"], device=device, dtype=torch.bool),
+                )
+        if "_final_info" in infos and isinstance(infos.get("final_info"), dict):
+            final_info = infos["final_info"]
+            if "success" in final_info:
+                final_success = _as_torch(
+                    final_info["success"], device=device, dtype=torch.bool
+                )
+                final_mask = _as_torch(
+                    infos["_final_info"], device=device, dtype=torch.bool
+                )
+                success = torch.where(final_mask, final_success, success)
+
+        self.episode_success_at_ends = success
+        self.episode_success_onces = torch.logical_or(
+            self.episode_success_onces, self.episode_success_at_ends
+        )
+
+        if torch.any(dones):
+            infos.pop("episode", None)
+            infos.pop("_episode", None)
+            infos["episode"] = {
+                "r": torch.where(dones, self.episode_returns, 0.0),
+                "l": torch.where(dones, self.episode_lengths, 0),
+                "s_o": torch.where(dones, self.episode_success_onces, False),
+                "s_e": torch.where(dones, self.episode_success_at_ends, False),
+            }
+            infos["_episode"] = dones
+
+            for i in torch.where(dones)[0].tolist():
+                self.return_queue.append(self.episode_returns[i])
+                self.length_queue.append(self.episode_lengths[i])
+                self.success_once_queue.append(self.episode_success_onces[i])
+                self.success_at_end_queue.append(self.episode_success_at_ends[i])
+
+            self.episode_returns[dones] = 0.0
+            self.episode_lengths[dones] = 0
+            self.episode_success_onces[dones] = False
+            self.episode_success_at_ends[dones] = False
+
+        return observations, rewards, terminations, truncations, infos
+
+    def close(self):
+        return self.env.close()
+
+
+def _as_torch(value, device, dtype):
+    import torch
+    if isinstance(value, torch.Tensor):
+        return value.to(device=device, dtype=dtype)
+    return torch.as_tensor(value, device=device, dtype=dtype)
 
 
 def _resolve_mshab_selection(args):
