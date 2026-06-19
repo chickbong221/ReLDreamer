@@ -75,18 +75,39 @@ used during training.
 ManiSkill (fully runnable, no checkpoint):
 
 ```bash
+cd /root/projects/ReLDreamer
+
 python -m teemo_sim_probe.run_ms_probe \
-    --env-id PickCube-v1 --steps 40 --actions random --video
+    --env-id PickCube-v1 \
+    --steps 40 \
+    --actions random \
+    --video
+```
+
+Longer ManiSkill probe:
+
+```bash
+cd /root/projects/ReLDreamer
+
+python -m teemo_sim_probe.run_ms_probe \
+    --env-id PickCube-v1 \
+    --steps 100 \
+    --actions random \
+    --save-every 10 \
+    --video
 ```
 
 MS-HAB with a released checkpoint:
 
 ```bash
+cd /root/projects/ReLDreamer
+
 # download checkpoints first:
 #   huggingface-cli download arth-shukla/mshab_checkpoints --local-dir mshab_checkpoints
 python -m teemo_sim_probe.run_mshab_probe \
-    --ckpt-dir mshab_checkpoints/rl/tidy_house/pick/all \
-    --steps 60 --video
+    --ckpt-dir /root/projects/ReLDreamer/mshab_checkpoints/rl/tidy_house/pick/all \
+    --steps 60 \
+    --video
 ```
 
 For object-specific SAC checkpoints, keep the task plan matched to the
@@ -94,9 +115,15 @@ checkpoint object. The runner infers this from the checkpoint path, so this uses
 `task_plans/set_table/pick/train/024_bowl.json`:
 
 ```bash
+cd /root/projects/ReLDreamer
+
 python -m teemo_sim_probe.run_mshab_probe \
-    --ckpt-dir mshab_checkpoints/rl/set_table/pick/024_bowl \
-    --steps 200 --save-every 20 --width 128 --height 128 --video
+    --ckpt-dir /root/projects/ReLDreamer/mshab_checkpoints/rl/set_table/pick/024_bowl \
+    --steps 200 \
+    --save-every 20 \
+    --width 128 \
+    --height 128 \
+    --video
 ```
 
 If `policy.pt` is missing the MS-HAB runner falls back to random actions so the
