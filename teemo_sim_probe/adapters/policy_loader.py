@@ -1,137 +1,120 @@
-"""Load and run an MS-HAB PPO checkpoint, mirroring their evaluate wrapper stack.
+"""Load and run an MS-HAB PPO checkpoint, matching mshab/evaluate.py exactly.
 
-Design notes (verified against the MS-HAB repo):
-  * The PPO checkpoint dir contains ``config.yml`` + ``policy.pt``.
-  * The training/eval env is created with ``obs_mode="rgbd"`` and wrapped with
-    ``ManiSkillVectorEnv`` plus mshab's own obs/flatten wrappers.
-  * We instead create the env in ``obs_mode="rgb+depth+segmentation"`` so the
-    probe can read segmentation, and drop the seg channel before the policy
-    sees obs (the policy was trained without it).
+Verified against the installed mshab source:
+  * agent class: mshab.agents.ppo.Agent(sample_obs, single_act_shape)
+  * eval action: agent.get_action(obs, deterministic=True)  -> bare tensor
+  * checkpoint : torch.load(path)["agent"]
+  * policy obs : depth + framestack dict produced by FetchDepthObservationWrapper
+                 + FrameStack (NOT rgb, NOT the raw sensor_data dict)
 
-Because the precise ``Agent`` class signature lives in your installed ``mshab``
-copy, this loader imports it dynamically and degrades to random actions if the
-checkpoint isn't present yet (you said checkpoints aren't downloaded).
+The probe does not feed the policy a hand-built obs. The env is wrapped exactly
+as mshab.envs.make.make_env wraps it, so ``venv.reset()`` already yields the
+obs the policy expects. This loader just builds the net from that obs and
+restores weights.
 """
 
 from __future__ import annotations
 
 import os
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 import numpy as np
 
 
-# --------------------------------------------------------------------------- #
-# Obs adaptation: strip segmentation so the rgbd-trained policy is happy.
-# --------------------------------------------------------------------------- #
-def strip_segmentation(obs: dict) -> dict:
-    """Return a shallow copy of obs with 'segmentation' removed per camera.
-
-    Leaves rgb + depth so the policy sees exactly the rgbd obs it expects.
-    The probe reads segmentation from the *original* obs before this call.
-    """
-    if "sensor_data" not in obs:
-        return obs
-    new = dict(obs)
-    sd = {}
-    for cam, data in obs["sensor_data"].items():
-        d = dict(data)
-        d.pop("segmentation", None)
-        sd[cam] = d
-    new["sensor_data"] = sd
-    return new
-
-
-# --------------------------------------------------------------------------- #
-# Checkpoint config discovery
-# --------------------------------------------------------------------------- #
-def load_checkpoint_config(ckpt_dir: str) -> dict:
-    """Read the checkpoint's config.yml (env kwargs, task/subtask/split, etc.)."""
-    import yaml
-    cfg_path = os.path.join(ckpt_dir, "config.yml")
-    if not os.path.exists(cfg_path):
-        raise FileNotFoundError(
-            f"no config.yml in {ckpt_dir}. Download with:\n"
-            f"  huggingface-cli download arth-shukla/mshab_checkpoints "
-            f"--local-dir mshab_checkpoints"
-        )
-    with open(cfg_path) as f:
-        return yaml.safe_load(f)
-
-
-# --------------------------------------------------------------------------- #
-# Policy loading
-# --------------------------------------------------------------------------- #
 class PolicyHandle:
-    """Uniform action interface over either an mshab PPO Agent or random fallback."""
+    """Uniform action interface over an mshab PPO Agent or a random fallback."""
 
-    def __init__(self, fn: Callable[[dict], np.ndarray], kind: str):
+    def __init__(self, fn: Callable[[Any], np.ndarray], kind: str):
         self._fn = fn
         self.kind = kind
 
-    def act(self, obs: dict) -> np.ndarray:
+    def act(self, obs: Any) -> np.ndarray:
         return self._fn(obs)
 
 
+def find_checkpoint(ckpt_dir: str) -> str:
+    """Locate the policy weights file inside a checkpoint dir.
+
+    mshab checkpoints store ``policy.pt`` or ``latest.pt`` / ``best.pt``.
+    """
+    for name in ("policy.pt", "latest.pt", "best.pt", "ckpt.pt"):
+        p = os.path.join(ckpt_dir, name)
+        if os.path.exists(p):
+            return p
+    # any .pt as last resort
+    for f in sorted(os.listdir(ckpt_dir)) if os.path.isdir(ckpt_dir) else []:
+        if f.endswith(".pt"):
+            return os.path.join(ckpt_dir, f)
+    return ""
+
+
 def load_ppo_policy(
-    ckpt_dir: str,
+    ckpt_path_or_dir: str,
     venv,
+    eval_obs: Any,
     device: str = "cuda",
 ) -> PolicyHandle:
-    """Try to load mshab PPO Agent from ``policy.pt``; fall back to random.
+    """Build mshab PPO Agent and restore weights, matching evaluate.py.
 
-    Mirrors mshab.train_ppo's Agent construction (NatureCNN feature extractor
-    over rgbd + state). The exact import path is read from your installed copy.
+    Args:
+        ckpt_path_or_dir: a .pt file or a dir containing one.
+        venv: the wrapped vector env (for single_action_space).
+        eval_obs: the policy-shaped obs from venv.reset() (depth + framestack).
+        device: torch device.
     """
-    policy_pt = os.path.join(ckpt_dir, "policy.pt")
-    if not os.path.exists(policy_pt):
-        print(f"[policy] {policy_pt} missing -> random actions")
+    ckpt = ckpt_path_or_dir
+    if os.path.isdir(ckpt):
+        ckpt = find_checkpoint(ckpt_path_or_dir)
+    if not ckpt or not os.path.exists(ckpt):
+        print(f"[policy] no checkpoint under {ckpt_path_or_dir!r} -> random actions")
         return _random_policy(venv)
 
     try:
         import torch
-        from mshab.agents.ppo import Agent  # type: ignore
+        from mshab.agents.ppo import Agent as PPOAgent
 
-        # mshab Agent is typically Agent(envs, sample_obs) or Agent(envs).
-        sample_obs, _ = venv.reset()
-        try:
-            agent = Agent(venv, sample_obs)
-        except TypeError:
-            agent = Agent(venv)
+        # act_space from the UNWRAPPED env, exactly like evaluate.py.
+        act_shape = venv.unwrapped.single_action_space.shape
 
-        state_dict = torch.load(policy_pt, map_location=device)
-        # checkpoints may store {'agent': ...} or the bare state dict
-        if isinstance(state_dict, dict) and "agent" in state_dict:
-            state_dict = state_dict["agent"]
-        agent.load_state_dict(state_dict)
-        agent = agent.to(device).eval()
+        # to_tensor the obs (evaluate.py does to_tensor(eval_obs, dtype="float")).
+        obs_t = _to_tensor_obs(eval_obs, device)
 
-        def _act(obs: dict) -> np.ndarray:
-            policy_obs = strip_segmentation(obs)
+        policy = PPOAgent(obs_t, act_shape)
+        policy.eval()
+        state = torch.load(ckpt, map_location=device)
+        policy.load_state_dict(state["agent"] if "agent" in state else state)
+        policy.to(device)
+
+        def _act(obs: Any) -> np.ndarray:
+            o = _to_tensor_obs(obs, device)
             with torch.no_grad():
-                # mshab PPO exposes get_action / get_eval_action / act.
-                for meth in ("get_eval_action", "get_action", "act"):
-                    if hasattr(agent, meth):
-                        a = getattr(agent, meth)(policy_obs)
-                        break
-                else:
-                    a = agent(policy_obs)
-            if isinstance(a, (tuple, list)):
-                a = a[0]
+                a = policy.get_action(o, deterministic=True)  # bare tensor
             return a.detach().cpu().numpy()
 
-        print(f"[policy] loaded mshab PPO Agent from {policy_pt}")
+        print(f"[policy] loaded mshab PPO Agent from {ckpt}")
         return PolicyHandle(_act, kind="ppo")
 
     except Exception as exc:  # noqa: BLE001
+        import traceback
         print(f"[policy] could not load mshab PPO Agent ({exc}); random actions")
+        traceback.print_exc()
         return _random_policy(venv)
+
+
+def _to_tensor_obs(obs, device):
+    """Recursively move a (possibly nested) obs dict to float tensors on device."""
+    import torch
+    if isinstance(obs, dict):
+        return {k: _to_tensor_obs(v, device) for k, v in obs.items()}
+    if isinstance(obs, torch.Tensor):
+        return obs.to(device=device, dtype=torch.float)
+    return torch.as_tensor(np.asarray(obs), device=device, dtype=torch.float)
 
 
 def _random_policy(venv) -> PolicyHandle:
     space = venv.action_space
 
-    def _act(obs: dict) -> np.ndarray:
+    def _act(obs):
         return space.sample()
 
     return PolicyHandle(_act, kind="random")

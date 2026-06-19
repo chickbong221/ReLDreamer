@@ -42,7 +42,9 @@ class GraphBuilder:
         self._first_unseen: Dict[str, int] = {}  # node_id -> frame first appeared unseen
 
     def step(
-        self, obs: dict, frame: int
+        self, obs: dict, frame: int,
+        *,
+        seg_override=None, rgb_override=None, camera_override=None,
     ) -> Tuple[Graph, MaskAccumulator, str, np.ndarray]:
         state = get_privileged_state(self.env, self.env_idx)
 
@@ -53,6 +55,9 @@ class GraphBuilder:
             include_goals=self.include_goals,
             min_pixels=self.cfg.get("node", {}).get("min_pixels", 32),
             min_area_ratio=self.cfg.get("node", {}).get("min_area_ratio", 0.0005),
+            seg_override=seg_override,
+            rgb_override=rgb_override,
+            camera_override=camera_override,
         )
 
         # Update tau_i (steps_since_seen) for every node.

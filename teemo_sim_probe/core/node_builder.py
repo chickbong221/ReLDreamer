@@ -139,10 +139,25 @@ def build_nodes(
     include_goals: bool = False,
     min_pixels: int = 32,
     min_area_ratio: float = 0.0005,
+    seg_override: Optional[np.ndarray] = None,
+    rgb_override: Optional[np.ndarray] = None,
+    camera_override: Optional[str] = None,
 ) -> Tuple[Dict[str, Node], MaskAccumulator, str, np.ndarray]:
-    """Return (nodes_by_id, masks, camera_name, rgb)."""
-    cam = pick_camera(obs, camera)
-    rgb, seg, _depth = extract_camera_obs(obs, cam, state.env_idx)
+    """Return (nodes_by_id, masks, camera_name, rgb).
+
+    If ``seg_override`` is given the segmentation image is taken from it (and
+    ``rgb_override`` as the backdrop) instead of from ``obs``. This is the
+    MS-HAB depth-mode path, where the policy obs has no segmentation and the
+    probe reads it from the unwrapped env separately.
+    """
+    if seg_override is not None:
+        seg = seg_override
+        rgb = rgb_override if rgb_override is not None else \
+            np.zeros((*seg.shape, 3), dtype=np.uint8)
+        cam = camera_override or camera or "fetch_head"
+    else:
+        cam = pick_camera(obs, camera)
+        rgb, seg, _depth = extract_camera_obs(obs, cam, state.env_idx)
     H, W = seg.shape
     masks = MaskAccumulator(H, W)
 

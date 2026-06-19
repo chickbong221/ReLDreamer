@@ -63,6 +63,37 @@ def unique_seg_ids(seg: np.ndarray, exclude_background: bool = True) -> List[int
     return ids
 
 
+def read_unwrapped_sensor(env, camera: str, env_idx: int = 0):
+    """Read (seg[H,W], depth[H,W] or None) directly from the unwrapped env.
+
+    Used when the observation wrappers (e.g. MS-HAB depth + framestack) have
+    stripped segmentation from the policy obs. The unwrapped env still computes
+    the full sensor_data when obs_mode includes segmentation.
+    """
+    u = env.unwrapped
+    full = u.get_obs()
+    cam = full["sensor_data"][camera]
+    seg = _to_np(cam["segmentation"])[env_idx].squeeze(-1).astype(np.int64)
+    depth = None
+    if "depth" in cam:
+        depth = _to_np(cam["depth"])[env_idx].squeeze(-1).astype(np.float32)
+    return seg, depth
+
+
+def depth_to_gray_rgb(depth: np.ndarray) -> np.ndarray:
+    """Turn a [H,W] depth map into a [H,W,3] uint8 grayscale backdrop."""
+    d = depth.astype(np.float32)
+    finite = d[np.isfinite(d)]
+    if finite.size == 0:
+        g = np.zeros_like(d)
+    else:
+        lo, hi = float(finite.min()), float(finite.max())
+        g = (d - lo) / (hi - lo + 1e-6)
+        g = np.clip(1.0 - g, 0, 1)        # near = bright
+    gray = (g * 255).astype(np.uint8)
+    return np.stack([gray, gray, gray], axis=-1)
+
+
 def mask_for_id(seg: np.ndarray, seg_id: int) -> np.ndarray:
     return seg == seg_id
 
