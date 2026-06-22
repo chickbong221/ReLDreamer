@@ -97,12 +97,22 @@ def render_graph(
         if nid not in pos:
             continue
         x, y = pos[nid]
-        color = cmap.color(nid)
+        # Retained-with-frozen-pose nodes get a distinctive blue fill + dashed
+        # outline, so they read differently from MS-HAB active-target persistents
+        # (which still receive fresh poses from SAPIEN).
+        if node.frozen_pose:
+            color = (0.29, 0.56, 0.89)        # #4a90e2
+            edgecol = "#1c3d6e"
+            linestyle = (0, (3, 2))
+        else:
+            color = cmap.color(nid)
+            edgecol = "#000" if node.persistent else "white"
+            linestyle = "solid"
         size = 1000 if node.node_type == "ee" else 780
-        edgecol = "#000" if node.persistent else "white"
         ax.scatter(
             [x], [y], s=size, c=[color], zorder=3,
             edgecolors=edgecol, linewidths=1.5,
+            linestyle=linestyle,
             alpha=0.5 if not node.visible else 1.0,
         )
         label = "ee" if node.node_type == "ee" else node.name

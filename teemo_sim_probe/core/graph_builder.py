@@ -17,6 +17,7 @@ from .node_builder import build_nodes
 from .relation_rules import build_absolute_edges
 from .temporal_buffer import TemporalBuffer
 from .mask_extractor import MaskAccumulator
+from .persistence import PersistentNodeRegistry
 from ..adapters.privileged_state import get_privileged_state
 
 
@@ -46,6 +47,13 @@ class GraphBuilder:
         self.temporal = TemporalBuffer(K=cfg["temporal"]["K"])
         self._last_seen: Dict[str, int] = {}     # node_id -> frame last visible
         self._first_unseen: Dict[str, int] = {}  # node_id -> frame first appeared unseen
+        # MS-HAB-only: persistence + N-cap registry.
+        pcfg = cfg.get("persistence") or {}
+        self.registry = PersistentNodeRegistry(
+            n_max=pcfg.get("n_max", 6),
+            w_keep=pcfg.get("w_keep", 3),
+            w_manip=pcfg.get("w_manip", 5),
+        )
 
     def step(
         self, obs: dict, frame: int,
@@ -72,6 +80,11 @@ class GraphBuilder:
             camera_override=camera_override,
         )
 
+        # MS-HAB: inject retained-but-invisible objects (frozen pose). Non-MS-HAB
+        # envs are fixed-camera / fixed-object-set and skip this entirely.
+        if state.is_mshab:
+            nodes = self.registry.merge_retained(nodes, frame)
+
         # Update tau_i (steps_since_seen) for every node.
         for node_id, node in nodes.items():
             if node.visible:
@@ -79,11 +92,25 @@ class GraphBuilder:
                 node.steps_since_seen = 0
             else:
                 # If never seen, anchor age to when the node first appeared.
+                # Use frame+1 (>0) to distinguish from "currently visible".
                 if node_id not in self._last_seen:
-                    self._first_unseen.setdefault(node_id, frame)
-                    node.steps_since_seen = frame - self._first_unseen[node_id]
+                    first = self._first_unseen.setdefault(node_id, frame)
+                    node.steps_since_seen = max(1, frame - first + 1)
                 else:
                     node.steps_since_seen = frame - self._last_seen[node_id]
+
+        # MS-HAB only: snapshot newly visible objects, rank tiers, drop the
+        # overflow under N_max.
+        evicted: set = set()
+        if state.is_mshab:
+            self.registry.snapshot_visible(nodes, frame)
+            evicted = self.registry.rank_and_cap(nodes, state, self.cfg)
+            for nid in evicted:
+                nodes.pop(nid, None)
+                self._last_seen.pop(nid, None)
+                self._first_unseen.pop(nid, None)
+            self.registry.drop(evicted)
+            self.temporal.purge(evicted)
 
         graph = Graph(
             frame=frame,
@@ -99,6 +126,8 @@ class GraphBuilder:
 
         # Absolute then temporal edges.
         build_absolute_edges(graph, state, self.cfg)
+        if state.is_mshab:
+            self.registry.record_recency(graph)
         self.temporal.update(graph)
         graph.edges.extend(self.temporal.temporal_edges(graph, self.cfg))
 

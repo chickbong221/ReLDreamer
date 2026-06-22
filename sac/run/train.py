@@ -1,0 +1,309 @@
+"""SAC training loop.
+
+Single-process driver over a GPU-vectorized ManiSkill/MS-HAB env. One
+``training_freq`` env-step block is interleaved with ``training_freq * utd``
+gradient updates, then logging/eval/save checkpoints fire at their own
+cadences.
+"""
+
+from __future__ import annotations
+
+import os
+import time
+from collections import defaultdict
+from typing import Dict, Mapping
+
+import numpy as np
+import torch
+
+from ..agent import SACAgent
+from ..envs import action_box, adapt_obs, build_env
+from ..replay import ReplayBuffer, TensorSpec, build_obs_spec
+
+
+def _seed_everything(seed: int) -> None:
+    import random
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+
+def _to_device_dict(d: Mapping[str, torch.Tensor], device) -> Dict[str, torch.Tensor]:
+    return {k: v.to(device, non_blocking=True) for k, v in d.items()}
+
+
+def _build_replay(sample_obs, action_shape, num_envs, cfg, device):
+    spec = build_obs_spec(sample_obs)
+    storage_device = torch.device(cfg["agent"]["buffer_device"])
+    return ReplayBuffer(
+        obs_spec=spec,
+        action_shape=action_shape,
+        num_envs=num_envs,
+        buffer_size=int(cfg["agent"]["buffer_size"]),
+        storage_device=storage_device,
+        sample_device=device,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Logging
+# --------------------------------------------------------------------------- #
+class Logger:
+    def __init__(self, logdir: str, outputs):
+        self.logdir = logdir
+        self.outputs = list(outputs)
+        os.makedirs(logdir, exist_ok=True)
+        self.tb = None
+        self.jsonl_path = None
+        if "tensorboard" in self.outputs:
+            from torch.utils.tensorboard import SummaryWriter
+            self.tb = SummaryWriter(logdir)
+        if "jsonl" in self.outputs:
+            self.jsonl_path = os.path.join(logdir, "metrics.jsonl")
+        self.wandb = None
+        if "wandb" in self.outputs:
+            import wandb
+            self.wandb = wandb
+
+    def scalar(self, tag: str, value, step: int) -> None:
+        if isinstance(value, torch.Tensor):
+            value = float(value.detach().cpu().item())
+        else:
+            value = float(value)
+        if self.tb is not None:
+            self.tb.add_scalar(tag, value, step)
+        if self.wandb is not None:
+            self.wandb.log({tag: value}, step=step)
+        if self.jsonl_path is not None:
+            import json
+            with open(self.jsonl_path, "a") as f:
+                f.write(json.dumps({"step": step, "tag": tag, "value": value}) + "\n")
+
+    def close(self):
+        if self.tb is not None:
+            self.tb.close()
+
+
+# --------------------------------------------------------------------------- #
+# Train entrypoint
+# --------------------------------------------------------------------------- #
+def train(config: dict) -> None:
+    suite, task = config["task"].split("_", 1)
+    if suite != "maniskill":
+        raise NotImplementedError(
+            f"sac.run.train only supports the 'maniskill' suite (got {suite!r}). "
+            "MS-HAB envs are reached via task='maniskill_<SubtaskTrain>'.")
+    env_cfg = dict(config["env"]["maniskill"])
+    agent_cfg = dict(config["agent"])
+    run_cfg = dict(config["run"])
+    obs_mode = str(env_cfg["obs_mode"])
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    _seed_everything(int(config["seed"]))
+
+    # --- env ----------------------------------------------------------------
+    envs = build_env(task, env_cfg, is_eval=False, seed=int(config["seed"]))
+    eval_envs = build_env(task, env_cfg, is_eval=True, seed=int(config["seed"]) + 1)
+    action_shape, action_low, action_high = action_box(envs)
+    num_envs = int(env_cfg["num_envs"])
+
+    # --- initial obs (also serves as sample for spec discovery) -------------
+    obs_raw, _ = envs.reset(seed=int(config["seed"]))
+    obs = adapt_obs(obs_raw, obs_mode, device)
+    eval_obs_raw, _ = eval_envs.reset(seed=int(config["seed"]) + 1)
+    eval_obs = adapt_obs(eval_obs_raw, obs_mode, device)
+
+    # --- agent + replay -----------------------------------------------------
+    agent = SACAgent(
+        sample_obs=obs,
+        action_shape=action_shape,
+        action_low=action_low,
+        action_high=action_high,
+        cfg=agent_cfg,
+        device=device,
+    )
+    replay = _build_replay(obs, action_shape, num_envs, config, device)
+
+    # --- logging ------------------------------------------------------------
+    logger = Logger(config["logdir"], config["logger"]["outputs"])
+    if "wandb" in config["logger"]["outputs"]:
+        import wandb
+        wandb.init(
+            project=config["logger"].get("wandb_project") or "sac",
+            entity=config["logger"].get("wandb_entity") or None,
+            name=config["logger"].get("wandb_name") or None,
+            group=config["logger"].get("wandb_group") or None,
+            config=config,
+            dir=config["logdir"],
+            resume="allow",
+        )
+
+    # --- training loop ------------------------------------------------------
+    total_steps = int(run_cfg["total_steps"])
+    learning_starts = int(agent_cfg["learning_starts"])
+    training_freq = int(agent_cfg["training_freq"])
+    utd = float(agent_cfg["utd"])
+    grad_steps_per_block = max(1, int(training_freq * utd))
+    steps_per_env_block = max(1, training_freq // num_envs)
+    log_every = int(run_cfg["log_every"])
+    eval_every = int(run_cfg["eval_every"])
+    save_every = int(run_cfg["save_every"])
+    eval_steps = int(run_cfg["eval_steps"])
+
+    global_step = 0
+    last_log = -log_every
+    last_eval = -eval_every
+    last_save = -save_every
+    learning_has_started = False
+    cumulative = defaultdict(float)
+
+    print(f"[sac] task={task} obs_mode={obs_mode} num_envs={num_envs} "
+          f"buffer={agent_cfg['buffer_size']} device={device}")
+
+    while global_step < total_steps:
+        # ----- collect a training_freq block --------------------------------
+        rollout_t = time.perf_counter()
+        for _ in range(steps_per_env_block):
+            if not learning_has_started:
+                act = (
+                    2.0 * torch.rand(envs.action_space.shape,
+                                     dtype=torch.float32, device=device) - 1.0
+                )
+            else:
+                act = agent.act(obs, deterministic=False)
+            act = act.detach()
+
+            next_obs_raw, reward, terminated, truncated, info = envs.step(act)
+            next_obs = adapt_obs(next_obs_raw, obs_mode, device)
+
+            # Real next-obs uses final_observation on done envs so the Q-target
+            # bootstraps off the actual final state, not the auto-reset state.
+            real_next_obs = {k: v.clone() for k, v in next_obs.items()}
+            bootstrap = str(agent_cfg["bootstrap_at_done"])
+            done = (terminated | truncated)
+            if bootstrap == "always":
+                need_final = done
+                stop_bootstrap = torch.zeros_like(terminated, dtype=torch.bool)
+            elif bootstrap == "truncated":
+                need_final = truncated & (~terminated)
+                stop_bootstrap = terminated
+            elif bootstrap == "never":
+                need_final = done
+                stop_bootstrap = done
+            else:
+                raise ValueError(f"Unknown bootstrap_at_done={bootstrap!r}")
+
+            if "final_observation" in info and need_final.any():
+                final_raw = info["final_observation"]
+                final_adapt = adapt_obs(final_raw, obs_mode, device)
+                for k in real_next_obs:
+                    if k in final_adapt:
+                        real_next_obs[k][need_final] = final_adapt[k][need_final]
+
+            replay.add(
+                obs=_to_device_dict(obs, replay.storage_device),
+                next_obs=_to_device_dict(real_next_obs, replay.storage_device),
+                action=act,
+                reward=reward.to(device).float(),
+                done=stop_bootstrap.to(device).float(),
+            )
+
+            obs = next_obs
+            global_step += num_envs
+
+            # Track per-block episode metrics from the env wrapper.
+            if "final_info" in info and "episode" in info["final_info"]:
+                mask = info.get("_final_info", done)
+                ep = info["final_info"]["episode"]
+                for key, val in ep.items():
+                    arr = val.detach().float().view(-1)
+                    arr = arr[mask.view(-1)] if mask is not None else arr
+                    if arr.numel() > 0:
+                        cumulative[f"train/{key}"] += float(arr.mean().item())
+                        cumulative[f"train/{key}_n"] += 1.0
+        rollout_t = time.perf_counter() - rollout_t
+
+        # ----- updates -------------------------------------------------------
+        if global_step < learning_starts:
+            continue
+        learning_has_started = True
+        update_t = time.perf_counter()
+        last_metrics = None
+        for _ in range(grad_steps_per_block):
+            batch = replay.sample(int(agent_cfg["batch_size"]))
+            last_metrics = agent.update(batch)
+        update_t = time.perf_counter() - update_t
+
+        # ----- logging -------------------------------------------------------
+        if global_step - last_log >= log_every and last_metrics is not None:
+            last_log = global_step
+            steps_in_block = num_envs * steps_per_env_block
+            logger.scalar("losses/qf_loss", last_metrics.qf_loss, global_step)
+            logger.scalar("losses/qf1_value", last_metrics.qf1_value, global_step)
+            logger.scalar("losses/qf2_value", last_metrics.qf2_value, global_step)
+            logger.scalar("losses/actor_loss", last_metrics.actor_loss, global_step)
+            logger.scalar("losses/alpha", last_metrics.alpha, global_step)
+            logger.scalar("losses/alpha_loss", last_metrics.alpha_loss, global_step)
+            logger.scalar("time/rollout_s", rollout_t, global_step)
+            logger.scalar("time/update_s", update_t, global_step)
+            if rollout_t > 0:
+                logger.scalar("time/rollout_fps",
+                              steps_in_block / rollout_t, global_step)
+            # Emit averaged episode metrics, then reset cumulative bins.
+            for key, total in list(cumulative.items()):
+                if key.endswith("_n"):
+                    continue
+                n = cumulative.get(f"{key}_n", 0.0)
+                if n > 0:
+                    logger.scalar(key, total / n, global_step)
+            cumulative.clear()
+
+        # ----- eval ----------------------------------------------------------
+        if global_step - last_eval >= eval_every:
+            last_eval = global_step
+            metrics = _evaluate(agent, eval_envs, eval_obs, obs_mode, device,
+                                 num_steps=eval_steps)
+            for key, value in metrics.items():
+                logger.scalar(f"eval/{key}", value, global_step)
+
+        # ----- save ----------------------------------------------------------
+        if global_step - last_save >= save_every:
+            last_save = global_step
+            path = os.path.join(config["logdir"], f"ckpt_{global_step}.pt")
+            torch.save({"agent": agent.state_dict(),
+                         "global_step": global_step,
+                         "config": config}, path)
+            print(f"[sac] saved {path}")
+
+    final_path = os.path.join(config["logdir"], "ckpt_final.pt")
+    torch.save({"agent": agent.state_dict(),
+                 "global_step": global_step,
+                 "config": config}, final_path)
+    print(f"[sac] saved {final_path}")
+    logger.close()
+    envs.close()
+    eval_envs.close()
+
+
+# --------------------------------------------------------------------------- #
+# Eval
+# --------------------------------------------------------------------------- #
+@torch.no_grad()
+def _evaluate(agent, eval_envs, eval_obs, obs_mode, device, *, num_steps: int):
+    metrics = defaultdict(list)
+    obs = eval_obs
+    obs_raw, _ = eval_envs.reset()
+    obs = adapt_obs(obs_raw, obs_mode, device)
+    for _ in range(num_steps):
+        act = agent.act(obs, deterministic=True)
+        obs_raw, _, terminated, truncated, info = eval_envs.step(act)
+        obs = adapt_obs(obs_raw, obs_mode, device)
+        if "final_info" in info and "episode" in info["final_info"]:
+            ep = info["final_info"]["episode"]
+            mask = info.get("_final_info", terminated | truncated)
+            for key, val in ep.items():
+                arr = val.detach().float().view(-1)[mask.view(-1)]
+                if arr.numel() > 0:
+                    metrics[key].append(arr.mean().item())
+    out = {k: float(np.mean(v)) for k, v in metrics.items() if v}
+    return out

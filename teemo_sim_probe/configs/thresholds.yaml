@@ -18,6 +18,19 @@ support:
   eps_z: 0.02               # m; supporter centre must be lower by this amount
   min_vertical_force_ratio: 0.5  # |Fz| / |F|; rejects side-only contact
 
+approach_alignment:         # ee-object, TCP approach axis vs (TCP -> object)
+  # ManiSkill panda_hand_tcp / fetch build_grasp_pose use rotation columns
+  # [ortho | closing | approaching], so +Z in the TCP local frame is the
+  # approach direction (shared by Panda and Fetch).
+  tcp_axis: [0.0, 0.0, 1.0]
+  edges_deg: [15.0, 35.0, 70.0, 110.0]
+  labels: [strongly-aligned, aligned, oblique, misaligned, opposite]
+
+persistence:                # MS-HAB only; non-MS-HAB envs bypass this entirely
+  n_max: 6                  # max object nodes (ee excluded from count)
+  w_keep: 3                 # retain invisible object for up to this many frames
+  w_manip: 5                # remember EE-grasp/contact for this many frames
+
 profiles:
 
   tabletop:
@@ -37,6 +50,11 @@ profiles:
       labels: [move-down-fast, move-down-medium, move-down-slow,
                stable-height,
                move-up-slow, move-up-medium, move-up-fast]
+    approach_alignment_change:   # signed delta angle (deg) over K
+      edges:  [-30.0, -10.0, -3.0, 3.0, 10.0, 30.0]
+      labels: [align-fast, align-medium, align-slow,
+               stable-alignment,
+               misalign-slow, misalign-medium, misalign-fast]
 
   room_scale:
     planar_distance:
@@ -55,3 +73,8 @@ profiles:
       labels: [move-down-fast, move-down-medium, move-down-slow,
                stable-height,
                move-up-slow, move-up-medium, move-up-fast]
+    approach_alignment_change:   # signed delta angle (deg) over K
+      edges:  [-30.0, -10.0, -3.0, 3.0, 10.0, 30.0]
+      labels: [align-fast, align-medium, align-slow,
+               stable-alignment,
+               misalign-slow, misalign-medium, misalign-fast]

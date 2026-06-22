@@ -25,6 +25,7 @@ from .relation_rules import bin_label
 _CONTINUOUS = {
     "planar-distance": "planar_distance_change",
     "height-offset": "height_offset_change",
+    "approach-alignment": "approach_alignment_change",
 }
 # Relations handled as binary predicates.
 _BINARY = {"contact", "grasp", "support", "containment"}
@@ -87,6 +88,16 @@ class TemporalBuffer:
 
         for key, positive in current_bools.items():
             self._bools.setdefault(key, deque(maxlen=self.K + 1)).append(positive)
+
+    # ---- hard-drop history for evicted nodes ---------------------------- #
+    def purge(self, node_ids) -> None:
+        """Drop history for any key whose src or dst is in ``node_ids``."""
+        if not node_ids:
+            return
+        drop_set = set(node_ids)
+        for store in (self._values, self._bools):
+            for key in [k for k in store if k[0] in drop_set or k[1] in drop_set]:
+                del store[key]
 
     # ---- emit temporal edges for current frame -------------------------- #
     def temporal_edges(self, graph: Graph, cfg: dict) -> List[Edge]:

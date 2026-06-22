@@ -1,0 +1,112 @@
+# SAC trainer config. Mirrors dreamerv3/configs.yaml structure:
+#   defaults -> base values
+#   <preset name> -> additive overrides selected via --configs <name>
+#
+# CLI: python -m sac.main --task maniskill_PickCube-v1 --configs maniskill_rgb
+#      python -m sac.main --task maniskill_PickSubtaskTrain-v0 --configs mshab
+#                          --env.maniskill.mshab_task pick
+
+defaults:
+
+  logdir: /mnt/data/tuannl/sac_logdir/{timestamp}
+  replica: 0
+  replicas: 1
+  task: maniskill_PickCube-v1
+  seed: 1
+  script: train
+
+  agent:
+    gamma: 0.8
+    tau: 0.01
+    batch_size: 1024
+    buffer_size: 1_000_000
+    buffer_device: cuda            # 'cpu' or 'cuda' for the replay store
+    learning_starts: 4_000
+    policy_lr: 3e-4
+    q_lr: 3e-4
+    alpha_lr: 3e-4
+    alpha: 0.2
+    autotune: True                 # learn entropy temperature
+    target_entropy: auto           # 'auto' = -prod(act_shape); or a float
+    policy_frequency: 1
+    target_network_frequency: 1
+    training_freq: 64              # env steps per gradient block
+    utd: 0.5                       # gradient updates per env step
+    bootstrap_at_done: always      # 'always' | 'truncated' | 'never'
+    encoder:
+      out_dim: 256
+      mlp_hidden: [512, 256]
+      detach_critic_encoder: False  # detach encoder grad through critic only
+
+  env:
+    maniskill:
+      num_envs: 16
+      num_eval_envs: 16
+      obs_mode: state              # 'state' | 'rgb' | 'depth'
+      include_state: True          # also concat proprio state to encoder out
+      sim_backend: gpu
+      control_mode: pd_joint_delta_pos
+      image_size: 64
+      reconfiguration_freq: 0      # 0 = never; 1 = every reset
+      eval_reconfiguration_freq: 1
+      reward_mode: normalized_dense
+      # MS-HAB only (ignored otherwise):
+      mshab_task: none             # 'none' | 'pick' | 'place' | 'open' | 'close'
+      mshab_split: train
+      mshab_obj: all
+      mshab_stationary_head: True
+      max_episode_steps: 0         # 0 = registered default
+      eval_max_episode_steps: 0    # 0 = reuse max_episode_steps
+
+  run:
+    total_steps: 1_000_000
+    log_every: 5_000
+    eval_every: 50_000
+    eval_steps: 50                 # rollout length per eval env
+    save_every: 200_000
+
+  logger:
+    outputs: [jsonl, tensorboard]   # add 'wandb' to enable
+    wandb_project: ''
+    wandb_entity: ''
+    wandb_group: ''
+    wandb_name: ''
+
+# ----------------------------------------------------------------------- #
+# Presets
+# ----------------------------------------------------------------------- #
+
+maniskill_state:
+  env:
+    maniskill:
+      obs_mode: state
+      num_envs: 16
+  agent:
+    batch_size: 1024
+
+maniskill_rgb:
+  env:
+    maniskill:
+      obs_mode: rgb
+      num_envs: 16
+      image_size: 64
+  agent:
+    batch_size: 512               # CNN encoder makes RGB updates heavier
+
+mshab:
+  env:
+    maniskill:
+      obs_mode: depth
+      num_envs: 16
+      mshab_task: pick
+      mshab_split: train
+      mshab_obj: all
+      max_episode_steps: 100
+      eval_max_episode_steps: 200
+      reward_mode: normalized_dense
+  agent:
+    gamma: 0.9                    # matches mshab/train_sac.py
+    batch_size: 512
+    buffer_size: 1_000_000
+  run:
+    total_steps: 50_000_000

@@ -38,6 +38,10 @@ class Node:
     persistent: bool = False
     steps_since_seen: int = 0
     source: str = "segmentation"     # "segmentation" | "mshab_task"
+    # True for nodes retained across a visibility gap with the LAST observed
+    # pose (no live SAPIEN refresh). MS-HAB-active-target persistents stay False
+    # because they get fresh poses from the simulator each frame.
+    frozen_pose: bool = False
 
     attributes: Dict[str, Any] = field(default_factory=dict)
 

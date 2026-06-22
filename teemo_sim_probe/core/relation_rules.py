@@ -54,6 +54,61 @@ def height_offset(a: Node, b: Node) -> Optional[float]:
     return float(pa[2] - pb[2])
 
 
+def _normalize(v: np.ndarray) -> Optional[np.ndarray]:
+    n = float(np.linalg.norm(v))
+    if n < 1e-9:
+        return None
+    return v / n
+
+
+def _quat_wxyz_to_rotmat(q: np.ndarray) -> Optional[np.ndarray]:
+    """SAPIEN quaternion (qw, qx, qy, qz) -> 3x3 rotation matrix."""
+    qn = _normalize(q)
+    if qn is None:
+        return None
+    w, x, y, z = qn
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - w * z),     2 * (x * z + w * y)],
+        [2 * (x * y + w * z),     1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+        [2 * (x * z - w * y),     2 * (y * z + w * x),     1 - 2 * (x * x + y * y)],
+    ])
+
+
+def _approach_alignment_deg(
+    ee_node: Node, object_node: Node, cfg: Optional[dict]
+) -> Optional[float]:
+    """Angle (deg) between TCP approach axis (world) and TCP->object vector.
+
+    Safe: returns None if any pose / quaternion / vector is degenerate.
+    """
+    if cfg is None:
+        return None
+    if ee_node.pose_world is None or object_node.pose_world is None:
+        return None
+    if len(ee_node.pose_world) < 7 or len(object_node.pose_world) < 7:
+        return None
+
+    p_ee = np.asarray(ee_node.pose_world[:3], dtype=float)
+    q_ee = np.asarray(ee_node.pose_world[3:7], dtype=float)
+    p_obj = np.asarray(object_node.pose_world[:3], dtype=float)
+
+    R_ee = _quat_wxyz_to_rotmat(q_ee)
+    if R_ee is None:
+        return None
+
+    a_tcp = _normalize(np.asarray(cfg.get("tcp_axis", [0.0, 0.0, 1.0]), dtype=float))
+    if a_tcp is None:
+        return None
+    a_world = R_ee @ a_tcp
+
+    u = _normalize(p_obj - p_ee)
+    if u is None:
+        return None
+
+    cos_a = float(np.clip(np.dot(a_world, u), -1.0, 1.0))
+    return float(np.degrees(np.arccos(cos_a)))
+
+
 # --------------------------------------------------------------------------- #
 # Predicates
 # --------------------------------------------------------------------------- #
@@ -86,12 +141,18 @@ def _resolve_entity(node: Node, state: PrivilegedState):
             return state.active_obj
         if node.attributes.get("mshab_kind") == "handle":
             return state.active_handle_link
-    # Fall back to first seg-id entity if name didn't match (merged views).
-    for seg_id in node.segmentation_ids:
-        ent = state.seg_id_map.get(seg_id)
-        if ent is not None:
-            return ent
-    return None
+    # Fall back to the entity that appears under the most seg_ids (mode);
+    # compares by identity since entity wrappers may not be hashable.
+    ents = [state.seg_id_map.get(s) for s in node.segmentation_ids]
+    ents = [e for e in ents if e is not None]
+    if not ents:
+        return None
+    best_ent, best_count = None, 0
+    for ent in ents:
+        count = sum(1 for e in ents if e is ent)
+        if count > best_count:
+            best_ent, best_count = ent, count
+    return best_ent
 
 
 # --------------------------------------------------------------------------- #
@@ -132,6 +193,15 @@ def ee_object_edges(
                 prof["height_offset"]["labels"],
             )
             edges.append(Edge("ee", node.node_id, "height-offset", label, dz))
+
+        # approach-alignment (TCP-centric, robot frame)
+        aa_cfg = cfg.get("approach_alignment")
+        angle = _approach_alignment_deg(ee, node, aa_cfg)
+        if angle is not None:
+            label = bin_label(angle, aa_cfg["edges_deg"], aa_cfg["labels"])
+            edges.append(
+                Edge("ee", node.node_id, "approach-alignment", label, angle)
+            )
 
         # contact (both fingers)
         force = state.ee_object_contact_force(ent)
@@ -209,6 +279,14 @@ def object_object_edges(
                         "contact" if in_contact else "no-contact",
                         force,
                         masked=(not in_contact),
+                    )
+                )
+                # Explicit negative support edge so absence isn't ambiguous
+                # in the absolute graph (mirrors contact's negative-emission).
+                edges.append(
+                    Edge(
+                        a.node_id, b.node_id, "support", "no-support",
+                        force, masked=True,
                     )
                 )
     return edges
