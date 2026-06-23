@@ -47,6 +47,11 @@ class PrivilegedState:
     ee_links: List[Any] = field(default_factory=list)   # Link objs to merge into ee
     tcp_pose_world: Optional[np.ndarray] = None          # [7] xyz + wxyz
 
+    # Gripper width in qpos-sum convention: qpos[-2] + qpos[-1] for Fetch.
+    # Matches the miner (tools/build_affordances.py). None for non-Fetch agents
+    # or when qpos is unavailable.
+    gripper_width: Optional[float] = None
+
     # Segmentation id -> Actor/Link (ManiSkill primitive).
     seg_id_map: Dict[int, Any] = field(default_factory=dict)
 
@@ -58,6 +63,10 @@ class PrivilegedState:
     active_articulation: Optional[Any] = None
     active_handle_link: Optional[Any] = None
     active_subtask_type: Optional[str] = None
+    # Original (pre-merge) obj_id for the current subtask -- e.g. "024_bowl-3".
+    # MS-HAB rewrites task_plan[ptr].obj_id to "obj_<num>" during _merge_*; the
+    # original lives in env.build_config_idx_to_task_plans[bci][tpi].subtasks[ptr].
+    active_obj_id: Optional[str] = None
 
     # ----- queries the relation rules call ------------------------------- #
     def pairwise_force_vector(self, a: Any, b: Any) -> np.ndarray:
@@ -105,6 +114,40 @@ def get_tcp_pose(agent) -> Any:
     if hasattr(agent, "tcp_pose"):
         return agent.tcp_pose
     return agent.tcp.pose
+
+
+def compute_gripper_width(agent, env_idx: int) -> Optional[float]:
+    """Width = qpos[-2] + qpos[-1] (matches MS-HAB miner / collect_data.py).
+
+    Fetch qpos layout is 15-D: [base 3 | head 2 | torso 1 | arm 7 | gripper 2],
+    so qpos[-2:] are the two finger prismatic joints. We deliberately do NOT
+    use ``||finger1.pose.p - finger2.pose.p||`` here -- the URDF joint origins
+    add a constant +0.03085 m to that distance, which would systematically bias
+    every ``gripper-width-alignment`` reading relative to the mined preferred
+    widths.
+    """
+    if agent is None or not hasattr(agent, "robot"):
+        return None
+    try:
+        qpos = _to_np(agent.robot.qpos)
+    except Exception:
+        return None
+    if qpos.ndim == 0:
+        return None
+    if qpos.ndim == 1:
+        row = qpos
+    elif qpos.ndim == 2:
+        if env_idx < 0 or env_idx >= qpos.shape[0]:
+            return None
+        row = qpos[env_idx]
+    else:
+        return None
+    if row.shape[0] < 2:
+        return None
+    w = float(row[-2] + row[-1])
+    if not np.isfinite(w):
+        return None
+    return w
 
 
 def pose_to_world_array(pose, env_idx: int) -> np.ndarray:
@@ -246,6 +289,7 @@ def _active_mshab_handles(
         active_articulation=None,
         active_handle_link=None,
         active_subtask_type=None,
+        active_obj_id=None,
     )
     try:
         ptr = int(_to_np(env.subtask_pointer)[env_idx])
@@ -258,6 +302,27 @@ def _active_mshab_handles(
     ptr = min(ptr, len(task_plan) - 1)            # clip past-end pointer
     subtask = task_plan[ptr]
     out["active_subtask_type"] = _subtask_type(subtask)
+
+    # Resolve the ORIGINAL obj_id from the un-merged task plan. MS-HAB rewrites
+    # task_plan[ptr].obj_id to "obj_<num>" during _merge_pick_subtasks /
+    # _merge_place_subtasks (mshab/envs/sequential_task.py:219, 274), so reading
+    # subtask.obj_id directly would yield the merged name. The original plans
+    # live in env.build_config_idx_to_task_plans, indexed per env.
+    try:
+        bcis = getattr(env, "build_config_idxs", None)
+        tpis = getattr(env, "task_plan_idxs", None)
+        bcitp = getattr(env, "build_config_idx_to_task_plans", None)
+        if bcis is not None and tpis is not None and bcitp is not None:
+            bci = int(bcis[env_idx])
+            tpi = int(_to_np(tpis)[env_idx])
+            tp_list = bcitp.get(bci) if hasattr(bcitp, "get") else None
+            if tp_list is not None and 0 <= tpi < len(tp_list):
+                original_plan = tp_list[tpi]
+                subtasks = getattr(original_plan, "subtasks", None)
+                if subtasks is not None and 0 <= ptr < len(subtasks):
+                    out["active_obj_id"] = getattr(subtasks[ptr], "obj_id", None)
+    except Exception:
+        pass  # active_obj_id stays None; affordance lookup falls back to name.
 
     objs = getattr(env, "subtask_objs", [])
     if ptr < len(objs):
@@ -312,6 +377,7 @@ def get_privileged_state(
         is_mshab=_looks_like_mshab(e),
         ee_links=get_ee_links(agent),
         tcp_pose_world=pose_to_world_array(get_tcp_pose(agent), env_idx),
+        gripper_width=compute_gripper_width(agent, env_idx),
         seg_id_map=dict(getattr(e, "segmentation_id_map", {})),
         robot_links=_robot_link_set(agent),
     )
@@ -327,6 +393,7 @@ def get_privileged_state(
         state.active_articulation = handles["active_articulation"]
         state.active_handle_link = handles["active_handle_link"]
         state.active_subtask_type = handles["active_subtask_type"]
+        state.active_obj_id = handles["active_obj_id"]
         if mshab_object_name == "merged":
             state.seg_id_map = _alias_segmentation_entity(
                 state.seg_id_map, state.active_obj, env_idx

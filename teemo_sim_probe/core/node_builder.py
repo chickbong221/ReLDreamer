@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from .affordance import canonical_affordance_key
 from .schema import Node
 from .mask_extractor import (
     MaskAccumulator,
@@ -147,6 +148,15 @@ def make_persistent_target_node(entity, state: PrivilegedState, kind: str) -> No
     node.source = "mshab_task"
     node.attributes["is_mshab_active_target"] = True
     node.attributes["mshab_kind"] = kind          # "obj" | "handle"
+    if kind == "obj":
+        # Carry the canonical YCB key forward so affordance lookup works even
+        # when the segmentation node uses the env-prefixed scene name. Handles
+        # do not have an affordance asset, so we deliberately omit it for them.
+        oid = state.active_obj_id
+        canonical = canonical_affordance_key(oid) if oid else \
+            canonical_affordance_key(node.name)
+        if canonical:
+            node.attributes["mshab_obj_id"] = canonical
     return node
 
 
@@ -253,6 +263,15 @@ def _add_mshab_targets(
         if key in nodes:
             nodes[key].attributes["is_mshab_active_target"] = True
             nodes[key].attributes["mshab_kind"] = kind
+            if kind == "obj":
+                # mshab_obj_id lets affordance lookup work even when the
+                # segmentation node's display name is env-prefixed
+                # ("env-0_024_bowl-3") rather than the canonical YCB key.
+                oid = state.active_obj_id
+                canonical = canonical_affordance_key(oid) if oid else \
+                    canonical_affordance_key(nodes[key].name)
+                if canonical:
+                    nodes[key].attributes["mshab_obj_id"] = canonical
         else:
             # Not visible this frame -> persistent, mask empty.
             nodes[key] = make_persistent_target_node(entity, state, kind)

@@ -1,6 +1,7 @@
 """Absolute relation labels from privileged state.
 
 ee-object   : planar-distance, height-offset, contact, grasp
+ee-target   : tcp-affordance-alignment, gripper-width-alignment  (MS-HAB only)
 object-object: contact, support
 
 orientation-alignment and containment are intentionally deferred (see design
@@ -16,6 +17,11 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
+from .affordance import (
+    lookup_components,
+    select_active_component,
+    transform_anchors,
+)
 from .schema import Edge, Graph, Node
 from ..adapters.privileged_state import PrivilegedState
 
@@ -52,61 +58,6 @@ def height_offset(a: Node, b: Node) -> Optional[float]:
     if pa is None or pb is None:
         return None
     return float(pa[2] - pb[2])
-
-
-def _normalize(v: np.ndarray) -> Optional[np.ndarray]:
-    n = float(np.linalg.norm(v))
-    if n < 1e-9:
-        return None
-    return v / n
-
-
-def _quat_wxyz_to_rotmat(q: np.ndarray) -> Optional[np.ndarray]:
-    """SAPIEN quaternion (qw, qx, qy, qz) -> 3x3 rotation matrix."""
-    qn = _normalize(q)
-    if qn is None:
-        return None
-    w, x, y, z = qn
-    return np.array([
-        [1 - 2 * (y * y + z * z), 2 * (x * y - w * z),     2 * (x * z + w * y)],
-        [2 * (x * y + w * z),     1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
-        [2 * (x * z - w * y),     2 * (y * z + w * x),     1 - 2 * (x * x + y * y)],
-    ])
-
-
-def _approach_alignment_deg(
-    ee_node: Node, object_node: Node, cfg: Optional[dict]
-) -> Optional[float]:
-    """Angle (deg) between TCP approach axis (world) and TCP->object vector.
-
-    Safe: returns None if any pose / quaternion / vector is degenerate.
-    """
-    if cfg is None:
-        return None
-    if ee_node.pose_world is None or object_node.pose_world is None:
-        return None
-    if len(ee_node.pose_world) < 7 or len(object_node.pose_world) < 7:
-        return None
-
-    p_ee = np.asarray(ee_node.pose_world[:3], dtype=float)
-    q_ee = np.asarray(ee_node.pose_world[3:7], dtype=float)
-    p_obj = np.asarray(object_node.pose_world[:3], dtype=float)
-
-    R_ee = _quat_wxyz_to_rotmat(q_ee)
-    if R_ee is None:
-        return None
-
-    a_tcp = _normalize(np.asarray(cfg.get("tcp_axis", [0.0, 0.0, 1.0]), dtype=float))
-    if a_tcp is None:
-        return None
-    a_world = R_ee @ a_tcp
-
-    u = _normalize(p_obj - p_ee)
-    if u is None:
-        return None
-
-    cos_a = float(np.clip(np.dot(a_world, u), -1.0, 1.0))
-    return float(np.degrees(np.arccos(cos_a)))
 
 
 # --------------------------------------------------------------------------- #
@@ -194,15 +145,6 @@ def ee_object_edges(
             )
             edges.append(Edge("ee", node.node_id, "height-offset", label, dz))
 
-        # approach-alignment (TCP-centric, robot frame)
-        aa_cfg = cfg.get("approach_alignment")
-        angle = _approach_alignment_deg(ee, node, aa_cfg)
-        if angle is not None:
-            label = bin_label(angle, aa_cfg["edges_deg"], aa_cfg["labels"])
-            edges.append(
-                Edge("ee", node.node_id, "approach-alignment", label, angle)
-            )
-
         # contact (both fingers)
         force = state.ee_object_contact_force(ent)
         edges.append(
@@ -223,6 +165,83 @@ def ee_object_edges(
                     "grasp" if grasped else "no-grasp",
                     1.0 if grasped else 0.0,
                     masked=(not grasped),
+                )
+            )
+    return edges
+
+
+def affordance_edges(
+    graph: Graph, state: PrivilegedState, cfg: dict
+) -> List[Edge]:
+    """Per-frame affordance relations for MS-HAB active object targets.
+
+    One ``a_star`` is selected per object (= nearest anchor to the TCP in
+    world frame) and drives BOTH ``tcp-affordance-alignment`` (distance) and
+    ``gripper-width-alignment`` (signed ``width - preferred_width``).
+
+    Excluded by design:
+      * handles (``mshab_kind == "handle"``): no affordance asset for them.
+      * objects with no entry in the asset.
+      * nodes with no ``pose_world`` (degenerate / missing).
+    Gating uses ``pose_world``, never ``visible`` -- occluded MS-HAB targets
+    still get fresh poses from the simulator each frame.
+    """
+    aff_set = cfg.get("affordance_set")
+    if aff_set is None or getattr(aff_set, "is_empty", lambda: True)():
+        return []
+    if state.tcp_pose_world is None:
+        return []
+
+    tcp_world = np.asarray(state.tcp_pose_world[:3], dtype=float)
+    if tcp_world.shape[0] != 3 or not np.all(np.isfinite(tcp_world)):
+        return []
+
+    prof = cfg["profile"]
+    align_spec = prof.get("tcp_affordance_alignment")
+    width_spec = prof.get("gripper_width_alignment")
+    if align_spec is None:
+        return []
+
+    edges: List[Edge] = []
+    for node in graph.nodes:
+        if node.node_type != "object":
+            continue
+        if not node.attributes.get("is_mshab_active_target"):
+            continue
+        if node.attributes.get("mshab_kind") != "obj":
+            continue  # handles excluded
+        if node.pose_world is None:
+            continue
+
+        comps = lookup_components(aff_set, node)
+        if not comps:
+            continue
+        anchors_world = transform_anchors(node.pose_world, comps)
+        if anchors_world is None:
+            continue
+        a_star = select_active_component(tcp_world, anchors_world)
+        if a_star is None:
+            continue
+
+        # Record the shared component index on the node so temporal_buffer can
+        # detect a_star switches and reset the change history.
+        node.attributes["affordance_a_star"] = int(a_star)
+
+        d = float(np.linalg.norm(anchors_world[a_star] - tcp_world))
+        edges.append(
+            Edge(
+                "ee", node.node_id, "tcp-affordance-alignment",
+                bin_label(d, align_spec["edges"], align_spec["labels"]), d,
+            )
+        )
+
+        if state.gripper_width is not None and width_spec is not None:
+            err = float(state.gripper_width - comps[a_star].preferred_width)
+            edges.append(
+                Edge(
+                    "ee", node.node_id, "gripper-width-alignment",
+                    bin_label(err, width_spec["edges"], width_spec["labels"]),
+                    err,
                 )
             )
     return edges
@@ -297,4 +316,5 @@ def build_absolute_edges(
 ) -> None:
     """Populate ``graph.edges`` in place with absolute relations."""
     graph.edges.extend(ee_object_edges(graph, state, cfg))
+    graph.edges.extend(affordance_edges(graph, state, cfg))
     graph.edges.extend(object_object_edges(graph, state, cfg))

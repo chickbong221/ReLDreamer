@@ -18,6 +18,23 @@ from .schema import Graph, Node
 from ..adapters.privileged_state import PrivilegedState
 
 
+# Dynamic attributes that describe the current frame's MS-HAB task state. They
+# must NOT leak into retained snapshots, or a former active target keeps the
+# Tier-0 rank forever and accidentally fires affordance edges after the
+# subtask has advanced. Only the current frame's _add_mshab_targets is allowed
+# to restore them.
+_DYNAMIC_MSHAB_ATTRS = (
+    "is_mshab_active_target",
+    "mshab_kind",
+    "mshab_obj_id",
+    "affordance_a_star",
+)
+
+
+def _stripped_attrs(attrs: Dict[str, object]) -> Dict[str, object]:
+    return {k: v for k, v in attrs.items() if k not in _DYNAMIC_MSHAB_ATTRS}
+
+
 def _snapshot(node: Node) -> Node:
     """Frozen copy of a visible node used as the retention seed."""
     return Node(
@@ -32,7 +49,7 @@ def _snapshot(node: Node) -> Node:
         steps_since_seen=node.steps_since_seen,
         source=node.source,
         frozen_pose=False,
-        attributes=dict(node.attributes),
+        attributes=_stripped_attrs(node.attributes),
     )
 
 

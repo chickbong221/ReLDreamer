@@ -1,0 +1,5 @@
+{
+  "_README": "anchor=[x,y,z] OBJECT frame (m); width=preferred gripper qpos-sum (m). Keyed by canonical MS-HAB obj_id (no 'env-N_' prefix, no '-N' instance suffix). Produced by tools/build_affordances.py.",
+  "_schema_version": 1,
+  "objects": {}
+}

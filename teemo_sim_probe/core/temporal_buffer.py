@@ -1,13 +1,21 @@
 """Temporal relations over a horizon K.
 
-For continuous relations (planar-distance, height-offset): store the raw value
-at each frame, compare value[t] vs value[t-K], discretize the signed change.
+For continuous relations (planar-distance, height-offset, tcp-affordance-
+alignment, gripper-width-alignment): store the raw value at each frame,
+compare ``value[t]`` vs ``value[t-K]``, discretize the signed change.
 
-For binary predicates (contact, grasp, support): compare predicate[t-K] vs
-predicate[t] -> gain / lose / maintain / maintain-no.
+For binary predicates (contact, grasp, support): compare ``predicate[t-K]``
+vs ``predicate[t]`` -> gain / lose / maintain / maintain-no.
 
 ``maintain-no-*`` is an internal/background class. It is not exported as a
 semantic graph edge.
+
+Affordance histories have stricter clearing than other continuous relations:
+they are reset whenever the selected component (``a_star``) changes between
+frames -- otherwise the preferred-width term jumps without the gripper
+moving, producing nonsense ``gripper-width-alignment-change`` labels. They
+are also cleared when the affordance edge disappears (target lost / no
+asset).
 """
 
 from __future__ import annotations
@@ -25,10 +33,14 @@ from .relation_rules import bin_label
 _CONTINUOUS = {
     "planar-distance": "planar_distance_change",
     "height-offset": "height_offset_change",
-    "approach-alignment": "approach_alignment_change",
+    "tcp-affordance-alignment": "tcp_affordance_alignment_change",
+    "gripper-width-alignment": "gripper_width_alignment_change",
 }
 # Relations handled as binary predicates.
 _BINARY = {"contact", "grasp", "support", "containment"}
+
+# Affordance relations need history reset on a_star switch or edge absence.
+_AFFORDANCE_RELATIONS = {"tcp-affordance-alignment", "gripper-width-alignment"}
 
 
 def _edge_key(src: str, dst: str, relation: str) -> Tuple[str, str, str]:
@@ -43,12 +55,46 @@ class TemporalBuffer:
         # value history (continuous) and bool history (binary)
         self._values: Dict[Tuple[str, str, str], Deque[float]] = {}
         self._bools: Dict[Tuple[str, str, str], Deque[bool]] = {}
+        # Last a_star seen per affordance edge key. Used to detect component
+        # switches and drop stale change-history.
+        self._last_a_star: Dict[Tuple[str, str, str], int] = {}
 
     # ---- ingest one frame's absolute edges ------------------------------ #
     def update(self, graph: Graph) -> None:
+        # ---- Affordance pre-pass: detect a_star switches / edge absence -- #
+        # Read the current a_star for each affordance edge from its dst node
+        # attributes (set by relation_rules.affordance_edges).
+        present_affordance: Dict[Tuple[str, str, str], int] = {}
+        for e in graph.edges:
+            if e.temporal:
+                continue
+            if e.relation in _AFFORDANCE_RELATIONS:
+                dst_node = graph.get_node(e.dst)
+                a_star = (
+                    dst_node.attributes.get("affordance_a_star")
+                    if dst_node is not None
+                    else None
+                )
+                if a_star is not None:
+                    present_affordance[_edge_key(e.src, e.dst, e.relation)] = int(a_star)
+
+        # (1) Drop history for affordance keys whose edge disappeared this frame.
+        for key in list(self._values.keys()):
+            src, dst, relation = key
+            if relation in _AFFORDANCE_RELATIONS and key not in present_affordance:
+                del self._values[key]
+                self._last_a_star.pop(key, None)
+
+        # (2) Drop history for affordance keys where a_star switched.
+        for key, curr in present_affordance.items():
+            prev = self._last_a_star.get(key)
+            if prev is not None and curr != prev and key in self._values:
+                del self._values[key]
+            self._last_a_star[key] = curr
+
+        # ---- Standard continuous / binary ingest -------------------------- #
         current_bools: Dict[Tuple[str, str, str], bool] = {}
 
-        # Positive/negative binary predicates explicitly present in this frame.
         for e in graph.edges:
             if e.temporal:
                 continue
@@ -95,7 +141,7 @@ class TemporalBuffer:
         if not node_ids:
             return
         drop_set = set(node_ids)
-        for store in (self._values, self._bools):
+        for store in (self._values, self._bools, self._last_a_star):
             for key in [k for k in store if k[0] in drop_set or k[1] in drop_set]:
                 del store[key]
 
