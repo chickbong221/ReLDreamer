@@ -61,22 +61,22 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 
 unset XLA_PYTHON_CLIENT_MEM_FRACTION
 
-python -m dreamerv3.main \
-  --configs maniskill_rgb mshab \
-  --task maniskill_PlaceSubtaskTrain-v0 \
-  --logdir $HOME/logdir/maniskill/$TIMESTAMP/place-set-table \
-  --env.maniskill.control_mode pd_joint_delta_pos \
-  --env.maniskill.mshab_task set_table \
-  --logger.wandb_name dreamerv3-mshab-place-set-table
+# python -m dreamerv3.main \
+#   --configs maniskill_rgb mshab \
+#   --task maniskill_PlaceSubtaskTrain-v0 \
+#   --logdir $HOME/logdir/maniskill/$TIMESTAMP/place-set-table \
+#   --env.maniskill.control_mode pd_joint_delta_pos \
+#   --env.maniskill.mshab_task set_table \
+#   --logger.wandb_name dreamerv3-mshab-place-set-table
 
-python -m dreamerv3.main \
-  --configs maniskill_rgb mshab \
-  --task maniskill_OpenSubtaskTrain-v0 \
-  --logdir $HOME/logdir/maniskill/$TIMESTAMP/open-set-table-kitchen-counter \
-  --env.maniskill.control_mode pd_joint_delta_pos \
-  --env.maniskill.mshab_task set_table \
-  --env.maniskill.mshab_obj kitchen_counter \
-  --logger.wandb_name dreamerv3-mshab-open-set-table-kitchen-counter
+# python -m dreamerv3.main \
+#   --configs maniskill_rgb mshab \
+#   --task maniskill_OpenSubtaskTrain-v0 \
+#   --logdir $HOME/logdir/maniskill/$TIMESTAMP/open-set-table-kitchen-counter \
+#   --env.maniskill.control_mode pd_joint_delta_pos \
+#   --env.maniskill.mshab_task set_table \
+#   --env.maniskill.mshab_obj kitchen_counter \
+#   --logger.wandb_name dreamerv3-mshab-open-set-table-kitchen-counter
 
 python -m dreamerv3.main \
   --configs maniskill_rgb mshab \
