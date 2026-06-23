@@ -337,31 +337,3 @@ either mode the graph includes exactly one of the two names, never both.
 
 If `policy.pt` is missing the MS-HAB runner falls back to random actions so
 the graph pipeline can still be exercised.
-
-## Milestone order
-
-1. PickCube-v1, num_envs=1 -- print seg map (excl. id 0), build ee + object
-   nodes
-2. masks + node names overlay
-3. planar-distance, height-offset from tcp / object pose
-4. contact from pairwise forces; grasp from `is_grasping`
-5. temporal labels (K=5)
-6. MS-HAB PickSubtaskTrain-v0 + active-target persistence
-7. open / close handle nodes
-8. affordance relations (object-frame anchors + approach directions, pick-mined)
-9. ManiSkill (non-HAB) checkpoints + BEHAVIOR-1K adapter
-
-## Layout
-
-```
-teemo_sim_probe/
-  run_ms_probe.py          run_mshab_probe.py
-  adapters/  privileged_state.py  policy_loader.py
-  core/      schema.py  mask_extractor.py  node_builder.py
-             affordance.py  relation_rules.py  temporal_buffer.py
-             persistence.py  graph_builder.py
-  viz/       overlay.py  graph_draw.py  video_writer.py
-  configs/   thresholds.yaml  loader.py  affordances.json
-  tools/     build_affordances.py
-  tests/     test_relation_rules.py  test_affordance.py
-```
