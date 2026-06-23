@@ -1,0 +1,54 @@
+--- a/teemo_sim_probe/core/node_builder.py
++++ b/teemo_sim_probe/core/node_builder.py
+@@ end of file, after _add_mshab_targets(...)
++
++
++# --------------------------------------------------------------------------- #
++# Pair-type classification (eligibility-based relation vocabulary)
++# --------------------------------------------------------------------------- #
++# Doc design: every object node is classified as exactly one of
++#   "static_object"      -> center-based scene context + contact state
++#   "interactive_object" -> affordance-grounded manipulation state
++# stored on ``node.attributes["pair_type"]``. The ee node is left untyped.
++#
++# Eligibility rule (most specific wins):
++#   1. object has a mined affordance set            -> interactive_object
++#   2. object is the MS-HAB active handle link       -> interactive_object
++#   3. name matches an interactive part hint         -> interactive_object
++#   4. name matches a static-pair hint               -> static_object
++#   5. otherwise: actors default interactive, links default static.
++# Rule (1) is the doc's stated criterion ("entities/parts that have an
++# affordance set"); the others are fallbacks for objects not yet mined.
++def classify_pair_types(nodes: Dict[str, "Node"], cfg: dict) -> None:
++    """Annotate each object node in place with ``attributes['pair_type']``."""
++    aff_set = cfg.get("affordance_set")
++    for node in nodes.values():
++        if node.node_type != "object":
++            continue
++        name = node.name.lower()
++        attrs = node.attributes
++
++        # (1) affordance asset present -> interactive.
++        if aff_set is not None and has_affordance(aff_set, node):
++            attrs["pair_type"] = "interactive_object"
++            continue
++        # (2) active MS-HAB handle link -> interactive (no asset, but it is a
++        #     manipulation-relevant articulated part this subtask).
++        if attrs.get("is_mshab_active_target") and attrs.get("mshab_kind") == "handle":
++            attrs["pair_type"] = "interactive_object"
++            continue
++        # (3) interactive part by name (handle/knob/lever/drawer).
++        if any(h in name for h in _INTERACTIVE_PART_HINTS):
++            attrs["pair_type"] = "interactive_object"
++            continue
++        # (4) static structure / support surface by name.
++        if any(h in name for h in _STATIC_PAIR_HINTS):
++            attrs["pair_type"] = "static_object"
++            continue
++        # (5) default by entity kind: links are usually structure, free actors
++        #     are usually manipulable. Interactive default lets a not-yet-mined
++        #     YCB object still receive center-based interactive relations
++        #     (orientation-alignment is simply skipped without an asset).
++        attrs["pair_type"] = (
++            "interactive_object" if attrs.get("is_actor") else "static_object"
++        )

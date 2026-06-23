@@ -1,0 +1,36 @@
+--- a/teemo_sim_probe/core/temporal_buffer.py
++++ b/teemo_sim_probe/core/temporal_buffer.py
+@@
+-# Relations handled as continuous (value -> signed change).
+-_CONTINUOUS = {
+-    "planar-distance": "planar_distance_change",
+-    "height-offset": "height_offset_change",
+-    "tcp-affordance-alignment": "tcp_affordance_alignment_change",
+-    "gripper-width-alignment": "gripper_width_alignment_change",
+-}
++# Relations handled as continuous (value -> signed change).
++_CONTINUOUS = {
++    "planar-distance": "planar_distance_change",
++    "height-offset": "height_offset_change",
++    "orientation-alignment": "orientation_alignment_change",
++    "gripper-width-alignment": "gripper_width_alignment_change",
++}
+ # Relations handled as binary predicates.
+ _BINARY = {"contact", "grasp", "support", "containment"}
+@@
+-# Affordance relations need history reset on a_star switch or edge absence.
+-_AFFORDANCE_RELATIONS = {"tcp-affordance-alignment", "gripper-width-alignment"}
++# Affordance-grounded relations need history reset on a_star switch or edge
++# absence: their value is tied to the selected anchor / component, so a switch
++# makes a raw delta meaningless. planar-distance / height-offset for interactive
++# objects are ALSO anchor-based now, so include them too -- but ONLY when the
++# edge actually carries an a_star (static-object planar-distance has none and is
++# left in the standard continuous path). The a_star presence check in update()
++# already keys off node.attributes['affordance_a_star'], so static edges (whose
++# dst node has no a_star) are naturally excluded.
++_AFFORDANCE_RELATIONS = {
++    "orientation-alignment",
++    "gripper-width-alignment",
++    "planar-distance",
++    "height-offset",
++}

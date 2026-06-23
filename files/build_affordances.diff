@@ -1,0 +1,79 @@
+--- a/teemo_sim_probe/tools/build_affordances.py
++++ b/teemo_sim_probe/tools/build_affordances.py
+@@
+ def _inv_transform_point(
+     pose_wxyz: np.ndarray, point: np.ndarray
+ ) -> Optional[np.ndarray]:
+     """Apply ``inv(pose) * point`` where pose = [x,y,z,qw,qx,qy,qz]."""
+     ...
++
++
++def _inv_rotate_dir(
++    pose_wxyz: np.ndarray, dir_world: np.ndarray
++) -> Optional[np.ndarray]:
++    """Rotate a world-frame direction into the OBJECT frame: R_obj^T @ d."""
++    if pose_wxyz is None or len(pose_wxyz) < 7:
++        return None
++    R = _quat_wxyz_to_rotmat(np.asarray(pose_wxyz[3:7], dtype=float))
++    if R is None:
++        return None
++    d = R.T @ np.asarray(dir_world, dtype=float).reshape(3)
++    n = float(np.linalg.norm(d))
++    if n < 1e-9 or not np.all(np.isfinite(d)):
++        return None
++    return d / n
+@@ argument parser
+     parser.add_argument(
+         "--tcp-link", default="gripper_link",
+         help="Link name to read as TCP (default: gripper_link).",
+     )
++    parser.add_argument(
++        "--tcp-approach-axis", default="0,0,1",
++        help="Gripper-link local approach axis as 'x,y,z' (default 0,0,1).",
++    )
+@@ inside _mine_object loop, after computing anchor
+-        width = float(qpos[-2] + qpos[-1])
++        # World approach direction = R_tcp @ axis_local; then express in obj frame.
++        R_tcp = _quat_wxyz_to_rotmat(tcp_in_base[3:7])
++        approach_obj = None
++        if R_tcp is not None:
++            dir_world = R_tcp @ approach_axis_local
++            approach_obj = _inv_rotate_dir(obj_pose, dir_world)
++        width = float(qpos[-2] + qpos[-1])
+@@ accumulate
+         anchors_obj.append(anchor)
+         widths.append(width)
++        approaches_obj.append(approach_obj)   # may be None for this sample
+@@ before the loop, init accumulators
+     anchors_obj: List[np.ndarray] = []
+     widths: List[float] = []
++    approaches_obj: List[Optional[np.ndarray]] = []
+@@ after clustering, per component j
+         anchor_med = np.median(anchors_arr[mask], axis=0).tolist()
+         width_med = float(np.median(widths_arr[mask]))
++        # Median approach direction over the cluster's valid samples, then
++        # renormalize. If no sample in the cluster had a direction, omit it.
++        comp_dirs = [approaches_obj[idx] for idx in np.where(mask)[0]
++                     if approaches_obj[idx] is not None]
++        approach_field = {}
++        if comp_dirs:
++            d_med = np.median(np.stack(comp_dirs, axis=0), axis=0)
++            n = float(np.linalg.norm(d_med))
++            if n > 1e-9:
++                approach_field = {"approach_dir":
++                                  [round(float(x), 6) for x in (d_med / n)]}
+         components.append({
+             "anchor": [round(float(x), 6) for x in anchor_med],
++            **approach_field,
+             "width": round(width_med, 6),
+             "n_support": int(mask.sum()),
+         })
+@@ main(), parse axis once
+     args = parser.parse_args(argv)
++    approach_axis_local = np.asarray(
++        [float(x) for x in args.tcp_approach_axis.split(",")], dtype=float
++    )
++    # pass approach_axis_local into _mine_object(...) as a new kwarg
+@@ payload schema bump
+-        "_schema_version": 1,
++        "_schema_version": 2,

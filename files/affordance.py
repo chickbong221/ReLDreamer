@@ -1,28 +1,23 @@
-"""Affordance components mined from manipulation-success rollouts.
+"""Affordance components mined from MS-HAB success rollouts.
 
-This module owns the static, pose-invariant grip information that the runtime
-needs to emit affordance-grounded relations. It is intentionally framework-
-agnostic (numpy only, no SAPIEN / ManiSkill imports) so the asset can be reused
-across benchmarks -- MS-HAB today, vanilla ManiSkill / BEHAVIOR-1K next -- as
-long as the offline miner produces the JSON shape below.
-
-Per object key, the asset stores a sparse list of components. Each component is
+Each manipulation object has a sparse set of components. Each component is now
 ``(anchor_obj_frame, approach_dir_obj_frame, preferred_width)``:
 
-  * ``anchor_obj_frame`` -- 3D point in the OBJECT frame, in metres.
-    "where on the object the gripper should grip". Pose-invariant: the same
-    value is reused every frame regardless of where the object currently sits.
+  * ``anchor_obj_frame`` -- 3D point expressed in the OBJECT frame (pose-
+    invariant); "where on the object the gripper should grip".
   * ``approach_dir_obj_frame`` -- 3D UNIT vector in the OBJECT frame giving the
-    gripper approach axis at success. Optional; required only for
-    ``orientation-alignment``. Assets mined before orientation support
-    (schema_version 1) load fine -- that component just yields no
-    orientation-alignment edge.
-  * ``preferred_width`` -- scalar gripper width (qpos-sum convention, identical
-    to what ``adapters/privileged_state.compute_gripper_width`` produces at
-    runtime) at the moment of success.
+    gripper approach axis at success. Used for ``orientation-alignment``.
+    May be None for assets mined before orientation support (graceful
+    degradation: orientation-alignment is simply skipped for that component).
+  * ``preferred_width`` -- scalar gripper width (qpos-sum convention, matching
+    the miner) at the moment of success.
 
-To extend to a new benchmark / robot, add a miner that produces the same JSON
-shape with canonical object keys; nothing in this file is MS-HAB-specific.
+Object-frame storage is the whole point: every frame we transform the SAME
+stored anchor / direction through the CURRENT ``obj_pose_world`` to recover its
+world value, so the asset is reused regardless of where the object sits.
+
+This module is pure-python (numpy only) so it can be unit tested without any
+ManiSkill / SAPIEN imports.
 """
 
 from __future__ import annotations
@@ -44,7 +39,7 @@ from .schema import Node
 # --------------------------------------------------------------------------- #
 @dataclass
 class AffordanceComponent:
-    anchor_obj_frame: np.ndarray            # shape (3,), OBJECT frame, metres
+    anchor_obj_frame: np.ndarray            # shape (3,), OBJECT frame
     preferred_width: float                  # qpos[-2] + qpos[-1] convention
     # Unit approach direction in OBJECT frame, or None if not mined.
     approach_dir_obj_frame: Optional[np.ndarray] = None
@@ -59,7 +54,7 @@ class AffordanceSet:
 
 
 # --------------------------------------------------------------------------- #
-# Geometry helpers (self-contained -- relation_rules imports this module)
+# Small geometry helpers (self-contained, no relation_rules import)
 # --------------------------------------------------------------------------- #
 def _normalize(v: np.ndarray) -> Optional[np.ndarray]:
     n = float(np.linalg.norm(v))
@@ -82,17 +77,14 @@ def _quat_wxyz_to_rotmat(q: np.ndarray) -> Optional[np.ndarray]:
 
 
 # --------------------------------------------------------------------------- #
-# Key canonicalization
+# Key canonicalization (shared with the offline miner)
 # --------------------------------------------------------------------------- #
-# MS-HAB exposes per-env-prefixed and per-instance-suffixed actor names
-# (env-0_024_bowl-3). The miner and runtime both canonicalize them down to the
-# benchmark's object key (024_bowl) so they share one table.
 _ENV_PREFIX_RE = re.compile(r"^env-\d+_")
 _INSTANCE_SUFFIX_RE = re.compile(r"-\d+$")
 
 
 def canonical_affordance_key(name: Optional[str]) -> Optional[str]:
-    """Strip env-N_ prefix and -N instance suffix.
+    """Normalize an MS-HAB obj_id / scene name to its canonical YCB key.
 
     Examples::
 
@@ -128,10 +120,10 @@ def load_affordance_set(path: Optional[str]) -> AffordanceSet:
           }
         }
 
-    ``approach_dir`` is optional. Schema-v1 assets (no approach_dir) still load;
-    those components simply have ``approach_dir_obj_frame is None`` and yield
-    no orientation-alignment edge. Keys starting with ``_`` are reserved for
-    metadata and skipped.
+    ``approach_dir`` is optional. Assets produced before orientation support
+    (schema_version 1) load fine; their components simply have
+    ``approach_dir_obj_frame is None`` and yield no orientation-alignment edge.
+    Keys starting with ``_`` are ignored (reserved for metadata).
     """
     if not path or not os.path.isfile(path):
         warnings.warn(
@@ -205,7 +197,7 @@ def transform_anchors(
     obj_pose_world: Optional[List[float]],
     components: List[AffordanceComponent],
 ) -> Optional[np.ndarray]:
-    """World-frame positions of each component anchor.
+    """Compute world-frame positions of each component anchor.
 
     ``obj_pose_world`` is ``[x, y, z, qw, qx, qy, qz]`` (SAPIEN convention).
     Returns ``(N, 3)`` ndarray or ``None`` for degenerate / missing inputs.
@@ -265,10 +257,8 @@ def lookup_components(
     """Resolve component list for an object node.
 
     Lookup order:
-      1. canonicalize ``node.attributes['mshab_obj_id']`` (set by node_builder
-         when an MS-HAB active target carries an obj_id);
-      2. fall back to canonicalize ``node.name`` (works for any benchmark that
-         names actors with the canonical object key).
+      1. canonicalize ``node.attributes['mshab_obj_id']`` (set by node_builder)
+      2. fall back to canonicalize ``node.name``
     Returns ``None`` if the set is empty or no match.
     """
     if aff_set is None or aff_set.is_empty():
@@ -288,8 +278,8 @@ def lookup_components(
 def has_affordance(aff_set: AffordanceSet, node: Node) -> bool:
     """True iff this object node has any mined affordance components.
 
-    Primary eligibility test for node classification: an object that has an
-    affordance set is treated as ``interactive_object``.
+    This is the primary eligibility test used by node classification: an object
+    with an affordance set is treated as ``interactive_object``.
     """
     comps = lookup_components(aff_set, node)
     return bool(comps)

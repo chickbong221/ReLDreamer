@@ -1,0 +1,25 @@
+--- a/teemo_sim_probe/core/node_builder.py
++++ b/teemo_sim_probe/core/node_builder.py
+@@
+-from .affordance import canonical_affordance_key
++from .affordance import canonical_affordance_key, has_affordance
+@@
+ # Substrings that mark scene background / static furniture clutter.
+@@
+ _STATIC_SCENE_HINTS = (
+     "frl_apartment", "apartment_", "_wall", "_floor", "_ceiling",
+     "room_", "stage", "arena",
+ )
++
++# Substrings that strongly imply a STATIC scene object (support surface /
++# obstacle / structure) even when not filtered out of the graph entirely.
++# Used only to set ``pair_type`` when the object has no affordance set.
++_STATIC_PAIR_HINTS = (
++    "table", "wall", "floor", "ground", "counter", "cabinet_body",
++    "fridge_body", "sink", "shelf", "support", "obstacle", "ceiling",
++)
++
++# Articulated-part name hints that are manipulation-relevant => interactive
++# even without a mined affordance asset (e.g. drawer / cabinet / fridge
++# handles). Active MS-HAB handle links are also forced interactive below.
++_INTERACTIVE_PART_HINTS = ("handle", "knob", "lever", "drawer")

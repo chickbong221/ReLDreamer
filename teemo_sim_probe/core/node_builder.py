@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .affordance import canonical_affordance_key
+from .affordance import canonical_affordance_key, has_affordance
 from .schema import Node
 from .mask_extractor import (
     MaskAccumulator,
@@ -76,6 +76,19 @@ _STATIC_SCENE_HINTS = (
     "frl_apartment", "apartment_", "_wall", "_floor", "_ceiling",
     "room_", "stage", "arena",
 )
+
+# Substrings that strongly imply a STATIC scene object (support surface /
+# obstacle / structure) even when not filtered out of the graph entirely.
+# Used only to set ``pair_type`` when the object has no affordance set.
+_STATIC_PAIR_HINTS = (
+    "table", "wall", "floor", "ground", "counter", "cabinet_body",
+    "fridge_body", "sink", "shelf", "support", "obstacle", "ceiling",
+)
+
+# Articulated-part hints that are manipulation-relevant => interactive even
+# without a mined affordance asset (e.g. drawer / cabinet / fridge handles).
+# Active MS-HAB handle links are also forced interactive below.
+_INTERACTIVE_PART_HINTS = ("handle", "knob", "lever", "drawer")
 
 
 def _is_helper_goal(entity) -> bool:
@@ -275,3 +288,56 @@ def _add_mshab_targets(
         else:
             # Not visible this frame -> persistent, mask empty.
             nodes[key] = make_persistent_target_node(entity, state, kind)
+
+
+# --------------------------------------------------------------------------- #
+# Pair-type classification (eligibility-based relation vocabulary)
+# --------------------------------------------------------------------------- #
+# Every object node is classified as exactly one of
+#   "static_object"      -> center-based scene context + contact state
+#   "interactive_object" -> affordance-grounded manipulation state
+# stored on ``node.attributes["pair_type"]``. The ee node is left untyped.
+#
+# Eligibility rule (most specific wins):
+#   1. object has a mined affordance set            -> interactive_object
+#   2. object is the MS-HAB active handle link      -> interactive_object
+#   3. name matches an interactive part hint         -> interactive_object
+#   4. name matches a static-pair hint               -> static_object
+#   5. otherwise: free actors default interactive, links default static.
+# Rule (1) is the primary "has-an-affordance-set" criterion; (2)-(5) are
+# fallbacks for objects not yet mined or benchmarks that have no asset yet.
+def classify_pair_types(nodes: Dict[str, Node], cfg: dict) -> None:
+    """Annotate each object node in place with ``attributes['pair_type']``."""
+    aff_set = cfg.get("affordance_set")
+    for node in nodes.values():
+        if node.node_type != "object":
+            continue
+        name = node.name.lower()
+        attrs = node.attributes
+
+        # (1) affordance asset present -> interactive.
+        if aff_set is not None and has_affordance(aff_set, node):
+            attrs["pair_type"] = "interactive_object"
+            continue
+        # (2) active MS-HAB handle link -> interactive (no asset, but it is a
+        #     manipulation-relevant articulated part this subtask).
+        if (attrs.get("is_mshab_active_target")
+                and attrs.get("mshab_kind") == "handle"):
+            attrs["pair_type"] = "interactive_object"
+            continue
+        # (3) interactive part by name (handle / knob / lever / drawer).
+        if any(h in name for h in _INTERACTIVE_PART_HINTS):
+            attrs["pair_type"] = "interactive_object"
+            continue
+        # (4) static structure / support surface by name.
+        if any(h in name for h in _STATIC_PAIR_HINTS):
+            attrs["pair_type"] = "static_object"
+            continue
+        # (5) default by entity kind: links are usually structure, free actors
+        #     are usually manipulable. Interactive default lets a not-yet-mined
+        #     manipulation object still receive center-based interactive
+        #     relations (orientation-alignment is simply skipped without an
+        #     asset).
+        attrs["pair_type"] = (
+            "interactive_object" if attrs.get("is_actor") else "static_object"
+        )

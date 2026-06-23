@@ -114,6 +114,22 @@ def _inv_transform_point(
     return R.T @ (np.asarray(point, dtype=float) - p)
 
 
+def _inv_rotate_dir(
+    pose_wxyz: np.ndarray, dir_world: np.ndarray
+) -> Optional[np.ndarray]:
+    """Rotate a world-frame direction into the OBJECT frame: ``R_obj.T @ d``."""
+    if pose_wxyz is None or len(pose_wxyz) < 7:
+        return None
+    R = _quat_wxyz_to_rotmat(np.asarray(pose_wxyz[3:7], dtype=float))
+    if R is None:
+        return None
+    d = R.T @ np.asarray(dir_world, dtype=float).reshape(3)
+    n = float(np.linalg.norm(d))
+    if n < 1e-9 or not np.all(np.isfinite(d)):
+        return None
+    return d / n
+
+
 # --------------------------------------------------------------------------- #
 # FK (SAPIEN-based, Fetch only)
 # --------------------------------------------------------------------------- #
@@ -285,6 +301,7 @@ def _load_pkl(path: Path) -> Optional[Dict]:
 
 def _mine_object(
     pkl_path: Path, fk: _FetchFK, n_components: int, max_samples: int,
+    approach_axis_local: np.ndarray,
 ) -> Optional[Dict]:
     data = _load_pkl(pkl_path)
     if data is None:
@@ -329,6 +346,7 @@ def _mine_object(
 
     anchors_obj: List[np.ndarray] = []
     widths: List[float] = []
+    approaches_obj: List[Optional[np.ndarray]] = []
     fk_failures = 0
     for i in range(n_samples):
         qpos = qpos_list[i]
@@ -340,11 +358,18 @@ def _mine_object(
         anchor = _inv_transform_point(obj_pose, tcp_in_base[:3])
         if anchor is None or not np.all(np.isfinite(anchor)):
             continue
+        # World approach direction = R_tcp @ axis_local; express in object frame.
+        R_tcp = _quat_wxyz_to_rotmat(tcp_in_base[3:7])
+        approach_obj: Optional[np.ndarray] = None
+        if R_tcp is not None:
+            dir_world = R_tcp @ approach_axis_local
+            approach_obj = _inv_rotate_dir(obj_pose, dir_world)
         width = float(qpos[-2] + qpos[-1])
         if not np.isfinite(width):
             continue
         anchors_obj.append(anchor)
         widths.append(width)
+        approaches_obj.append(approach_obj)   # may be None for this sample
 
     if fk_failures:
         log.warning("%s: FK failed on %d/%d samples", pkl_path, fk_failures, n_samples)
@@ -366,8 +391,21 @@ def _mine_object(
         # Use cluster MEDIAN for both anchor and width to be robust to outliers.
         anchor_med = np.median(anchors_arr[mask], axis=0).tolist()
         width_med = float(np.median(widths_arr[mask]))
+        # Median approach direction over the cluster's valid samples (then
+        # renormalize). If no sample in the cluster had a direction, omit it.
+        comp_dirs = [approaches_obj[idx] for idx in np.where(mask)[0]
+                     if approaches_obj[idx] is not None]
+        approach_field: Dict[str, List[float]] = {}
+        if comp_dirs:
+            d_med = np.median(np.stack(comp_dirs, axis=0), axis=0)
+            n = float(np.linalg.norm(d_med))
+            if n > 1e-9:
+                approach_field = {
+                    "approach_dir": [round(float(x), 6) for x in (d_med / n)]
+                }
         components.append({
             "anchor": [round(float(x), 6) for x in anchor_med],
+            **approach_field,
             "width": round(width_med, 6),
             "n_support": int(mask.sum()),
         })
@@ -438,8 +476,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--tcp-link", default="gripper_link",
         help="Link name to read as TCP (default: gripper_link).",
     )
+    parser.add_argument(
+        "--tcp-approach-axis", default="0,0,1",
+        help="Gripper-link local approach axis as 'x,y,z' (default 0,0,1).",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
+    approach_axis_local = np.asarray(
+        [float(x) for x in args.tcp_approach_axis.split(",")], dtype=float
+    )
     _setup_logging(args.verbose)
 
     root = Path(args.success_states_dir) / args.robot / args.subtask
@@ -472,6 +517,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             pkl_path, fk=fk,
             n_components=args.n_components,
             max_samples=args.max_samples,
+            approach_axis_local=approach_axis_local,
         )
         if rec is None:
             continue
@@ -495,12 +541,13 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     payload = {
         "_README": (
-            "anchor=[x,y,z] OBJECT frame (m); width=preferred gripper qpos-sum "
+            "anchor=[x,y,z] OBJECT frame (m); approach_dir=[x,y,z] OBJECT-frame "
+            "unit approach axis (optional); width=preferred gripper qpos-sum "
             "(m). Mined by tools/build_affordances.py from "
             "robot_success_states/<robot>/pick/<obj_id>.pkl. Keyed by canonical "
             "MS-HAB obj_id (no 'env-N_' prefix, no '-N' instance suffix)."
         ),
-        "_schema_version": 1,
+        "_schema_version": 2,
         "objects": by_object,
     }
 

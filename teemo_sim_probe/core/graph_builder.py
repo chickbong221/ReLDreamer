@@ -13,7 +13,7 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 
 from .schema import Graph, Node
-from .node_builder import build_nodes
+from .node_builder import build_nodes, classify_pair_types
 from .relation_rules import build_absolute_edges
 from .temporal_buffer import TemporalBuffer
 from .mask_extractor import MaskAccumulator
@@ -80,6 +80,12 @@ class GraphBuilder:
             camera_override=camera_override,
         )
 
+        # Eligibility-based vocabulary: classify each object node as
+        # static_object vs interactive_object BEFORE edge building. Uses the
+        # affordance set in cfg, so it must run after node_builder has stamped
+        # mshab_obj_id / mshab_kind onto the nodes.
+        classify_pair_types(nodes, self.cfg)
+
         # MS-HAB: inject retained-but-invisible objects (frozen pose). Non-MS-HAB
         # envs are fixed-camera / fixed-object-set and skip this entirely.
         if state.is_mshab:
@@ -122,6 +128,13 @@ class GraphBuilder:
                 active_subtask=state.active_subtask_type,
                 mshab_object_name=self.mshab_object_name,
             ),
+        )
+
+        # Re-run classify_pair_types on the final node set: retained snapshots
+        # strip dynamic mshab attrs (see persistence._stripped_attrs), so an
+        # active-target promotion may need to be re-applied before edges build.
+        classify_pair_types(
+            {n.node_id: n for n in graph.nodes}, self.cfg
         )
 
         # Absolute then temporal edges.

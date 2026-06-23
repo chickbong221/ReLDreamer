@@ -1,30 +1,31 @@
-"""Absolute relation labels from privileged state (eligibility-based vocabulary).
+"""Absolute relation labels from privileged state (eligibility-based).
 
-Each object node is first classified (in ``node_builder.classify_pair_types``)
-as exactly one of ``static_object`` or ``interactive_object`` and stored on
-``node.attributes['pair_type']``. The emitted relation vocabulary follows that
-classification:
+Per the design doc, each object node is first classified (in node_builder) as
+``static_object`` or ``interactive_object`` via ``attributes['pair_type']``.
+Only the relations meaningful for that class are emitted:
 
-  ee--static_object       (CENTER-based):
-      planar-distance, height-offset, contact
-  ee--interactive_object  (ANCHOR-based when an asset exists):
-      planar-distance, height-offset, orientation-alignment, contact, grasp
+  ee--static_object:
+      planar-distance, height-offset, contact            (center-based)
+  ee--interactive_object:
+      planar-distance, height-offset, orientation-alignment,
+      contact, grasp                                     (anchor-based spatial)
       (+ gripper-width-alignment as an interactive sub-signal)
   object--object:
       contact, support
 
-Spatial reference for an interactive object is its currently selected
-affordance ANCHOR when a mined asset is available; without an asset we fall
-back to the object center, so interactive objects still receive valid spatial
-edges (just not orientation-alignment).
+Static-object spatial labels are computed from the object CENTER. Interactive-
+object spatial labels (planar-distance, height-offset) are computed from the
+selected affordance ANCHOR when an asset is available, falling back to center
+when it is not. ``orientation-alignment`` is the angle between the TCP approach
+axis and the affordance approach axis; it requires a mined direction and is
+skipped otherwise.
 
-Temporal counterparts (*-change / *-transition) are produced by
-``temporal_buffer`` from these absolute edges.
+Temporal counterparts (*-change / *-transition) are produced by temporal_buffer.
 """
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -104,7 +105,7 @@ def tcp_approach_dir_world(
     """World-frame unit approach axis of the TCP.
 
     ``axis_local`` is the gripper-link local axis that points "out" of the
-    gripper. Fetch / Panda default is +Z. Rotated by the TCP world quaternion.
+    gripper (Fetch/Panda: +Z by default). Rotated by the TCP world quaternion.
     """
     if tcp_pose_world is None or len(tcp_pose_world) < 7:
         return None
@@ -126,8 +127,6 @@ def orientation_alignment_angle(
 # --------------------------------------------------------------------------- #
 # Predicates
 # --------------------------------------------------------------------------- #
-# Static-actor hints: things named like "table"/"wall" are scene structure and
-# cannot be grasped, regardless of pair-type classification.
 _STATIC_HINTS = (
     "table", "wall", "floor", "ground", "counter_body", "cabinet_body",
     "fridge_body", "kitchen_counter", "sink", "shelf",
@@ -175,12 +174,12 @@ def _resolve_entity(node: Node, state: PrivilegedState):
 # Affordance anchor resolution (shared by interactive spatial + orientation)
 # --------------------------------------------------------------------------- #
 def _resolve_active_anchor(node: Node, state: PrivilegedState, cfg: dict):
-    """Return ``(anchor_world (3,), component, a_star)`` for an interactive node.
+    """Return (anchor_world (3,), component, a_star) for an interactive node.
 
-    Returns ``(None, None, None)`` when no usable affordance asset / pose
-    exists, in which case callers fall back to the object center for spatial
-    relations. Also stamps ``node.attributes['affordance_a_star']`` so
-    ``temporal_buffer`` can detect ``a_star`` switches.
+    Returns (None, None, None) when no usable affordance asset / pose exists,
+    in which case callers fall back to the object center for spatial relations.
+    Also stamps ``node.attributes['affordance_a_star']`` so temporal_buffer can
+    detect a_star switches.
     """
     aff_set = cfg.get("affordance_set")
     if aff_set is None or getattr(aff_set, "is_empty", lambda: True)():
@@ -339,7 +338,6 @@ def ee_interactive_object_edges(
 def object_object_edges(
     graph: Graph, state: PrivilegedState, cfg: dict
 ) -> List[Edge]:
-    """Pairwise object--object: mutually exclusive contact or directed support."""
     eps_contact = cfg["contact"]["eps_force"]
     eps_z = cfg["support"]["eps_z"]
     min_vertical_ratio = cfg["support"].get("min_vertical_force_ratio", 0.5)
@@ -356,8 +354,6 @@ def object_object_edges(
             force = float(np.linalg.norm(force_vector))
             in_contact = force > eps_contact
 
-            # Support = load-bearing contact: vertical-dominated force AND
-            # supporter centre below supported centre.
             support_pair = None
             if in_contact and force > 0.0:
                 vertical_ratio = abs(float(force_vector[2])) / force

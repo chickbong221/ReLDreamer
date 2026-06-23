@@ -1,0 +1,23 @@
+--- a/teemo_sim_probe/core/temporal_buffer.py
++++ b/teemo_sim_probe/core/temporal_buffer.py
+@@ def update(self, graph):
+-        # (1) Drop history for affordance keys whose edge disappeared this frame.
+-        for key in list(self._values.keys()):
+-            src, dst, relation = key
+-            if relation in _AFFORDANCE_RELATIONS and key not in present_affordance:
+-                del self._values[key]
+-                self._last_a_star.pop(key, None)
++        # (1) Drop history for ANCHOR-BOUND keys whose edge disappeared or whose
++        #     dst no longer carries an a_star this frame. A key is anchor-bound
++        #     only if it is currently (or was previously) tracked WITH an a_star;
++        #     center-based planar-distance / height-offset (no a_star) is exempt
++        #     so static + asset-less interactive histories survive normally.
++        anchor_bound_now = set(present_affordance.keys())
++        for key in list(self._values.keys()):
++            src, dst, relation = key
++            if relation not in _AFFORDANCE_RELATIONS:
++                continue
++            was_anchor_bound = key in self._last_a_star
++            if was_anchor_bound and key not in anchor_bound_now:
++                del self._values[key]
++                self._last_a_star.pop(key, None)

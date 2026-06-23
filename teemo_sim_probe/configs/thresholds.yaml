@@ -13,6 +13,9 @@ contact:
 
 grasp:
   max_angle: 30             # MS-HAB convention for agent.is_grasping
+  # Gripper-link local axis that points OUT of the gripper (approach axis).
+  # Fetch / Panda gripper_link: +Z. Used by ee--interactive orientation-alignment.
+  tcp_approach_axis_local: [0.0, 0.0, 1.0]
 
 support:
   eps_z: 0.02               # m; supporter centre must be lower by this amount
@@ -38,9 +41,9 @@ profiles:
     height_offset:          # ee-object, z_ee - z_obj (signed)
       edges:  [-0.10, -0.03, 0.03, 0.10]
       labels: [far-below, below, level, above, far-above]
-    tcp_affordance_alignment:    # ee-active_target, |tcp - anchor_world|
-      edges:  [0.01, 0.03, 0.07, 0.15]
-      labels: [on-anchor, very-near, near, off, far]
+    orientation_alignment:       # ee-interactive, angle(rad) TCP vs aff axis
+      edges:  [0.17, 0.52, 1.05, 1.57]     # ~10deg, 30deg, 60deg, 90deg
+      labels: [aligned, near-aligned, oblique, perpendicular, opposed]
     gripper_width_alignment:     # signed: width - preferred_width
       edges:  [-0.03, -0.01, 0.01, 0.03]
       labels: [much-tighter, tighter, matched, looser, much-looser]
@@ -54,11 +57,11 @@ profiles:
       labels: [move-down-fast, move-down-medium, move-down-slow,
                stable-height,
                move-up-slow, move-up-medium, move-up-fast]
-    tcp_affordance_alignment_change:  # signed delta distance over K
-      edges:  [-0.05, -0.02, -0.005, 0.005, 0.02, 0.05]
-      labels: [approach-anchor-fast, approach-anchor-medium, approach-anchor-slow,
-               stable-anchor,
-               leave-anchor-slow, leave-anchor-medium, leave-anchor-fast]
+    orientation_alignment_change:     # signed delta angle(rad) over K
+      edges:  [-0.35, -0.12, -0.03, 0.03, 0.12, 0.35]
+      labels: [align-fast, align-medium, align-slow,
+               stable-orientation,
+               misalign-slow, misalign-medium, misalign-fast]
     gripper_width_alignment_change:   # signed delta width-error over K
       edges:  [-0.02, -0.008, -0.002, 0.002, 0.008, 0.02]
       labels: [tighten-fast, tighten-medium, tighten-slow,
@@ -72,9 +75,9 @@ profiles:
     height_offset:
       edges:  [-0.10, -0.03, 0.03, 0.10]
       labels: [far-below, below, level, above, far-above]
-    tcp_affordance_alignment:
-      edges:  [0.02, 0.05, 0.12, 0.30]
-      labels: [on-anchor, very-near, near, off, far]
+    orientation_alignment:       # angle is robot-local; reuse tabletop bins
+      edges:  [0.17, 0.52, 1.05, 1.57]
+      labels: [aligned, near-aligned, oblique, perpendicular, opposed]
     gripper_width_alignment:     # same as tabletop -- gripper is robot-local
       edges:  [-0.03, -0.01, 0.01, 0.03]
       labels: [much-tighter, tighter, matched, looser, much-looser]
@@ -88,11 +91,11 @@ profiles:
       labels: [move-down-fast, move-down-medium, move-down-slow,
                stable-height,
                move-up-slow, move-up-medium, move-up-fast]
-    tcp_affordance_alignment_change:
-      edges:  [-0.15, -0.06, -0.015, 0.015, 0.06, 0.15]
-      labels: [approach-anchor-fast, approach-anchor-medium, approach-anchor-slow,
-               stable-anchor,
-               leave-anchor-slow, leave-anchor-medium, leave-anchor-fast]
+    orientation_alignment_change:     # same as tabletop -- angle is robot-local
+      edges:  [-0.35, -0.12, -0.03, 0.03, 0.12, 0.35]
+      labels: [align-fast, align-medium, align-slow,
+               stable-orientation,
+               misalign-slow, misalign-medium, misalign-fast]
     gripper_width_alignment_change:   # same as tabletop
       edges:  [-0.02, -0.008, -0.002, 0.002, 0.008, 0.02]
       labels: [tighten-fast, tighten-medium, tighten-slow,

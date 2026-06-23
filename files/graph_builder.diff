@@ -1,0 +1,31 @@
+--- a/teemo_sim_probe/core/graph_builder.py
++++ b/teemo_sim_probe/core/graph_builder.py
+@@
+ from .node_builder import build_nodes
++from .node_builder import classify_pair_types
+@@
+         nodes, masks, cam, rgb = build_nodes(
+             obs,
+             state,
+             ...
+         )
+ 
++        # Eligibility-based vocabulary: classify each object node as
++        # static_object vs interactive_object BEFORE edge building. Uses the
++        # affordance set in cfg, so it must run after node_builder has stamped
++        # mshab_obj_id / mshab_kind onto the nodes.
++        classify_pair_types(nodes, self.cfg)
++
+         # MS-HAB: inject retained-but-invisible objects (frozen pose). ...
+         if state.is_mshab:
+             nodes = self.registry.merge_retained(nodes, frame)
+@@
+ NOTE: classify_pair_types must also be re-run after merge_retained, because
+ retained snapshots strip dynamic mshab attrs. Simplest correct placement is to
+ call it once more right before build_absolute_edges, on the final node set:
+@@
+         # Absolute then temporal edges.
++        classify_pair_types(
++            {n.node_id: n for n in graph.nodes}, self.cfg
++        )
+         build_absolute_edges(graph, state, self.cfg)
