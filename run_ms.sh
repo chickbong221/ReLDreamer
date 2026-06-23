@@ -63,13 +63,13 @@ unset XLA_PYTHON_CLIENT_MEM_FRACTION
 
 # ── Sparse reward runs (all tasks) ────────────────────────────────────────────
 
-# python -m dreamerv3.main \
-#   --configs maniskill_state \
-#   --task maniskill_PushCube-v1 \
-#   --run.steps 1e6 \
-#   --logdir $HOME/logdir/maniskill_state/$TIMESTAMP/PushCube-sparse \
-#   --env.maniskill.reward_mode sparse \
-#   --logger.wandb_name dreamerv3-state-PushCube-sparse
+python -m dreamerv3.main \
+  --configs maniskill_state \
+  --task maniskill_PushCube-v1 \
+  --run.steps 1e6 \
+  --logdir $HOME/logdir/maniskill_state/$TIMESTAMP/PushCube-sparse \
+  --env.maniskill.reward_mode sparse \
+  --logger.wandb_name dreamerv3-state-PushCube-sparse
 
 python -m dreamerv3.main \
   --configs maniskill_state \
