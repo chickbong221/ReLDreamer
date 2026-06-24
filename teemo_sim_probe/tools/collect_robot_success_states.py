@@ -3,8 +3,10 @@
 Discovers per-object Fetch pick checkpoints under
 ``<ckpt-root>/<task>/pick/<obj_id>/policy.pt`` and, for each one, rolls the
 policy out in a vectorised MS-HAB pick env wrapped in
-``FetchCollectRobotInitWrapper`` (mshab/envs/wrappers/collect_data.py). The
-wrapper records ``robot_qpos`` and ``obj_pose_wrt_base`` at every
+``FetchCollectRobotInitWrapper`` (teemo_sim_probe/adapters/collect_data.py
+-- a local bug-fixed copy of the same class in mshab.envs.wrappers.collect_data
+that we use to keep mshab/ pristine). The wrapper records ``robot_qpos`` and
+``obj_pose_wrt_base`` at every
 ``info["success"]`` and, on ``close()``, pickles
 ``{obj_id, robot_qpos[Nx15], obj_pose_wrt_base[Nx7]}`` to::
 
@@ -93,7 +95,7 @@ def _build_env(task: str, obj_id: str, args):
         FetchDepthObservationWrapper,
         FrameStack,
     )
-    from mshab.envs.wrappers.collect_data import FetchCollectRobotInitWrapper
+    from teemo_sim_probe.adapters.collect_data import FetchCollectRobotInitWrapper
 
     RD = ASSET_DIR / "scene_datasets/replica_cad_dataset/rearrange"
     plan_fp = RD / "task_plans" / task / "pick" / "train" / f"{obj_id}.json"
