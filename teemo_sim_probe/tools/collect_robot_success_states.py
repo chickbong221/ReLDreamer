@@ -84,7 +84,6 @@ def _build_env(task: str, obj_id: str, args):
     ``FetchCollectRobotInitWrapper`` on the inside (so it sees raw success
     info before policy-side obs transforms)."""
     import gymnasium as gym
-    from mani_skill import ASSET_DIR
     from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
     import mshab.envs  # noqa: F401  registers PickSubtaskTrain-v0 etc.
     from mshab.envs.planner import plan_data_from_file
@@ -95,7 +94,10 @@ def _build_env(task: str, obj_id: str, args):
     )
     from mshab.envs.wrappers.collect_data import FetchCollectRobotInitWrapper
 
-    RD = ASSET_DIR / "scene_datasets/replica_cad_dataset/rearrange"
+    # Use --asset-dir (the repo convention: MS_ASSET_DIR already points at the
+    # data root that contains scene_datasets/). mani_skill.ASSET_DIR appends an
+    # extra "data/" segment to MS_ASSET_DIR, which would double it here.
+    RD = Path(args.asset_dir) / "scene_datasets/replica_cad_dataset/rearrange"
     plan_fp = RD / "task_plans" / task / "pick" / "train" / f"{obj_id}.json"
     if not plan_fp.exists():
         raise FileNotFoundError(f"missing task plan: {plan_fp}")
