@@ -11,6 +11,14 @@ element as a list of subtasks and runs ``len(tp) == 1`` -- i.e. it asks
 We keep ``mshab/`` pristine and provide a corrected wrapper here.
 ``step()`` / ``close()`` are byte-identical to upstream; only ``__init__`` is
 fixed. The on-disk pickle schema is unchanged.
+
+Additionally, plans in ``prepare_groceries/<obj>.json`` use per-instance
+obj_ids like ``002_master_chef_can-0..-10``, so upstream's strict ``all_equal``
+on raw obj_ids would never pass for that task. We canonicalize via
+``canonical_affordance_key`` (strips the ``-N`` instance suffix) before the
+equality check, and key the output pickle by the canonical name -- which is
+what ``build_affordances.py`` already expects (it deduplicates by canonical
+key when walking ``robot_success_states/<robot>/pick/*.pkl``).
 """
 
 from __future__ import annotations
@@ -26,7 +34,7 @@ import sapien.physx as physx
 from mani_skill import ASSET_DIR
 from mani_skill.agents.robots import Fetch
 
-from mshab.utils.array import all_equal
+from teemo_sim_probe.core.affordance import canonical_affordance_key
 
 if TYPE_CHECKING:
     from mshab.envs.sequential_task import SequentialTaskEnv
@@ -50,12 +58,17 @@ class FetchCollectRobotInitWrapper(gym.Wrapper):
         assert all(len(tp.subtasks) == 1 for tp in all_task_plans), (
             "Must have only one subtask"
         )
-        assert all_equal(
-            [tp.subtasks[0].obj_id for tp in all_task_plans]
-        ), "Must use same obj for all task plans"
+        canonical_ids = {
+            canonical_affordance_key(tp.subtasks[0].obj_id)
+            for tp in all_task_plans
+        }
+        assert len(canonical_ids) == 1, (
+            f"All task plans must reference the same canonical object; "
+            f"got {sorted(canonical_ids)}"
+        )
+        self.obj_id = next(iter(canonical_ids))
 
         tp0 = all_task_plans[0].subtasks[0]
-        self.obj_id = tp0.obj_id
 
         self.success_robot_qpos = []
         self.success_obj_pose_wrt_base = []
