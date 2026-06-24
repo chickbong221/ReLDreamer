@@ -80,6 +80,19 @@ def parse_args():
                    help="keep scene_background actor (filtered by default)")
     p.add_argument("--include-static-scene", action="store_true",
                    help="keep static furniture / apartment props (filtered by default)")
+    # Ablation flags (R8/R10/R11/R13).
+    p.add_argument("--k-persist", type=int, default=None,
+                   help="override selection.k_persist (frames)")
+    p.add_argument("--n-refresh", type=int, default=None,
+                   help="override selection.n_refresh")
+    p.add_argument("--n-slots", type=int, default=None,
+                   help="override selection.n_slots")
+    p.add_argument("--no-local-contact", action="store_true",
+                   help="disable R7 local-contact exception")
+    p.add_argument("--oracle-active-target", action="store_true",
+                   help="oracle ablation: force MS-HAB active target into graph")
+    p.add_argument("--dist-only", action="store_true",
+                   help="ablation: zero all selection weights except w_dist")
     p.add_argument(
         "--mshab-object-name",
         choices=["actual", "merged"],
@@ -199,6 +212,7 @@ def main():
     print(f"[policy] kind={policy.kind}")
 
     cfg = load_config("room_scale")
+    _apply_ablation_overrides(cfg, args)
     cameras = list(args.probe_cameras)
     # One GraphBuilder per camera (separate temporal buffers + visibility).
     builders = {
@@ -221,6 +235,7 @@ def main():
 
     obs = eval_obs
     info = {}
+    just_reset = True       # first iter is the start of an episode
     for frame in range(args.steps):
         save_now = (frame % args.save_every == 0) or (frame == args.steps - 1)
 
@@ -240,6 +255,7 @@ def main():
 
                 graph, masks, cam_name, rgb = builders[cam].step(
                     obs, frame,
+                    episode_boundary=just_reset,
                     seg_override=seg, rgb_override=backdrop,
                     camera_override=cam,
                 )
@@ -272,6 +288,14 @@ def main():
         action = policy.act(obs)
         obs, reward, terminated, truncated, info = venv.step(action)
         success.update(info, frame)
+        # ManiSkillVectorEnv auto-resets internally on done; mark the next frame
+        # as a fresh episode for the builders.
+        import torch as _torch
+        done_t = _torch.logical_or(
+            _as_torch(terminated, device=_torch.device("cpu"), dtype=_torch.bool),
+            _as_torch(truncated, device=_torch.device("cpu"), dtype=_torch.bool),
+        )
+        just_reset = bool(done_t[0].item()) if done_t.numel() > 0 else False
 
     # success_once line figure + csv.
     success.save_plot(os.path.join(args.out, "success_once.png"),
@@ -290,6 +314,26 @@ def main():
 
     venv.close()
     print(f"wrote {args.steps} frames to {args.out}")
+
+
+def _apply_ablation_overrides(cfg: dict, args) -> None:
+    sel = cfg["selection"]
+    if args.k_persist is not None:
+        sel["k_persist"] = int(args.k_persist)
+    if args.n_refresh is not None:
+        sel["n_refresh"] = int(args.n_refresh)
+    if args.n_slots is not None:
+        sel["n_slots"] = int(args.n_slots)
+    if args.no_local_contact:
+        cfg["e_domain"]["enable_local_contact"] = False
+    if args.oracle_active_target:
+        sel["oracle_force_active_target"] = True
+    if args.dist_only:
+        w = sel["weights"]
+        keep = float(w.get("dist", 2.0))
+        for k in list(w):
+            w[k] = 0.0
+        w["dist"] = keep
 
 
 def _print_mshab_summary(venv, camera, mshab_object_name="actual"):

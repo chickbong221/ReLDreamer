@@ -2,52 +2,60 @@
 #   tabletop   -> ManiSkill PickCube-v1 (small workspace)
 #   room_scale -> MS-HAB (Fetch navigates room-scale scenes)
 #
-# All distances in metres. Bin edges are upper-exclusive ascending; the label
-# for the last bin applies to everything >= its lower edge.
+# All distances in metres. Bin edges are upper-exclusive ascending.
 
 temporal:
-  K: 5                       # horizon for temporal labels (frames)
+  K: 5
 
 contact:
-  eps_force: 0.05            # N; |pairwise force| above this == contact
+  eps_force: 0.05
 
 grasp:
-  max_angle: 30             # MS-HAB convention for agent.is_grasping
-  # Gripper-link local axis that points OUT of the gripper (approach axis).
-  # Fetch / Panda gripper_link: +Z. Used by ee--interactive orientation-alignment.
+  max_angle: 30
   tcp_approach_axis_local: [0.0, 0.0, 1.0]
 
 support:
-  eps_z: 0.02               # m; supporter centre must be lower by this amount
-  min_vertical_force_ratio: 0.5  # |Fz| / |F|; rejects side-only contact
+  eps_z: 0.02
+  min_vertical_force_ratio: 0.5
 
 affordances:
-  # JSON asset produced by tools/build_affordances.py. Path is resolved
-  # relative to THIS file's directory. Missing file -> empty set + warning;
-  # affordance relations are silently skipped (graceful degradation).
   asset_path: affordances.json
 
-persistence:                # MS-HAB only; non-MS-HAB envs bypass this entirely
-  n_max: 6                  # max object nodes (ee excluded from count)
-  w_keep: 3                 # retain invisible object for up to this many frames
-  w_manip: 5                # remember EE-grasp/contact for this many frames
+e_domain:
+  asset_path: e_domain.json
+  enable_local_contact: true       # R7
+
+selection:                          # R8-R13
+  n_slots: 10                       # R11 object slot capacity
+  n_refresh: 2                      # R11 refresh quota
+  k_persist: 5                      # R8 / R13 persistence window (frames)
+  oracle_force_active_target: false # R13 ablation only
+  weights:                          # R10 continuous rule score
+    contact:  4.0
+    grasp:    4.0
+    persist:  2.0
+    afford:   1.5
+    state:    1.5
+    support:  1.0
+    local:    2.0
+    dist:     2.0
+  tau_age:  3
+  tau_dist_tabletop:   0.5
+  tau_dist_room_scale: 1.5
 
 profiles:
 
   tabletop:
-    planar_distance:        # ee-object, |xy|
+    planar_distance:
       edges:  [0.03, 0.08, 0.20, 0.50]
       labels: [very-near, near, medium, far, very-far]
-    height_offset:          # ee-object, z_ee - z_obj (signed)
+    height_offset:
       edges:  [-0.10, -0.03, 0.03, 0.10]
       labels: [far-below, below, level, above, far-above]
-    orientation_alignment:       # ee-interactive, angle(rad) TCP vs aff axis
-      edges:  [0.17, 0.52, 1.05, 1.57]     # ~10deg, 30deg, 60deg, 90deg
-      labels: [aligned, near-aligned, oblique, perpendicular, opposed]
-    gripper_width_alignment:     # signed: width - preferred_width
-      edges:  [-0.03, -0.01, 0.01, 0.03]
-      labels: [much-tighter, tighter, matched, looser, much-looser]
-    planar_distance_change: # signed delta over K
+    orientation_alignment:
+      edges:  [0.17, 0.52, 1.05, 1.57]
+      labels: [aligned, near-aligned, partial, misaligned, very-misaligned]
+    planar_distance_change:
       edges:  [-0.10, -0.04, -0.01, 0.01, 0.04, 0.10]
       labels: [approach-fast, approach-medium, approach-slow,
                stable-distance,
@@ -57,16 +65,11 @@ profiles:
       labels: [move-down-fast, move-down-medium, move-down-slow,
                stable-height,
                move-up-slow, move-up-medium, move-up-fast]
-    orientation_alignment_change:     # signed delta angle(rad) over K
+    orientation_alignment_change:
       edges:  [-0.35, -0.12, -0.03, 0.03, 0.12, 0.35]
-      labels: [align-fast, align-medium, align-slow,
-               stable-orientation,
-               misalign-slow, misalign-medium, misalign-fast]
-    gripper_width_alignment_change:   # signed delta width-error over K
-      edges:  [-0.02, -0.008, -0.002, 0.002, 0.008, 0.02]
-      labels: [tighten-fast, tighten-medium, tighten-slow,
-               stable-width,
-               loosen-slow, loosen-medium, loosen-fast]
+      labels: [improve-alignment-fast, improve-alignment-medium, improve-alignment-slow,
+               stable-alignment,
+               worsen-alignment-slow, worsen-alignment-medium, worsen-alignment-fast]
 
   room_scale:
     planar_distance:
@@ -75,12 +78,9 @@ profiles:
     height_offset:
       edges:  [-0.10, -0.03, 0.03, 0.10]
       labels: [far-below, below, level, above, far-above]
-    orientation_alignment:       # angle is robot-local; reuse tabletop bins
+    orientation_alignment:
       edges:  [0.17, 0.52, 1.05, 1.57]
-      labels: [aligned, near-aligned, oblique, perpendicular, opposed]
-    gripper_width_alignment:     # same as tabletop -- gripper is robot-local
-      edges:  [-0.03, -0.01, 0.01, 0.03]
-      labels: [much-tighter, tighter, matched, looser, much-looser]
+      labels: [aligned, near-aligned, partial, misaligned, very-misaligned]
     planar_distance_change:
       edges:  [-0.30, -0.12, -0.03, 0.03, 0.12, 0.30]
       labels: [approach-fast, approach-medium, approach-slow,
@@ -91,13 +91,8 @@ profiles:
       labels: [move-down-fast, move-down-medium, move-down-slow,
                stable-height,
                move-up-slow, move-up-medium, move-up-fast]
-    orientation_alignment_change:     # same as tabletop -- angle is robot-local
+    orientation_alignment_change:
       edges:  [-0.35, -0.12, -0.03, 0.03, 0.12, 0.35]
-      labels: [align-fast, align-medium, align-slow,
-               stable-orientation,
-               misalign-slow, misalign-medium, misalign-fast]
-    gripper_width_alignment_change:   # same as tabletop
-      edges:  [-0.02, -0.008, -0.002, 0.002, 0.008, 0.02]
-      labels: [tighten-fast, tighten-medium, tighten-slow,
-               stable-width,
-               loosen-slow, loosen-medium, loosen-fast]
+      labels: [improve-alignment-fast, improve-alignment-medium, improve-alignment-slow,
+               stable-alignment,
+               worsen-alignment-slow, worsen-alignment-medium, worsen-alignment-fast]

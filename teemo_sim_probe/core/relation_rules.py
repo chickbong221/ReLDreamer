@@ -1,25 +1,19 @@
-"""Absolute relation labels from privileged state (eligibility-based vocabulary).
+"""Absolute relation labels from privileged state.
 
-Each object node is first classified (in ``node_builder.classify_pair_types``)
-as exactly one of ``static_object`` or ``interactive_object`` and stored on
-``node.attributes['pair_type']``. The emitted relation vocabulary follows that
-classification:
+Vocabulary follows ``node.attributes['pair_type']``:
 
   ee--static_object       (CENTER-based):
       planar-distance, height-offset, contact
-  ee--interactive_object  (ANCHOR-based when an asset exists):
+  ee--interactive_object  (ANCHOR-based when an asset exists, else CENTER):
       planar-distance, height-offset, orientation-alignment, contact, grasp
-      (+ gripper-width-alignment as an interactive sub-signal)
-  object--object:
+  object--object          (mutually exclusive support / contact):
       contact, support
 
-Spatial reference for an interactive object is its currently selected
-affordance ANCHOR when a mined asset is available; without an asset we fall
-back to the object center, so interactive objects still receive valid spatial
-edges (just not orientation-alignment).
-
-Temporal counterparts (*-change / *-transition) are produced by
-``temporal_buffer`` from these absolute edges.
+Interactive spatial reference is annotated on the node as
+``attributes['spatial_ref'] in {"anchor", "center"}`` so audits can tell
+anchor-grounded edges from center fallbacks per frame. ``orientation-
+alignment`` is emitted only when both a mined affordance asset AND an
+approach_dir exist.
 """
 
 from __future__ import annotations
@@ -223,6 +217,8 @@ def ee_static_object_edges(
     for node in graph.nodes:
         if node.node_type != "object" or _is_interactive(node):
             continue
+        if not node.valid_mask:
+            continue
         ent = _resolve_entity(node, state)
         obj_xyz = _xyz(node)
 
@@ -255,10 +251,9 @@ def ee_interactive_object_edges(
     """ee--interactive_object: anchor-based spatial + orientation + grasp.
 
     planar-distance / height-offset use the selected affordance anchor when an
-    asset is available, else fall back to the object center. orientation-
-    alignment requires a mined approach direction. contact + grasp are physical
-    predicates. gripper-width-alignment is emitted as an interactive sub-signal
-    when a preferred width is available.
+    asset is available, else fall back to the object center (annotated as
+    ``node.attributes['spatial_ref']``). orientation-alignment requires a mined
+    approach direction. contact + grasp are physical predicates.
     """
     ee = graph.get_node("ee")
     if ee is None or ee.pose_world is None:
@@ -269,7 +264,6 @@ def ee_interactive_object_edges(
     grasp_angle = cfg["grasp"]["max_angle"]
     tcp_axis_local = cfg["grasp"].get("tcp_approach_axis_local", [0.0, 0.0, 1.0])
     align_spec = prof.get("orientation_alignment")
-    width_spec = prof.get("gripper_width_alignment")
 
     tcp_dir = tcp_approach_dir_world(state.tcp_pose_world, tcp_axis_local)
 
@@ -277,11 +271,16 @@ def ee_interactive_object_edges(
     for node in graph.nodes:
         if node.node_type != "object" or not _is_interactive(node):
             continue
+        if not node.valid_mask:
+            continue
         ent = _resolve_entity(node, state)
 
         anchor_world, comp, _ = _resolve_active_anchor(node, state, cfg)
         # Spatial reference: anchor if available, else object center.
         ref_xyz = anchor_world if anchor_world is not None else _xyz(node)
+        node.attributes["spatial_ref"] = (
+            "anchor" if anchor_world is not None else "center"
+        )
 
         if ref_xyz is not None:
             d = planar_distance_xyz(ee_xyz, ref_xyz)
@@ -307,15 +306,6 @@ def ee_interactive_object_edges(
                     bin_label(ang, align_spec["edges"], align_spec["labels"]),
                     ang,
                 ))
-
-        # gripper-width-alignment (interactive sub-signal).
-        if (comp is not None and state.gripper_width is not None
-                and width_spec is not None):
-            err = float(state.gripper_width - comp.preferred_width)
-            edges.append(Edge(
-                "ee", node.node_id, "gripper-width-alignment",
-                bin_label(err, width_spec["edges"], width_spec["labels"]), err,
-            ))
 
         # contact predicate.
         force = state.ee_object_contact_force(ent)
@@ -344,7 +334,7 @@ def object_object_edges(
     eps_z = cfg["support"]["eps_z"]
     min_vertical_ratio = cfg["support"].get("min_vertical_force_ratio", 0.5)
 
-    objs = [n for n in graph.nodes if n.node_type == "object"]
+    objs = [n for n in graph.nodes if n.node_type == "object" and n.valid_mask]
     edges: List[Edge] = []
     for i in range(len(objs)):
         for j in range(i + 1, len(objs)):

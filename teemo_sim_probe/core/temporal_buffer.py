@@ -1,8 +1,8 @@
 """Temporal relations over a horizon K.
 
 For continuous relations (planar-distance, height-offset, orientation-
-alignment, gripper-width-alignment): store the raw value at each frame,
-compare ``value[t]`` vs ``value[t-K]``, discretize the signed change.
+alignment): store the raw value at each frame, compare ``value[t]`` vs
+``value[t-K]``, discretize the signed change.
 
 For binary predicates (contact, grasp, support): compare ``predicate[t-K]``
 vs ``predicate[t]`` -> gain / lose / maintain / maintain-no. ``maintain-no-*``
@@ -32,23 +32,17 @@ _CONTINUOUS = {
     "planar-distance": "planar_distance_change",
     "height-offset": "height_offset_change",
     "orientation-alignment": "orientation_alignment_change",
-    "gripper-width-alignment": "gripper_width_alignment_change",
 }
 # Relations handled as binary predicates.
 _BINARY = {"contact", "grasp", "support", "containment"}
 
-# Anchor-bound relations whose history must be cleared when the selected
-# affordance component (a_star) switches or the affordance edge disappears:
-# their value is tied to the selected anchor / component, so a switch makes a
-# raw delta meaningless. orientation-alignment and gripper-width-alignment are
-# always anchor-bound. planar-distance / height-offset are anchor-bound ONLY
-# for interactive objects with an asset (the edge's dst node will carry an
-# ``affordance_a_star``); the static / asset-less interactive variants are
-# center-based and follow the standard continuous path. The presence-of-a_star
-# check below filters that automatically.
+# Anchor-bound relations whose history must be cleared on a_star switch or
+# affordance-edge disappearance. orientation-alignment is always anchor-bound;
+# planar-distance / height-offset are anchor-bound ONLY for interactive
+# objects with an asset (dst node carries ``affordance_a_star``); the static
+# / asset-less interactive variants are center-based and exempt.
 _AFFORDANCE_RELATIONS = {
     "orientation-alignment",
-    "gripper-width-alignment",
     "planar-distance",
     "height-offset",
 }
@@ -129,7 +123,8 @@ class TemporalBuffer:
         # support edges are emitted. Seed/update all currently visible object
         # pairs with False unless support is true, so old support histories can
         # become lose-support instead of stale maintain-support.
-        object_ids = [n.node_id for n in graph.nodes if n.node_type == "object"]
+        object_ids = [n.node_id for n in graph.nodes
+                      if n.node_type == "object" and n.valid_mask]
         for src in object_ids:
             for dst in object_ids:
                 if src == dst:

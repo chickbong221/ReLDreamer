@@ -45,27 +45,29 @@ class ObjectRelationTests(unittest.TestCase):
             ("table", "cube", "support"),
         )
 
-    def test_horizontal_touch_emits_contact_only(self):
+    def test_horizontal_touch_emits_contact_plus_masked_no_support(self):
         left = _node("left", 0.0)
         right = _node("right", 0.2)
         graph = Graph(0, "env", "cam", nodes=[left, right])
 
         edges = object_object_edges(graph, _State([2.0, 0.0, 0.1]), _cfg())
 
-        self.assertEqual(len(edges), 1)
-        self.assertEqual(edges[0].relation, "contact")
-        self.assertEqual(edges[0].label, "contact")
+        rels = {(e.relation, e.label, e.masked) for e in edges}
+        self.assertIn(("contact", "contact", False), rels)
+        self.assertIn(("support", "no-support", True), rels)
+        self.assertEqual(len(edges), 2)
 
-    def test_no_touch_emits_masked_no_contact(self):
+    def test_no_touch_emits_masked_no_contact_and_no_support(self):
         a = _node("a", 0.0)
         b = _node("b", 1.0)
         graph = Graph(0, "env", "cam", nodes=[a, b])
 
         edges = object_object_edges(graph, _State([0.0, 0.0, 0.0]), _cfg())
 
-        self.assertEqual(len(edges), 1)
-        self.assertEqual(edges[0].label, "no-contact")
-        self.assertTrue(edges[0].masked)
+        rels = {(e.relation, e.label, e.masked) for e in edges}
+        self.assertIn(("contact", "no-contact", True), rels)
+        self.assertIn(("support", "no-support", True), rels)
+        self.assertEqual(len(edges), 2)
 
 
 if __name__ == "__main__":

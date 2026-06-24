@@ -38,6 +38,12 @@ def parse_args():
     p.add_argument("--include-goals", action="store_true")
     p.add_argument("--include-background", action="store_true")
     p.add_argument("--include-static-scene", action="store_true")
+    p.add_argument("--k-persist", type=int, default=None)
+    p.add_argument("--n-refresh", type=int, default=None)
+    p.add_argument("--n-slots", type=int, default=None)
+    p.add_argument("--no-local-contact", action="store_true")
+    p.add_argument("--oracle-active-target", action="store_true")
+    p.add_argument("--dist-only", action="store_true")
     p.add_argument("--out", default=os.path.join(os.path.dirname(__file__),
                                                  "outputs", "ms"))
     p.add_argument("--sim-backend", default="gpu")
@@ -65,6 +71,7 @@ def main():
     )
 
     cfg = load_config("tabletop")
+    _apply_ablation_overrides(cfg, args)
     builder = GraphBuilder(
         env, cfg, env_idx=0, env_id=args.env_id,
         camera=args.camera, include_goals=args.include_goals,
@@ -76,8 +83,12 @@ def main():
 
     colormap = ColorMap()   # shared so colors stay stable across frames
     overlay_paths, graph_paths = [], []
+    just_reset = True
     for frame in range(args.steps):
-        graph, masks, cam, rgb = builder.step(obs, frame)
+        graph, masks, cam, rgb = builder.step(
+            obs, frame, episode_boundary=just_reset
+        )
+        just_reset = False
 
         graph.save(os.path.join(args.out, f"graph_{frame:04d}.json"))
         op = render_overlay(
@@ -100,6 +111,10 @@ def main():
         else:
             action = np.zeros(env.action_space.shape, dtype=np.float32)
         obs, reward, terminated, truncated, info = env.step(action)
+        done = bool(np.asarray(terminated).any()) or bool(np.asarray(truncated).any())
+        if done:
+            obs, info = env.reset(seed=args.seed)
+            just_reset = True
 
     if args.video:
         vid = write_video(
@@ -110,6 +125,26 @@ def main():
 
     env.close()
     print(f"wrote {args.steps} frames to {args.out}")
+
+
+def _apply_ablation_overrides(cfg: dict, args) -> None:
+    sel = cfg["selection"]
+    if args.k_persist is not None:
+        sel["k_persist"] = int(args.k_persist)
+    if args.n_refresh is not None:
+        sel["n_refresh"] = int(args.n_refresh)
+    if args.n_slots is not None:
+        sel["n_slots"] = int(args.n_slots)
+    if args.no_local_contact:
+        cfg["e_domain"]["enable_local_contact"] = False
+    if args.oracle_active_target:
+        sel["oracle_force_active_target"] = True
+    if args.dist_only:
+        w = sel["weights"]
+        keep = float(w.get("dist", 2.0))
+        for k in list(w):
+            w[k] = 0.0
+        w["dist"] = keep
 
 
 def _print_seg_map_summary(env):

@@ -63,30 +63,18 @@ def _cfg(aff_set=None):
             "orientation_alignment": {
                 "edges": [0.17, 0.52, 1.05, 1.57],
                 "labels": [
-                    "aligned", "near-aligned", "oblique",
-                    "perpendicular", "opposed",
-                ],
-            },
-            "gripper_width_alignment": {
-                "edges": [-0.03, -0.01, 0.01, 0.03],
-                "labels": [
-                    "much-tighter", "tighter", "matched", "looser", "much-looser",
+                    "aligned", "near-aligned", "partial",
+                    "misaligned", "very-misaligned",
                 ],
             },
             "orientation_alignment_change": {
                 "edges": [-0.35, -0.12, -0.03, 0.03, 0.12, 0.35],
                 "labels": [
-                    "align-fast", "align-medium", "align-slow",
-                    "stable-orientation",
-                    "misalign-slow", "misalign-medium", "misalign-fast",
-                ],
-            },
-            "gripper_width_alignment_change": {
-                "edges": [-0.02, -0.008, -0.002, 0.002, 0.008, 0.02],
-                "labels": [
-                    "tighten-fast", "tighten-medium", "tighten-slow",
-                    "stable-width",
-                    "loosen-slow", "loosen-medium", "loosen-fast",
+                    "improve-alignment-fast", "improve-alignment-medium",
+                    "improve-alignment-slow",
+                    "stable-alignment",
+                    "worsen-alignment-slow", "worsen-alignment-medium",
+                    "worsen-alignment-fast",
                 ],
             },
         },
@@ -349,20 +337,16 @@ class InteractiveEdgeTests(unittest.TestCase):
         ee_interactive_object_edges(graph, state, cfg)
         self.assertEqual(node.attributes.get("affordance_a_star"), 1)
 
-    def test_emits_anchor_based_spatial_and_width(self):
+    def test_emits_anchor_based_spatial(self):
         cfg = _cfg(self._aff_set())
         state = _State([0.0, 0.0, 0.02], gripper_width=0.020)  # near anchor 0
         node = _interactive_obj_node()
         graph = Graph(0, "env", "cam", nodes=[_ee(), node])
         edges = ee_interactive_object_edges(graph, state, cfg)
         rels = sorted({e.relation for e in edges})
-        # contact is always emitted; grasp emitted because is_actor=True.
         self.assertIn("planar-distance", rels)
         self.assertIn("height-offset", rels)
-        self.assertIn("gripper-width-alignment", rels)
-        # Width error sign: 0.020 - 0.045 < 0 -> tighter / much-tighter.
-        width_edge = [e for e in edges if e.relation == "gripper-width-alignment"][0]
-        self.assertLess(width_edge.raw_value, 0.0)
+        self.assertEqual(node.attributes.get("spatial_ref"), "anchor")
 
     def test_orientation_alignment_when_direction_present(self):
         cfg = _cfg(self._aff_set(with_dir=True))
@@ -402,10 +386,11 @@ class InteractiveEdgeTests(unittest.TestCase):
 
     def test_pose_invariant_reuse(self):
         cfg = _cfg(self._aff_set())
-        # Object at (1, 2, 3); TCP at (1.05, 2.0, 3.01) -> on the second anchor.
+        # Object at (1, 2, 3); TCP + ee node at (1.05, 2.0, 3.01) -> on anchor 1.
         bowl = _interactive_obj_node(pose=(1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0))
         state = _State([1.05, 2.0, 3.01], gripper_width=0.050)
-        graph = Graph(0, "env", "cam", nodes=[_ee(), bowl])
+        ee = _ee(pose=(1.05, 2.0, 3.01, 1.0, 0.0, 0.0, 0.0))
+        graph = Graph(0, "env", "cam", nodes=[ee, bowl])
         edges = ee_interactive_object_edges(graph, state, cfg)
         d = [e for e in edges if e.relation == "planar-distance"][0]
         self.assertLess(abs(d.raw_value), 1e-6)

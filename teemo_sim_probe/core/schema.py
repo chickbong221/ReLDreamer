@@ -1,18 +1,16 @@
 """TEEMO manipulation-semantic-graph schema.
 
-One graph per frame. Two node types only (``ee`` and ``object``), matching the
-draft's V_t = {v_ee} u {v_i}. Edges carry both a discrete ``label`` and the raw
-continuous ``value`` they were discretized from, so nothing is lost in JSON.
+One graph per frame. Two node types only (``ee`` and ``object``). Edges carry
+both a discrete ``label`` and the raw continuous ``value``.
 
-This module is pure-python (no torch / maniskill imports) so it can be unit
-tested and imported anywhere.
+Pure-python (no torch / maniskill imports).
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 
 # --------------------------------------------------------------------------- #
@@ -20,33 +18,44 @@ from typing import Any, Dict, List, Optional, Tuple
 # --------------------------------------------------------------------------- #
 @dataclass
 class Node:
-    # Canonical, stable key. "ee" for the end-effector, "actor:<name>" or
-    # "link:<name>" for objects (see core.node_builder.canonical_object_key).
     node_id: str
     node_type: str            # "ee" | "object"
     name: str
 
-    # Visibility / mask bookkeeping.
     visible: bool = True
     segmentation_ids: List[int] = field(default_factory=list)
     pixel_area: int = 0
 
-    # World-frame pose [x, y, z, qw, qx, qy, qz] (SAPIEN wxyz convention).
     pose_world: Optional[List[float]] = None
 
-    # Persistence (draft's persistent-node mechanism). steps_since_seen == tau_i.
     persistent: bool = False
     steps_since_seen: int = 0
-    source: str = "segmentation"     # "segmentation" | "mshab_task"
-    # True for nodes retained across a visibility gap with the LAST observed
-    # pose (no live SAPIEN refresh). MS-HAB-active-target persistents stay False
-    # because they get fresh poses from the simulator each frame.
+    source: str = "segmentation"     # "segmentation" | "mshab_task" | "local_contact"
     frozen_pose: bool = False
+
+    # R12 slot bookkeeping. slot_id == None for the ee node and for bare
+    # candidates that did not earn a slot this frame.
+    slot_id: Optional[int] = None
+    entity_id: Optional[str] = None
+    valid_mask: bool = True           # False == padding slot
+    reset_flag: bool = False          # True iff this slot just changed identity
 
     attributes: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+def padding_node(slot_id: int) -> "Node":
+    """R11 padding for unused object slots."""
+    return Node(
+        node_id=f"<pad:{slot_id}>",
+        node_type="object",
+        name="<pad>",
+        visible=False,
+        slot_id=slot_id,
+        valid_mask=False,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -56,11 +65,11 @@ class Node:
 class Edge:
     src: str
     dst: str
-    relation: str             # e.g. "planar-distance", "contact", "grasp"
-    label: str                # discrete bin, e.g. "near", "contact", "gain-grasp"
+    relation: str
+    label: str
     raw_value: Optional[float] = None
-    temporal: bool = False    # True for *-change / *-transition relations
-    masked: bool = False      # True => kept in JSON but should NOT be drawn
+    temporal: bool = False
+    masked: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -78,7 +87,6 @@ class Graph:
     edges: List[Edge] = field(default_factory=list)
     meta: Dict[str, Any] = field(default_factory=dict)
 
-    # ---- node helpers ---------------------------------------------------- #
     def node_ids(self) -> List[str]:
         return [n.node_id for n in self.nodes]
 
@@ -95,16 +103,20 @@ class Graph:
                 return
         self.nodes.append(node)
 
-    # ---- serialization --------------------------------------------------- #
+    def valid_nodes(self) -> List[Node]:
+        return [n for n in self.nodes if n.valid_mask]
+
     def to_dict(self, drawable_only: bool = False) -> Dict[str, Any]:
+        nodes = self.nodes
         edges = self.edges
         if drawable_only:
+            nodes = [n for n in nodes if n.valid_mask]
             edges = [e for e in edges if not e.masked]
         return {
             "frame": self.frame,
             "env_id": self.env_id,
             "camera": self.camera,
-            "nodes": [n.to_dict() for n in self.nodes],
+            "nodes": [n.to_dict() for n in nodes],
             "edges": [e.to_dict() for e in edges],
             "meta": self.meta,
         }

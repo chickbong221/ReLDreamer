@@ -1,23 +1,35 @@
-"""Per-frame orchestration tying the pipeline together.
+"""Per-frame orchestration (R1-R16).
 
-    GraphBuilder(env, cfg).step(obs, frame) -> (Graph, masks, camera, rgb)
+    GraphBuilder(env, cfg).step(obs, frame, episode_boundary=False)
+        -> (Graph, masks, camera, rgb)
 
-The builder owns the TemporalBuffer so temporal labels persist across frames,
-and tracks ``steps_since_seen`` (tau_i) for persistent nodes.
+Pipeline:
+
+    R1-R6 build_nodes (background / robot / goals / static-scene / area filter)
+    R4    E_domain hard filter on visible candidates (drops out-of-vocab)
+    R6    classify_pair_types  (relation vocabulary specificity)
+    R8    selector.merge_persistent (k-frame persistence)
+    R7    selector.expand_local_contact (V_{t-1} contact one hop)
+    R10   selector.score (continuous rule score)
+    R11   selector.topk_with_refresh (refresh quota)
+    R12   slot_manager.assign (identity-keyed, reset_flag)
+    R11   pad to n_slots
+    R15   build_absolute_edges + temporal edges (valid nodes only)
 """
 
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .schema import Graph, Node
+from .schema import Graph, Node, padding_node
 from .node_builder import build_nodes, classify_pair_types
 from .relation_rules import build_absolute_edges
 from .temporal_buffer import TemporalBuffer
 from .mask_extractor import MaskAccumulator
-from .persistence import PersistentNodeRegistry
+from .selector import NodeSelector
+from .slot_manager import SlotManager
 from ..adapters.privileged_state import get_privileged_state
 
 
@@ -44,31 +56,40 @@ class GraphBuilder:
         self.include_background = include_background
         self.include_static_scene = include_static_scene
         self.mshab_object_name = mshab_object_name
-        self.temporal = TemporalBuffer(K=cfg["temporal"]["K"])
-        self._last_seen: Dict[str, int] = {}     # node_id -> frame last visible
-        self._first_unseen: Dict[str, int] = {}  # node_id -> frame first appeared unseen
-        # MS-HAB-only: persistence + N-cap registry.
-        pcfg = cfg.get("persistence") or {}
-        self.registry = PersistentNodeRegistry(
-            n_max=pcfg.get("n_max", 6),
-            w_keep=pcfg.get("w_keep", 3),
-            w_manip=pcfg.get("w_manip", 5),
-        )
 
+        self.temporal = TemporalBuffer(K=cfg["temporal"]["K"])
+        self.selector = NodeSelector(
+            cfg, cfg["e_domain_set"], cfg.get("profile_name", "tabletop")
+        )
+        self.slots = SlotManager(n_slots=int(cfg["selection"]["n_slots"]))
+
+        self._last_seen: Dict[str, int] = {}
+        self._first_unseen: Dict[str, int] = {}
+
+    # ---------------------------------------------------------------- reset
+    def reset_episode(self) -> None:
+        self.selector.reset_episode()
+        self.slots.reset_episode()
+        self.temporal = TemporalBuffer(K=self.cfg["temporal"]["K"])
+        self._last_seen.clear()
+        self._first_unseen.clear()
+
+    # ---------------------------------------------------------------- step
     def step(
         self, obs: dict, frame: int,
         *,
+        episode_boundary: bool = False,
         seg_override=None, rgb_override=None, camera_override=None,
     ) -> Tuple[Graph, MaskAccumulator, str, np.ndarray]:
+        if episode_boundary:
+            self.reset_episode()
+
         state = get_privileged_state(
-            self.env,
-            self.env_idx,
-            mshab_object_name=self.mshab_object_name,
+            self.env, self.env_idx, mshab_object_name=self.mshab_object_name,
         )
 
         nodes, masks, cam, rgb = build_nodes(
-            obs,
-            state,
+            obs, state,
             camera=self.camera,
             include_goals=self.include_goals,
             include_background=self.include_background,
@@ -80,68 +101,100 @@ class GraphBuilder:
             camera_override=camera_override,
         )
 
-        # Eligibility-based vocabulary: classify each object node as
-        # static_object vs interactive_object BEFORE edge building. Uses the
-        # affordance set in cfg, so it must run after node_builder has stamped
-        # mshab_obj_id / mshab_kind onto the nodes.
+        # R4: E_domain hard filter for visible candidates. The ee node is always
+        # kept. Empty domain (missing asset) accepts everything.
+        e_domain = self.cfg["e_domain_set"]
+        nodes = {
+            nid: n for nid, n in nodes.items()
+            if n.node_type == "ee" or e_domain.contains(n)
+        }
+
+        # R6: relation vocabulary classification (uses affordance set).
         classify_pair_types(nodes, self.cfg)
 
-        # MS-HAB: inject retained-but-invisible objects (frozen pose). Non-MS-HAB
-        # envs are fixed-camera / fixed-object-set and skip this entirely.
-        if state.is_mshab:
-            nodes = self.registry.merge_retained(nodes, frame)
+        # R8: identity-keyed persistence merge.
+        nodes = self.selector.merge_persistent(nodes, frame)
 
-        # Update tau_i (steps_since_seen) for every node.
-        for node_id, node in nodes.items():
-            if node.visible:
-                self._last_seen[node_id] = frame
-                node.steps_since_seen = 0
+        # tau_i update for every object node.
+        for nid, n in nodes.items():
+            if n.node_type == "ee":
+                continue
+            if n.visible:
+                self._last_seen[nid] = frame
+                n.steps_since_seen = 0
             else:
-                # If never seen, anchor age to when the node first appeared.
-                # Use frame+1 (>0) to distinguish from "currently visible".
-                if node_id not in self._last_seen:
-                    first = self._first_unseen.setdefault(node_id, frame)
-                    node.steps_since_seen = max(1, frame - first + 1)
+                if nid not in self._last_seen:
+                    first = self._first_unseen.setdefault(nid, frame)
+                    n.steps_since_seen = max(1, frame - first + 1)
                 else:
-                    node.steps_since_seen = frame - self._last_seen[node_id]
+                    n.steps_since_seen = frame - self._last_seen[nid]
 
-        # MS-HAB only: snapshot newly visible objects, rank tiers, drop the
-        # overflow under N_max.
-        evicted: set = set()
-        if state.is_mshab:
-            self.registry.snapshot_visible(nodes, frame)
-            evicted = self.registry.rank_and_cap(nodes, state, self.cfg)
-            for nid in evicted:
-                nodes.pop(nid, None)
-                self._last_seen.pop(nid, None)
-                self._first_unseen.pop(nid, None)
-            self.registry.drop(evicted)
-            self.temporal.purge(evicted)
+        # R7: local-contact exception (uses V_{t-1} -- one-frame lag, acyclic).
+        nodes = self.selector.expand_local_contact(
+            nodes, state, self.selector.prev_selected,
+        )
+
+        # Re-classify so newly added local-contact nodes get a pair_type.
+        classify_pair_types(nodes, self.cfg)
+
+        # R10 + R11: score and select.
+        scores = self.selector.score(nodes, state)
+        selected_ids = self.selector.topk_with_refresh(
+            scores, self.selector.prev_selected
+        )
+
+        # R12: slot assignment.
+        assignments = self.slots.assign(selected_ids)
+
+        # Forget snapshots / housekeeping for un-selected entities.
+        unselected = set(nodes.keys()) - set(selected_ids) - {"ee"}
+        self.selector.evict(unselected)
+        self.temporal.purge(unselected)
+        for nid in unselected:
+            self._last_seen.pop(nid, None)
+            self._first_unseen.pop(nid, None)
+
+        # Build final node list: ee + slots (ordered by slot_id) + padding.
+        ee_node = nodes.get("ee")
+        slot_to_node: Dict[int, Node] = {}
+        for ent_id in selected_ids:
+            n = nodes.get(ent_id)
+            if n is None:
+                continue
+            sa = assignments[ent_id]
+            n.slot_id = sa.slot_id
+            n.entity_id = ent_id
+            n.valid_mask = True
+            n.reset_flag = sa.reset_flag
+            slot_to_node[sa.slot_id] = n
+
+        ordered: List[Node] = []
+        if ee_node is not None:
+            ordered.append(ee_node)
+        for s in range(self.slots.n_slots):
+            n = slot_to_node.get(s)
+            ordered.append(n if n is not None else padding_node(s))
 
         graph = Graph(
             frame=frame,
             env_id=self.env_id,
             camera=cam,
-            nodes=list(nodes.values()),
+            nodes=ordered,
             meta=dict(
                 is_mshab=state.is_mshab,
                 active_subtask=state.active_subtask_type,
                 mshab_object_name=self.mshab_object_name,
+                n_valid=sum(1 for n in ordered if n.valid_mask and n.node_type == "object"),
             ),
         )
 
-        # Re-run classify_pair_types on the final node set: retained snapshots
-        # strip dynamic mshab attrs (see persistence._stripped_attrs), so an
-        # active-target promotion may need to be re-applied before edges build.
-        classify_pair_types(
-            {n.node_id: n for n in graph.nodes}, self.cfg
-        )
-
-        # Absolute then temporal edges.
+        # R15: edges only for valid nodes (build_absolute_edges already iterates
+        # graph.nodes; the relation functions guard against padding via the
+        # valid_mask check added there).
         build_absolute_edges(graph, state, self.cfg)
-        if state.is_mshab:
-            self.registry.record_recency(graph)
         self.temporal.update(graph)
         graph.edges.extend(self.temporal.temporal_edges(graph, self.cfg))
 
+        # Commit selection state for next frame.
+        self.selector.commit(selected_ids, nodes, frame)
         return graph, masks, cam, rgb

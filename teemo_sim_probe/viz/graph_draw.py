@@ -21,7 +21,8 @@ from .palette import ColorMap
 
 def _radial_layout(graph: Graph, radius: float) -> Dict[str, np.ndarray]:
     pos: Dict[str, np.ndarray] = {}
-    objects = [n.node_id for n in graph.nodes if n.node_type == "object"]
+    objects = [n.node_id for n in graph.nodes
+               if n.node_type == "object" and n.valid_mask]
     has_ee = graph.get_node("ee") is not None
     if has_ee:
         pos["ee"] = np.array([0.0, 0.0])
@@ -47,7 +48,8 @@ def render_graph(
     cmap = colormap or ColorMap()
     cmap.assign_all(graph.node_ids())
 
-    n_obj = sum(1 for n in graph.nodes if n.node_type == "object")
+    n_obj = sum(1 for n in graph.nodes
+                if n.node_type == "object" and n.valid_mask)
     # Scale radius + canvas with node count so crowded graphs spread out.
     radius = 2.2 + 0.18 * max(n_obj - 4, 0)
     figsize = (max(9, 7 + 0.45 * n_obj), max(8, 6 + 0.40 * n_obj))
@@ -95,6 +97,8 @@ def render_graph(
     for node in graph.nodes:
         nid = node.node_id
         if nid not in pos:
+            continue
+        if not node.valid_mask:
             continue
         x, y = pos[nid]
         # Retained-with-frozen-pose nodes get a distinctive blue fill + dashed
