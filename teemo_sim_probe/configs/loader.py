@@ -20,7 +20,7 @@ _MISSING_AFFORDANCE_MSG = (
     "Affordance asset missing or empty at {path!r}.\n"
     "Mine it before running the probe:\n"
     "  python -m teemo_sim_probe.tools.build_affordances \\\n"
-    "      --success-states-dir \"$MS_ASSET_DIR/robot_success_states\" \\\n"
+    "      --success-states-dir \"$MS_ASSET_DIR/data/robot_success_states\" \\\n"
     "      --robot fetch --subtask pick \\\n"
     "      --out teemo_sim_probe/configs/affordances.json"
 )
@@ -29,8 +29,8 @@ _MISSING_EDOMAIN_MSG = (
     "E_domain asset missing or empty at {path!r}.\n"
     "Mine it before running the probe:\n"
     "  python -m teemo_sim_probe.tools.build_e_domain \\\n"
-    "      --task-plans-dir \"$MS_ASSET_DIR/scene_datasets/replica_cad_dataset/rearrange/task_plans\" \\\n"
-    "      --success-states-dir \"$MS_ASSET_DIR/robot_success_states\" \\\n"
+    "      --task-plans-dir \"$MS_ASSET_DIR/data/scene_datasets/replica_cad_dataset/rearrange/task_plans\" \\\n"
+    "      --success-states-dir \"$MS_ASSET_DIR/data/robot_success_states\" \\\n"
     "      --out teemo_sim_probe/configs/e_domain.json"
 )
 

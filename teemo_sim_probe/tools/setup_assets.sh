@@ -4,15 +4,20 @@
 #   * teemo_sim_probe/configs/e_domain.json      (R4)
 #
 # Runs the three remaining setup steps from teemo_sim_probe/README.md in order:
-#   2) collect $MS_ASSET_DIR/robot_success_states/  (rollouts of per-obj SAC)
+#   2) collect $MS_ASSET_DIR/data/robot_success_states/  (rollouts of per-obj SAC)
 #   3) mine    teemo_sim_probe/configs/affordances.json
 #   4) mine    teemo_sim_probe/configs/e_domain.json
 #
 # Assumes step 1 (HF checkpoint download) is already done. Re-runnable: step 2
 # skips obj_ids whose pickles already have >= --n-success samples.
 #
+# MS_ASSET_DIR follows the ManiSkill convention: it is the maniskill ROOT (parent
+# of data/), NOT the data dir itself. ManiSkill internally resolves
+# $MS_ASSET_DIR/data as its asset root (mani_skill.ASSET_DIR), so setting it
+# with a trailing /data would cause a doubled "data/data/" segment.
+#
 # Usage:
-#   export MS_ASSET_DIR=/root/.maniskill/data
+#   export MS_ASSET_DIR=/root/.maniskill
 #   bash teemo_sim_probe/tools/setup_assets.sh [ckpt_root] [n_success] [n_components]
 #
 # Example:
@@ -32,7 +37,8 @@ fi
 
 if [[ -z "${MS_ASSET_DIR:-}" ]]; then
     echo "ERROR: MS_ASSET_DIR is not set." >&2
-    echo "       export MS_ASSET_DIR=/root/.maniskill/data  (or wherever)" >&2
+    echo "       export MS_ASSET_DIR=/root/.maniskill  (or wherever)" >&2
+    echo "       Note: this is the parent of data/, NOT the data dir itself." >&2
     exit 1
 fi
 
@@ -58,7 +64,7 @@ echo "================================================================"
 echo " STEP 3 -- mine ${AFFORD_JSON} (R6)"
 echo "================================================================"
 python -m teemo_sim_probe.tools.build_affordances \
-    --success-states-dir "${MS_ASSET_DIR}/robot_success_states" \
+    --success-states-dir "${MS_ASSET_DIR}/data/robot_success_states" \
     --robot fetch \
     --subtask pick \
     --out "${AFFORD_JSON}" \
@@ -69,8 +75,8 @@ echo "================================================================"
 echo " STEP 4 -- mine ${EDOMAIN_JSON} (R4)"
 echo "================================================================"
 python -m teemo_sim_probe.tools.build_e_domain \
-    --task-plans-dir "${MS_ASSET_DIR}/scene_datasets/replica_cad_dataset/rearrange/task_plans" \
-    --success-states-dir "${MS_ASSET_DIR}/robot_success_states" \
+    --task-plans-dir "${MS_ASSET_DIR}/data/scene_datasets/replica_cad_dataset/rearrange/task_plans" \
+    --success-states-dir "${MS_ASSET_DIR}/data/robot_success_states" \
     --splits train \
     --out "${EDOMAIN_JSON}"
 

@@ -1,4 +1,4 @@
-"""Step 2 driver: populate $MS_ASSET_DIR/robot_success_states/fetch/pick/.
+"""Step 2 driver: populate $MS_ASSET_DIR/data/robot_success_states/fetch/pick/.
 
 Discovers per-object Fetch pick checkpoints under
 ``<ckpt-root>/<task>/pick/<obj_id>/policy.pt`` and, for each one, rolls the
@@ -8,14 +8,14 @@ wrapper records ``robot_qpos`` and ``obj_pose_wrt_base`` at every
 ``info["success"]`` and, on ``close()``, pickles
 ``{obj_id, robot_qpos[Nx15], obj_pose_wrt_base[Nx7]}`` to::
 
-    $MS_ASSET_DIR/robot_success_states/fetch/pick/<obj_id>.pkl
+    $MS_ASSET_DIR/data/robot_success_states/fetch/pick/<obj_id>.pkl
 
 That file is exactly what ``build_affordances.py`` (step 3) and
 ``build_e_domain.py`` (step 4) consume.
 
 Usage::
 
-    export MS_ASSET_DIR=/root/.maniskill/data
+    export MS_ASSET_DIR=/root/.maniskill
     python -m teemo_sim_probe.tools.collect_robot_success_states \\
         --ckpt-root mshab_checkpoints/rl \\
         --n-success 30 --num-envs 8
@@ -84,6 +84,7 @@ def _build_env(task: str, obj_id: str, args):
     ``FetchCollectRobotInitWrapper`` on the inside (so it sees raw success
     info before policy-side obs transforms)."""
     import gymnasium as gym
+    from mani_skill import ASSET_DIR
     from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
     import mshab.envs  # noqa: F401  registers PickSubtaskTrain-v0 etc.
     from mshab.envs.planner import plan_data_from_file
@@ -94,10 +95,7 @@ def _build_env(task: str, obj_id: str, args):
     )
     from mshab.envs.wrappers.collect_data import FetchCollectRobotInitWrapper
 
-    # Use --asset-dir (the repo convention: MS_ASSET_DIR already points at the
-    # data root that contains scene_datasets/). mani_skill.ASSET_DIR appends an
-    # extra "data/" segment to MS_ASSET_DIR, which would double it here.
-    RD = Path(args.asset_dir) / "scene_datasets/replica_cad_dataset/rearrange"
+    RD = ASSET_DIR / "scene_datasets/replica_cad_dataset/rearrange"
     plan_fp = RD / "task_plans" / task / "pick" / "train" / f"{obj_id}.json"
     if not plan_fp.exists():
         raise FileNotFoundError(f"missing task plan: {plan_fp}")
@@ -249,9 +247,13 @@ def parse_args(argv: Optional[Iterable[str]] = None):
     p.add_argument("--seed", type=int, default=0)
     p.add_argument(
         "--asset-dir",
-        default=os.environ.get("MS_ASSET_DIR")
-        or os.path.expanduser("~/.maniskill/data"),
-        help="MS_ASSET_DIR root (default: env var, then ~/.maniskill/data).",
+        default=str(
+            Path(os.environ.get("MS_ASSET_DIR", os.path.expanduser("~/.maniskill")))
+            / "data"
+        ),
+        help="Data root (default: $MS_ASSET_DIR/data, then ~/.maniskill/data). "
+             "This is the directory that contains robot_success_states/, "
+             "scene_datasets/, etc -- the same dir mani_skill.ASSET_DIR points at.",
     )
     p.add_argument(
         "--no-skip-done", action="store_true",

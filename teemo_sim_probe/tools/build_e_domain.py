@@ -15,7 +15,7 @@ test episode. We never recompute from test episodes (R4 provenance rule).
 Usage::
 
     python -m teemo_sim_probe.tools.build_e_domain \\
-        --task-plans-dir $MS_ASSET_DIR/scene_datasets/replica_cad_dataset/rearrange/task_plans \\
+        --task-plans-dir $MS_ASSET_DIR/data/scene_datasets/replica_cad_dataset/rearrange/task_plans \\
         --out teemo_sim_probe/configs/e_domain.json
 """
 

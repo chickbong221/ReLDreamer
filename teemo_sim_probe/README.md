@@ -95,11 +95,15 @@ Run the four steps below in order, top to bottom. Then go to **Run the probe**.
 ### 0. Set the asset dir
 
 ```bash
-export MS_ASSET_DIR=/root/.maniskill/data
+export MS_ASSET_DIR=/root/.maniskill
 ```
 
-All later steps read this. ManiSkill's default is `~/.maniskill/data`; set it
-explicitly to whatever location holds your YCB + ReplicaCAD bundles.
+All later steps read this. **MS_ASSET_DIR is the ManiSkill root (parent of
+`data/`), not the data dir itself** -- ManiSkill internally resolves
+`$MS_ASSET_DIR/data` as `mani_skill.ASSET_DIR`, so a trailing `/data` would
+cause a doubled `data/data/` segment when ManiSkill loads the ReplicaCAD scene.
+Set this explicitly to whatever location holds your YCB + ReplicaCAD bundles
+(i.e. the directory whose `data/` subfolder contains `scene_datasets/`).
 
 ### 1. Download released checkpoints
 
@@ -110,7 +114,7 @@ huggingface-cli download arth-shukla/mshab_checkpoints \
 
 Checkpoints land at `mshab_checkpoints/rl/<task>/pick/<obj_id>/policy.pt`.
 
-### 2. Populate `$MS_ASSET_DIR/robot_success_states/`
+### 2. Populate `$MS_ASSET_DIR/data/robot_success_states/`
 
 ```bash
 python -m teemo_sim_probe.tools.collect_robot_success_states \
@@ -121,12 +125,12 @@ python -m teemo_sim_probe.tools.collect_robot_success_states \
 Rolls each per-object Fetch pick policy out under
 `mshab.envs.wrappers.collect_data.FetchCollectRobotInitWrapper` and writes
 one pickle per YCB id to
-`$MS_ASSET_DIR/robot_success_states/fetch/pick/<obj_id>.pkl` -- the schema
+`$MS_ASSET_DIR/data/robot_success_states/fetch/pick/<obj_id>.pkl` -- the schema
 `build_affordances.py` and `build_e_domain.py` expect:
 `{obj_id, robot_qpos[N x 15], obj_pose_wrt_base[N x 7]}`. Re-runnable:
 pickles that already have `>= --n-success` rows are skipped.
 
-Skip this step if `$MS_ASSET_DIR/robot_success_states/fetch/pick/*.pkl`
+Skip this step if `$MS_ASSET_DIR/data/robot_success_states/fetch/pick/*.pkl`
 already exists (the MS-HAB asset bundle sometimes ships these).
 
 Useful flags:
@@ -149,7 +153,7 @@ robot's rest pose rather than an object affordance.
 
 ```bash
 python -m teemo_sim_probe.tools.build_affordances \
-    --success-states-dir "$MS_ASSET_DIR/robot_success_states" \
+    --success-states-dir "$MS_ASSET_DIR/data/robot_success_states" \
     --robot fetch --subtask pick \
     --out teemo_sim_probe/configs/affordances.json \
     --n-components 4
@@ -161,8 +165,8 @@ FK is required; the miner aborts rather than write `[0,0,0]` placeholders.
 
 ```bash
 python -m teemo_sim_probe.tools.build_e_domain \
-    --task-plans-dir "$MS_ASSET_DIR/scene_datasets/replica_cad_dataset/rearrange/task_plans" \
-    --success-states-dir "$MS_ASSET_DIR/robot_success_states" \
+    --task-plans-dir "$MS_ASSET_DIR/data/scene_datasets/replica_cad_dataset/rearrange/task_plans" \
+    --success-states-dir "$MS_ASSET_DIR/data/robot_success_states" \
     --splits train \
     --out teemo_sim_probe/configs/e_domain.json
 ```

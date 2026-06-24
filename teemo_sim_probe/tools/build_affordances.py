@@ -30,7 +30,7 @@ a clear error -- we deliberately do NOT write placeholder anchors, because
 Usage::
 
     python -m teemo_sim_probe.tools.build_affordances \\
-        --success-states-dir $MS_ASSET_DIR/robot_success_states \\
+        --success-states-dir $MS_ASSET_DIR/data/robot_success_states \\
         --out teemo_sim_probe/configs/affordances.json \\
         --robot fetch \\
         --n-components 4
