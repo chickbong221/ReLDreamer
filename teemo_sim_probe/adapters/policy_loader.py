@@ -199,21 +199,17 @@ def load_sac_policy(ckpt_dir, venv, eval_obs, device="cuda") -> PolicyHandle:
         policy.load_state_dict(state["agent"] if "agent" in state else state)
         policy.to(device)
 
-        def _reshape_pixels(obs):
-            """Match the model's flattened pixel shape: (B,stack,C,H,W)->(B,stack*C,H,W)."""
-            px = {}
-            for k, v in obs["pixels"].items():
-                if v.dim() == 5:
-                    b, s, c, h, w = v.shape
-                    v = v.reshape(b, s * c, h, w)
-                px[k] = v
-            return px
-
         def _act(obs):
+            # Pass obs["pixels"] through unmodified -- matches evaluate.py:328-333
+            # exactly. SharedCNN.forward handles the 5D (B,stack,C,H,W) ->
+            # 4D (B,stack*C,H,W) collapse internally AND calls .contiguous(),
+            # which is needed because FrameStack hands back a non-contiguous
+            # stack view; flattening outside the model skips that guard and
+            # later trips Flatten's .view() on cuDNN's channels_last output.
             o = _to_tensor_obs(obs, device)
             with torch.no_grad():
                 a = policy.actor(
-                    _reshape_pixels(o), o["state"],
+                    o["pixels"], o["state"],
                     compute_pi=False, compute_log_pi=False,
                 )[0]
             return a.detach().cpu().numpy()
