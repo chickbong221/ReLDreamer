@@ -338,11 +338,6 @@ def _apply_ablation_overrides(cfg: dict, args) -> None:
 
 def _print_mshab_summary(venv, camera, mshab_object_name="actual"):
     e = venv.unwrapped
-    print("--- segmentation_id_map (excluding id 0) ---")
-    for sid, ent in sorted(e.segmentation_id_map.items()):
-        if sid == 0:
-            continue
-        print(f"  {sid:3d}  {type(ent).__name__:12s}  {getattr(ent, 'name', '?')}")
     print(f"--- probe camera: {camera} ---")
     print("--- subtask handles ---")
     ptr = int(np.asarray(

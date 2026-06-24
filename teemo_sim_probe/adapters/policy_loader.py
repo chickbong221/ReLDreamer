@@ -58,17 +58,35 @@ def find_checkpoint(ckpt_dir: str) -> str:
 
 
 def detect_algo(ckpt_dir: str) -> Optional[str]:
-    """Read algo.name from the checkpoint's config.yml ('ppo' | 'sac' | ...)."""
+    """Read algo.name from the checkpoint's config.yml ('ppo' | 'sac' | ...).
+
+    Returns None and prints a clear warning if the directory is missing,
+    config.yml is missing, the YAML is unreadable, or algo.name is absent.
+    Silent None used to land users in the random-policy fallback without any
+    hint that --ckpt-dir was wrong (e.g. a Windows path passed to Linux).
+    """
+    if not os.path.isdir(ckpt_dir):
+        print(f"[policy] WARN: --ckpt-dir {ckpt_dir!r} is not a directory "
+              f"(cwd={os.getcwd()!r}) -- will fall back to random actions")
+        return None
     cfg_path = os.path.join(ckpt_dir, "config.yml")
     if not os.path.exists(cfg_path):
+        print(f"[policy] WARN: no config.yml in {ckpt_dir!r} "
+              f"-- will fall back to random actions")
         return None
     try:
         import yaml
         with open(cfg_path) as f:
             raw = yaml.safe_load(f)
-        return raw.get("algo", {}).get("name")
-    except Exception:
+    except Exception as exc:
+        print(f"[policy] WARN: failed to read {cfg_path}: {exc!r} "
+              f"-- will fall back to random actions")
         return None
+    algo = (raw or {}).get("algo", {}).get("name")
+    if algo is None:
+        print(f"[policy] WARN: {cfg_path} has no algo.name field "
+              f"-- will fall back to random actions")
+    return algo
 
 
 def _algo_cfg(ckpt_dir: str):
