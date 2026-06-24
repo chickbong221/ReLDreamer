@@ -145,6 +145,7 @@ class _FetchFK:
         try:
             import sapien                                       # noqa: F401
             from sapien import physx                            # noqa: F401
+            import sapien.render                                # noqa: F401
         except Exception as exc:
             raise RuntimeError(
                 "SAPIEN is required for FK. Install with the project's normal "
@@ -153,12 +154,27 @@ class _FetchFK:
 
         import sapien
         from sapien import physx
+        import sapien.render
 
         if not os.path.isfile(urdf_path):
             raise FileNotFoundError(f"Fetch URDF not found at {urdf_path}")
 
         self._sys = physx.PhysxCpuSystem()
-        self._scene = sapien.Scene([self._sys])
+        # SAPIEN's URDF loader attaches visual shapes; without a render
+        # system in the scene, loader.load() raises
+        # "no system with name [render] is added to scene" and the scene's
+        # __del__ then aborts with the same error (see
+        # ManiSkill/mani_skill/envs/sapien_env.py:1213-1217 -- ManiSkill
+        # always adds a RenderSystem alongside PhysX for the same reason).
+        # We never actually render here; the system just needs to exist.
+        try:
+            render_sys = sapien.render.RenderSystem()
+        except Exception as exc:
+            raise RuntimeError(
+                "sapien.render.RenderSystem() failed -- it's required by the "
+                f"URDF loader even in headless FK. Original error: {exc!r}"
+            ) from exc
+        self._scene = sapien.Scene([self._sys, render_sys])
         loader = self._scene.create_urdf_loader()
         loader.fix_root_link = True
         self._robot = loader.load(urdf_path)
