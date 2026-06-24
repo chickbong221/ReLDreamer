@@ -107,6 +107,14 @@ class TemporalBuffer:
         # ---- Standard continuous / binary ingest -------------------------- #
         current_bools: Dict[Tuple[str, str, str], bool] = {}
 
+        # Bug 3b fix: edge-driven support seeding. Track which (src, dst)
+        # pairs actually produced a contact or support edge this frame. Only
+        # those pairs get their support history seeded False -- the previous
+        # implementation seeded every ordered pair in the visible object set,
+        # which is what let a transient phantom support (against a maskless
+        # node) emit ``lose-support`` to every other object the next frame.
+        seen_pairs: set = set()
+
         for e in graph.edges:
             if e.temporal:
                 continue
@@ -119,18 +127,18 @@ class TemporalBuffer:
                 positive = e.label == e.relation  # "contact"==relation, etc.
                 current_bools[key] = bool(positive)
 
-        # Support is directed and sparse in the absolute graph: only true
-        # support edges are emitted. Seed/update all currently visible object
-        # pairs with False unless support is true, so old support histories can
-        # become lose-support instead of stale maintain-support.
-        object_ids = [n.node_id for n in graph.nodes
-                      if n.node_type == "object" and n.valid_mask]
-        for src in object_ids:
-            for dst in object_ids:
-                if src == dst:
-                    continue
-                key = _edge_key(src, dst, "support")
-                current_bools.setdefault(key, False)
+            # Object-object contact or support edge -> remember the unordered
+            # pair so we can seed both directions' support history.
+            if e.relation in ("contact", "support") and e.src != "ee" and e.dst != "ee":
+                seen_pairs.add(frozenset((e.src, e.dst)))
+
+        for pair in seen_pairs:
+            ids = list(pair)
+            if len(ids) != 2:
+                continue
+            a, b = ids
+            current_bools.setdefault(_edge_key(a, b, "support"), False)
+            current_bools.setdefault(_edge_key(b, a, "support"), False)
 
         # For any previously tracked binary relation whose endpoints still
         # exist, absence from the absolute graph means the predicate is false.

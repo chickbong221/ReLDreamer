@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
-# One-shot setup of the two mined assets the probe REQUIRES at startup:
-#   * teemo_sim_probe/configs/affordances.json   (R6)
-#   * teemo_sim_probe/configs/e_domain.json      (R4)
+# One-shot setup of the mined assets the probe REQUIRES at startup:
+#   * teemo_sim_probe/configs/affordances.json
+#   * teemo_sim_probe/configs/subtask_whitelists/<subtask>_<target>.json
 #
-# Runs the three remaining setup steps from teemo_sim_probe/README.md in order:
-#   2) collect $MS_ASSET_DIR/data/robot_success_states/  (rollouts of per-obj SAC)
+# Track A retired the old e_domain.json; it is no longer mined or loaded.
+# Track B adds the per-subtask whitelist mining pass.
+#
+# Steps (in order):
+#   2) collect $MS_ASSET_DIR/data/robot_success_states/   (per-obj SAC rollouts)
+#   2b) collect $MS_ASSET_DIR/contact_graphs/             (per-success contact graphs)
 #   3) mine    teemo_sim_probe/configs/affordances.json
-#   4) mine    teemo_sim_probe/configs/e_domain.json
+#   4) mine    teemo_sim_probe/configs/subtask_whitelists/
 #
-# Assumes step 1 (HF checkpoint download) is already done. Re-runnable: step 2
-# skips obj_ids whose pickles already have >= --n-success samples.
+# Step 2b currently requires editing the collection driver to use
+# FetchCollectContactDataWrapper instead of FetchCollectRobotInitWrapper -- see
+# REFACTOR_NOTES.md section 4.
 #
 # MS_ASSET_DIR follows the ManiSkill convention: it is the maniskill ROOT (parent
 # of data/), NOT the data dir itself. ManiSkill internally resolves
@@ -47,7 +52,8 @@ cd "${REPO_ROOT}"
 
 CFG_DIR="teemo_sim_probe/configs"
 AFFORD_JSON="${CFG_DIR}/affordances.json"
-EDOMAIN_JSON="${CFG_DIR}/e_domain.json"
+WHITELIST_DIR="${CFG_DIR}/subtask_whitelists"
+SUCCESS_STATES_DIR="${MS_ASSET_DIR}/data/robot_success_states"
 
 echo "================================================================"
 echo " STEP 2 -- collect robot_success_states/"
@@ -72,18 +78,16 @@ python -m teemo_sim_probe.tools.build_affordances \
 
 echo ""
 echo "================================================================"
-echo " STEP 4 -- mine ${EDOMAIN_JSON} (R4)"
+echo " STEP 4 -- mine per-subtask whitelists -> ${WHITELIST_DIR}/"
 echo "================================================================"
-python -m teemo_sim_probe.tools.build_e_domain \
-    --task-plans-dir "${MS_ASSET_DIR}/data/scene_datasets/replica_cad_dataset/rearrange/task_plans" \
-    --success-states-dir "${MS_ASSET_DIR}/data/robot_success_states" \
-    --splits train \
-    --out "${EDOMAIN_JSON}"
+python -m teemo_sim_probe.tools.build_subtask_whitelists \
+    --success-states-dir "${SUCCESS_STATES_DIR}" \
+    --out-dir "${WHITELIST_DIR}"
 
 echo ""
 echo "================================================================"
 echo " Setup complete."
 echo "   ${AFFORD_JSON}"
-echo "   ${EDOMAIN_JSON}"
+echo "   ${WHITELIST_DIR}/  (one JSON per <subtask>_<canonical_target>)"
 echo " The probe can now load_config() without FileNotFoundError."
 echo "================================================================"

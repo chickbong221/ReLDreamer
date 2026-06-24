@@ -206,7 +206,7 @@ def build_nodes(
         cam = pick_camera(obs, camera)
         rgb, seg, _depth = extract_camera_obs(obs, cam, state.env_idx)
     H, W = seg.shape
-    masks = MaskAccumulator(H, W)
+    masks = MaskAccumulator(H, W, seg=seg)
 
     nodes: Dict[str, Node] = {}
 

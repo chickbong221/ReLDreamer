@@ -80,19 +80,16 @@ def parse_args():
                    help="keep scene_background actor (filtered by default)")
     p.add_argument("--include-static-scene", action="store_true",
                    help="keep static furniture / apartment props (filtered by default)")
-    # Ablation flags (R8/R10/R11/R13).
+    # Ablation flags (Track A: hard whitelist gate, no soft score).
     p.add_argument("--k-persist", type=int, default=None,
                    help="override selection.k_persist (frames)")
-    p.add_argument("--n-refresh", type=int, default=None,
-                   help="override selection.n_refresh")
     p.add_argument("--n-slots", type=int, default=None,
                    help="override selection.n_slots")
     p.add_argument("--no-local-contact", action="store_true",
-                   help="disable R7 local-contact exception")
-    p.add_argument("--oracle-active-target", action="store_true",
-                   help="oracle ablation: force MS-HAB active target into graph")
-    p.add_argument("--dist-only", action="store_true",
-                   help="ablation: zero all selection weights except w_dist")
+                   help="disable the local-contact one-hop expansion")
+    p.add_argument("--whitelist-dir", default=None,
+                   help="override the per-subtask whitelist directory "
+                        "(defaults to configs/subtask_whitelists)")
     p.add_argument(
         "--mshab-object-name",
         choices=["actual", "merged"],
@@ -320,20 +317,12 @@ def _apply_ablation_overrides(cfg: dict, args) -> None:
     sel = cfg["selection"]
     if args.k_persist is not None:
         sel["k_persist"] = int(args.k_persist)
-    if args.n_refresh is not None:
-        sel["n_refresh"] = int(args.n_refresh)
     if args.n_slots is not None:
         sel["n_slots"] = int(args.n_slots)
     if args.no_local_contact:
-        cfg["e_domain"]["enable_local_contact"] = False
-    if args.oracle_active_target:
-        sel["oracle_force_active_target"] = True
-    if args.dist_only:
-        w = sel["weights"]
-        keep = float(w.get("dist", 2.0))
-        for k in list(w):
-            w[k] = 0.0
-        w["dist"] = keep
+        sel["enable_local_contact"] = False
+    if args.whitelist_dir is not None:
+        cfg["whitelist_dir"] = args.whitelist_dir
 
 
 def _print_mshab_summary(venv, camera, mshab_object_name="actual"):

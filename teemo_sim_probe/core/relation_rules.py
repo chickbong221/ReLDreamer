@@ -329,12 +329,25 @@ def ee_interactive_object_edges(
 def object_object_edges(
     graph: Graph, state: PrivilegedState, cfg: dict
 ) -> List[Edge]:
-    """Pairwise object--object: mutually exclusive contact or directed support."""
+    """Pairwise object--object: mutually exclusive contact or directed support.
+
+    Bug 3a fix: a node is eligible for object-object physics only when it has
+    a non-empty ``segmentation_ids`` list. Maskless graph nodes (e.g. the
+    MS-HAB persistent target during an occlusion, or the now-removed phantom
+    'body' synthesized by the old local-contact path) carry no real geometry,
+    so running ``pairwise_force_vector`` against them produces phantom support
+    edges that propagate into ``lose-support`` temporal transitions.
+    """
     eps_contact = cfg["contact"]["eps_force"]
     eps_z = cfg["support"]["eps_z"]
     min_vertical_ratio = cfg["support"].get("min_vertical_force_ratio", 0.5)
 
-    objs = [n for n in graph.nodes if n.node_type == "object" and n.valid_mask]
+    objs = [
+        n for n in graph.nodes
+        if n.node_type == "object"
+        and n.valid_mask
+        and n.segmentation_ids
+    ]
     edges: List[Edge] = []
     for i in range(len(objs)):
         for j in range(i + 1, len(objs)):

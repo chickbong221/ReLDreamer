@@ -133,9 +133,24 @@ def pixel_area(mask: np.ndarray) -> int:
 class MaskAccumulator:
     """Collects binary masks keyed by node_id, OR-merging repeated writes."""
 
-    def __init__(self, height: int, width: int):
+    def __init__(self, height: int, width: int,
+                 seg: Optional[np.ndarray] = None):
         self.h, self.w = height, width
         self._masks: Dict[str, np.ndarray] = {}
+        # Optional full segmentation image (H, W) int. Lets downstream stages
+        # mint masks for additional seg ids without re-reading obs. Also
+        # exposes the seg-id set that was visible this frame, which Bug 2 uses
+        # to gate local-contact admission to entities that actually appear.
+        self.seg: Optional[np.ndarray] = seg
+        self._visible_seg_ids: Optional[set] = None
+        if seg is not None:
+            self._visible_seg_ids = {
+                int(i) for i in np.unique(seg) if int(i) != 0
+            }
+
+    @property
+    def visible_seg_ids(self) -> set:
+        return self._visible_seg_ids or set()
 
     def add(self, node_id: str, mask: np.ndarray) -> None:
         if node_id in self._masks:

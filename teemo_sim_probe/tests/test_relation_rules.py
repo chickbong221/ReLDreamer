@@ -15,12 +15,17 @@ class _State:
         return self.force_vector
 
 
+_NEXT_SEG_ID = [0]
+
+
 def _node(node_id, z):
+    _NEXT_SEG_ID[0] += 1
     return Node(
         node_id=node_id,
         node_type="object",
         name=node_id,
         pose_world=[0.0, 0.0, z, 1.0, 0.0, 0.0, 0.0],
+        segmentation_ids=[_NEXT_SEG_ID[0]],
     )
 
 

@@ -95,7 +95,9 @@ def _build_env(task: str, obj_id: str, args):
         FetchDepthObservationWrapper,
         FrameStack,
     )
-    from teemo_sim_probe.adapters.collect_data import FetchCollectRobotInitWrapper
+    from teemo_sim_probe.adapters.collect_contact_data import (
+        FetchCollectContactDataWrapper as FetchCollectRobotInitWrapper,
+    )
 
     RD = ASSET_DIR / "scene_datasets/replica_cad_dataset/rearrange"
     plan_fp = RD / "task_plans" / task / "pick" / "train" / f"{obj_id}.json"

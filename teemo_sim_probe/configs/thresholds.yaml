@@ -21,27 +21,17 @@ support:
 affordances:
   asset_path: affordances.json
 
-e_domain:
-  asset_path: e_domain.json
-  enable_local_contact: true       # R7
+# Track A: per-subtask whitelists (replaces the soft score + E_domain). The
+# probe loads <subtask>_<canonical_target>.json from this directory at episode
+# reset and fails loud if no file matches. Mine these via
+# tools/build_subtask_whitelists.py.
+whitelists:
+  dir: subtask_whitelists
 
-selection:                          # R8-R13
-  n_slots: 10                       # R11 object slot capacity
-  n_refresh: 2                      # R11 refresh quota
-  k_persist: 5                      # R8 / R13 persistence window (frames)
-  oracle_force_active_target: false # R13 ablation only
-  weights:                          # R10 continuous rule score
-    contact:  4.0
-    grasp:    4.0
-    persist:  2.0
-    afford:   1.5
-    state:    1.5
-    support:  1.0
-    local:    2.0
-    dist:     2.0
-  tau_age:  3
-  tau_dist_tabletop:   0.5
-  tau_dist_room_scale: 1.5
+selection:
+  n_slots: 10                       # hard slot capacity
+  k_persist: 5                      # persistence window (frames)
+  enable_local_contact: true        # R7: one-hop V_{t-1} contact expansion
 
 profiles:
 

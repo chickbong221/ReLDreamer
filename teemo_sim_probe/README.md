@@ -7,22 +7,18 @@ diagrams. Designed for MS-HAB (room-scale Fetch) and plain ManiSkill
 
 ```
 seg ids
- -> R1 drop background
- -> R2 merge robot gripper/fingers/TCP into ee
- -> R3 drop helper/goal/marker + room/clutter        (--include-* to keep)
- -> R4 keep only entities in E_domain                (REQUIRED at startup)
- -> R5 one-hop direct expansion                       (mined offline)
- -> R6 affordance-set decides relation vocabulary     (REQUIRED at startup)
- -> R7 local-contact exception                        (V_{t-1}, one hop)
- -> R8 k=5 frame persistence
- -> R9 drop decorative articulation parts
- -> R10 continuous rule-score
- -> R11 top N=10 with refresh quota N_refresh=2
- -> R12 identity-keyed slots + reset_flag
- -> R13 no oracle active-target forcing
- -> R14 invisible state-bearing kept only via one-hop
- -> R15 labels only for valid slots
- -> R16 privileged labels train-time only
+ -> drop background (seg id 0)
+ -> merge robot gripper/fingers/TCP into ee
+ -> drop helper/goal/marker + room/clutter            (--include-* to keep)
+ -> classify pair types (uses affordance set)
+ -> merge_persistent: k_persist=5 identity-keyed retention
+ -> tau_i update (steps_since_seen)
+ -> expand_local_contact: V_{t-1} one-hop, mask-gated
+ -> dedup by live entity (collapse duplicates)
+ -> apply_whitelist: HARD per-subtask gate                  (REQUIRED asset)
+ -> overflow_truncate: keep n_slots=10 nearest to ee, node_id tiebreak
+ -> identity-keyed slot assignment + reset_flag
+ -> build absolute + temporal edges (valid slots only)
 ```
 
 Every frame yields exactly `1 ee + N=10 object slots`; empty slots are padded
@@ -81,14 +77,15 @@ A new backend only needs a sibling adapter.
 
 ## Required setup (one-time per benchmark)
 
-Both mined assets are **required** at startup. `load_config` raises
-`FileNotFoundError` if either is missing or empty so the filtering pipeline
-cannot silently degrade to an unmined graph:
+Mined assets required at startup. `load_config` raises `FileNotFoundError`
+if the affordance asset is missing or empty; the per-subtask whitelist is
+resolved lazily at each episode reset and raises if no matching file is
+present (Track A: fail-loud, no silent fallback to "admit everything"):
 
-| asset                                      | rule it gates | produced by |
-|--------------------------------------------|---------------|-------------|
-| `teemo_sim_probe/configs/affordances.json` | R6            | step 3      |
-| `teemo_sim_probe/configs/e_domain.json`    | R4            | step 4      |
+| asset                                                       | what it gates                    | produced by |
+|-------------------------------------------------------------|----------------------------------|-------------|
+| `teemo_sim_probe/configs/affordances.json`                  | relation vocabulary + anchors    | step 3      |
+| `teemo_sim_probe/configs/subtask_whitelists/*.json`         | per-(subtask, target) node gate  | step 4      |
 
 Run the four steps below in order, top to bottom. Then go to **Run the probe**.
 
@@ -123,15 +120,16 @@ python -m teemo_sim_probe.tools.collect_robot_success_states \
 ```
 
 Rolls each per-object Fetch pick policy out under
-`mshab.envs.wrappers.collect_data.FetchCollectRobotInitWrapper` and writes
-one pickle per YCB id to
-`$MS_ASSET_DIR/data/robot_success_states/fetch/pick/<obj_id>.pkl` -- the schema
-`build_affordances.py` and `build_e_domain.py` expect:
-`{obj_id, robot_qpos[N x 15], obj_pose_wrt_base[N x 7]}`. Re-runnable:
-pickles that already have `>= --n-success` rows are skipped.
+`teemo_sim_probe.adapters.collect_contact_data.FetchCollectContactDataWrapper`
+(a local sibling adapter -- `mshab/` is untouched) and writes one pickle per
+YCB id to `$MS_ASSET_DIR/data/robot_success_states/fetch/pick/<obj_id>.pkl`.
 
-Skip this step if `$MS_ASSET_DIR/data/robot_success_states/fetch/pick/*.pkl`
-already exists (the MS-HAB asset bundle sometimes ships these).
+Schema (`_schema_version: 2`, strict superset of the upstream wrapper):
+`{obj_id, subtask_type, robot_qpos[N x 15], obj_pose_wrt_base[N x 7],
+contact_graphs[N]}`. `build_affordances.py` (step 3) reads only the original
+fields. `build_subtask_whitelists.py` (step 4) reads `contact_graphs`.
+
+Re-runnable: pickles that already have `>= --n-success` rows are skipped.
 
 Useful flags:
 
@@ -161,17 +159,20 @@ python -m teemo_sim_probe.tools.build_affordances \
 
 FK is required; the miner aborts rather than write `[0,0,0]` placeholders.
 
-### 4. Mine E_domain (R4)
+### 4. Mine per-subtask whitelists (Track A)
 
 ```bash
-python -m teemo_sim_probe.tools.build_e_domain \
-    --task-plans-dir "$MS_ASSET_DIR/data/scene_datasets/replica_cad_dataset/rearrange/task_plans" \
+python -m teemo_sim_probe.tools.build_subtask_whitelists \
     --success-states-dir "$MS_ASSET_DIR/data/robot_success_states" \
-    --splits train \
-    --out teemo_sim_probe/configs/e_domain.json
+    --out-dir teemo_sim_probe/configs/subtask_whitelists
 ```
 
-Train-split only (R4 provenance).
+Walks the success-state pkls, BFS-closes from the target over the contact
+pair graph (default `--max-hops 2`), and writes one JSON per
+`(subtask, canonical_target)`, e.g. `pick_024_bowl.json`,
+`open_drawer3.json`. Tune `--min-support-frac` (default 0.3, lenient) and
+`--min-contact-frac` (default 0.6, strict) if the closures look too thin or
+too noisy.
 
 ### Shortcut: steps 2-4 in one call
 
@@ -221,14 +222,12 @@ If `policy.pt` is missing the runner falls back to random actions.
 
 Same flags on both run scripts:
 
-| flag                      | effect (paper row)              |
-|---------------------------|---------------------------------|
-| `--k-persist N`           | override R8 persistence window  |
-| `--n-refresh N`           | override R11 refresh quota      |
-| `--n-slots N`             | override N=10 slot capacity     |
-| `--no-local-contact`      | disable R7                       |
-| `--dist-only`             | zero all weights except `w_dist` |
-| `--oracle-active-target`  | R13 oracle row                  |
+| flag                      | effect                                                |
+|---------------------------|-------------------------------------------------------|
+| `--k-persist N`           | override persistence window (frames)                  |
+| `--n-slots N`             | override n_slots=10 capacity                          |
+| `--no-local-contact`      | disable the V_{t-1} one-hop expansion                 |
+| `--whitelist-dir <path>`  | override the per-subtask whitelist directory          |
 
 ## Tests
 
@@ -237,5 +236,5 @@ python -m unittest discover teemo_sim_probe/tests
 ```
 
 Covers schema serialization, affordance lookup / transforms, temporal anchor
-reset, relation rules, selector score, refresh quota, persistence window, and
-slot identity / reset_flag.
+reset, relation rules, whitelist gate + link specificity, overflow
+truncation, persistence window survival, and slot identity / reset_flag.
