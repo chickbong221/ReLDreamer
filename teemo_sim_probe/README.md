@@ -199,7 +199,7 @@ MS-HAB with a released checkpoint:
 
 ```bash
 python -m teemo_sim_probe.run_mshab_probe \
-    --ckpt-dir E:/Code/ReLDreamer/mshab_checkpoints/rl/tidy_house/pick/all \
+    --ckpt-dir mshab_checkpoints/rl/tidy_house/pick/all \
     --steps 60 --video
 ```
 
@@ -207,7 +207,7 @@ Per-object SAC checkpoint -- runner infers the task plan from the path:
 
 ```bash
 python -m teemo_sim_probe.run_mshab_probe \
-    --ckpt-dir E:/Code/ReLDreamer/mshab_checkpoints/rl/set_table/pick/024_bowl \
+    --ckpt-dir mshab_checkpoints/rl/set_table/pick/024_bowl \
     --steps 200 --save-every 20 --width 128 --height 128 --video
 ```
 
