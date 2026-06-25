@@ -1,0 +1,16 @@
+{
+  "_schema_version": 2,
+  "subtask": "pick",
+  "target": "actor:024_bowl",
+  "members": {
+    "actor:024_bowl": {
+      "roles": [
+        "interacted"
+      ],
+      "kind": "actor",
+      "name": "obj_0",
+      "interaction_rollouts": 34
+    }
+  },
+  "_n_successful_rollouts": 34
+}
