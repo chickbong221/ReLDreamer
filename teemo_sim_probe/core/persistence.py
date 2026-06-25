@@ -7,19 +7,12 @@ from typing import Dict
 from .schema import Node
 
 
-# Per-frame MS-HAB task-state attributes that must NOT leak across retention:
-# stamping them on a frozen snapshot would keep stale flags after the subtask
-# advances.
-_DYNAMIC_MSHAB_ATTRS = (
-    "is_mshab_active_target",
-    "mshab_kind",
-    "mshab_obj_id",
-    "affordance_a_star",
-)
+# Per-frame affordance selection must be recomputed after a fresh observation.
+_DYNAMIC_ATTRS = ("affordance_a_star",)
 
 
 def _stripped_attrs(attrs: Dict[str, object]) -> Dict[str, object]:
-    return {k: v for k, v in attrs.items() if k not in _DYNAMIC_MSHAB_ATTRS}
+    return {k: v for k, v in attrs.items() if k not in _DYNAMIC_ATTRS}
 
 
 def _snapshot(node: Node) -> Node:

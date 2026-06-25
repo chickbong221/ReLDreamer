@@ -3,18 +3,10 @@
 #   * teemo_sim_probe/configs/affordances.json
 #   * teemo_sim_probe/configs/subtask_whitelists/<subtask>_<target>.json
 #
-# Track A retired the old e_domain.json; it is no longer mined or loaded.
-# Track B adds the per-subtask whitelist mining pass.
-#
 # Steps (in order):
-#   2) collect $MS_ASSET_DIR/data/robot_success_states/   (per-obj SAC rollouts)
-#   2b) collect $MS_ASSET_DIR/contact_graphs/             (per-success contact graphs)
+#   2) collect schema-v3 successful interaction rollouts
 #   3) mine    teemo_sim_probe/configs/affordances.json
 #   4) mine    teemo_sim_probe/configs/subtask_whitelists/
-#
-# Step 2b currently requires editing the collection driver to use
-# FetchCollectContactDataWrapper instead of FetchCollectRobotInitWrapper -- see
-# REFACTOR_NOTES.md section 4.
 #
 # MS_ASSET_DIR follows the ManiSkill convention: it is the maniskill ROOT (parent
 # of data/), NOT the data dir itself. ManiSkill internally resolves
@@ -63,7 +55,8 @@ echo "   target N     = ${N_SUCCESS} successes per obj"
 echo "================================================================"
 python -m teemo_sim_probe.tools.collect_robot_success_states \
     --ckpt-root "${CKPT_ROOT}/rl" \
-    --n-success "${N_SUCCESS}"
+    --n-success "${N_SUCCESS}" \
+    --no-skip-done
 
 echo ""
 echo "================================================================"

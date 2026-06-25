@@ -66,12 +66,18 @@ class TemporalBuffer:
 
     # ---- ingest one frame's absolute edges ------------------------------ #
     def update(self, graph: Graph) -> None:
+        stale_ids = {
+            n.node_id for n in graph.nodes
+            if n.valid_mask and n.frozen_pose
+        }
+        if stale_ids:
+            self.purge(stale_ids)
         # ---- Affordance pre-pass: detect a_star switches / edge absence -- #
         # Read the current a_star for each affordance edge from its dst node
         # attributes (set by relation_rules._resolve_active_anchor).
         present_affordance: Dict[Tuple[str, str, str], int] = {}
         for e in graph.edges:
-            if e.temporal:
+            if e.temporal or e.stale:
                 continue
             if e.relation in _AFFORDANCE_RELATIONS:
                 dst_node = graph.get_node(e.dst)
@@ -116,7 +122,7 @@ class TemporalBuffer:
         seen_pairs: set = set()
 
         for e in graph.edges:
-            if e.temporal:
+            if e.temporal or e.stale:
                 continue
             key = _edge_key(e.src, e.dst, e.relation)
             if e.relation in _CONTINUOUS and e.raw_value is not None:
@@ -142,7 +148,10 @@ class TemporalBuffer:
 
         # For any previously tracked binary relation whose endpoints still
         # exist, absence from the absolute graph means the predicate is false.
-        node_ids = set(graph.node_ids())
+        node_ids = {
+            n.node_id for n in graph.nodes
+            if n.valid_mask and not n.frozen_pose
+        }
         for key in list(self._bools):
             src, dst, relation = key
             if (
@@ -170,7 +179,10 @@ class TemporalBuffer:
     def temporal_edges(self, graph: Graph, cfg: dict) -> List[Edge]:
         prof = cfg["profile"]
         out: List[Edge] = []
-        node_ids = set(graph.node_ids())
+        node_ids = {
+            n.node_id for n in graph.nodes
+            if n.valid_mask and not n.frozen_pose
+        }
 
         # Continuous signed-change.
         for key, hist in self._values.items():

@@ -75,28 +75,14 @@ def parse_args():
                    help="apply MS-HAB FetchActionWrapper; auto matches MS-HAB default")
     p.add_argument("--free-head", action="store_true",
                    help="when FetchActionWrapper is enabled, do not zero head actions")
-    p.add_argument("--include-goals", action="store_true")
-    p.add_argument("--include-background", action="store_true",
-                   help="keep scene_background actor (filtered by default)")
-    p.add_argument("--include-static-scene", action="store_true",
-                   help="keep static furniture / apartment props (filtered by default)")
-    # Ablation flags (Track A: hard whitelist gate, no soft score).
+    # Selection/output controls.
     p.add_argument("--k-persist", type=int, default=None,
                    help="override selection.k_persist (frames)")
     p.add_argument("--n-slots", type=int, default=None,
                    help="override selection.n_slots")
-    p.add_argument("--no-local-contact", action="store_true",
-                   help="disable the local-contact one-hop expansion")
     p.add_argument("--whitelist-dir", default=None,
                    help="override the per-subtask whitelist directory "
                         "(defaults to configs/subtask_whitelists)")
-    p.add_argument(
-        "--mshab-object-name",
-        choices=["actual", "merged"],
-        default="actual",
-        help="name active targets by their actual per-env actor name (default) "
-             "or MS-HAB's merged obj_x name",
-    )
     p.add_argument("--backdrop", choices=["rgb", "depth-color", "depth-gray"],
                    default="rgb",
                    help="overlay background: rgb (if available), turbo-colored "
@@ -215,10 +201,7 @@ def main():
     builders = {
         cam: GraphBuilder(
             venv, cfg, env_idx=0, env_id=env_id,
-            camera=cam, include_goals=args.include_goals,
-            include_background=args.include_background,
-            include_static_scene=args.include_static_scene,
-            mshab_object_name=args.mshab_object_name,
+            camera=cam,
         )
         for cam in cameras
     }
@@ -235,28 +218,29 @@ def main():
     just_reset = True       # first iter is the start of an episode
     for frame in range(args.steps):
         save_now = (frame % args.save_every == 0) or (frame == args.steps - 1)
+        for cam in cameras:
+            seg, depth, rgb_sensor = read_unwrapped_sensor(
+                venv, cam, env_idx=0
+            )
+            if args.backdrop == "rgb" and rgb_sensor is not None:
+                backdrop = rgb_sensor
+            elif args.backdrop == "depth-gray" and depth is not None:
+                backdrop = depth_to_gray_rgb(depth)
+            elif depth is not None:
+                backdrop = depth_to_color_rgb(depth)
+            else:
+                backdrop = None
 
-        if save_now:
-            for cam in cameras:
-                seg, depth, rgb_sensor = read_unwrapped_sensor(
-                    venv, cam, env_idx=0
-                )
-                if args.backdrop == "rgb" and rgb_sensor is not None:
-                    backdrop = rgb_sensor
-                elif args.backdrop == "depth-gray" and depth is not None:
-                    backdrop = depth_to_gray_rgb(depth)
-                elif depth is not None:
-                    backdrop = depth_to_color_rgb(depth)
-                else:
-                    backdrop = None
+            # Selection, persistence and temporal history advance every env
+            # step. Rendering frequency is an output concern only.
+            graph, masks, cam_name, rgb = builders[cam].step(
+                obs, frame,
+                episode_boundary=just_reset,
+                seg_override=seg, rgb_override=backdrop,
+                camera_override=cam,
+            )
 
-                graph, masks, cam_name, rgb = builders[cam].step(
-                    obs, frame,
-                    episode_boundary=just_reset,
-                    seg_override=seg, rgb_override=backdrop,
-                    camera_override=cam,
-                )
-
+            if save_now:
                 graph.save(os.path.join(args.out, f"graph_{cam}_{frame:04d}.json"))
                 op = render_overlay(
                     rgb, graph, masks,
@@ -270,6 +254,7 @@ def main():
                 overlay_paths[cam].append(op)
                 graph_paths[cam].append(gp)
 
+        if save_now:
             # Third-person evaluation-camera frame.
             if args.eval_view:
                 ev = render_eval_view(venv, env_idx=0)
@@ -279,7 +264,7 @@ def main():
 
             if frame == 0:
                 _print_mshab_summary(
-                    venv, cameras[0], args.mshab_object_name
+                    venv, cameras[0]
                 )
 
         action = policy.act(obs)
@@ -319,13 +304,11 @@ def _apply_ablation_overrides(cfg: dict, args) -> None:
         sel["k_persist"] = int(args.k_persist)
     if args.n_slots is not None:
         sel["n_slots"] = int(args.n_slots)
-    if args.no_local_contact:
-        sel["enable_local_contact"] = False
     if args.whitelist_dir is not None:
         cfg["whitelist_dir"] = args.whitelist_dir
 
 
-def _print_mshab_summary(venv, camera, mshab_object_name="actual"):
+def _print_mshab_summary(venv, camera):
     e = venv.unwrapped
     print(f"--- probe camera: {camera} ---")
     print("--- subtask handles ---")
@@ -338,18 +321,13 @@ def _print_mshab_summary(venv, camera, mshab_object_name="actual"):
     if ptr < len(objs):
         o = objs[ptr]
         merged_name = getattr(o, "name", None) if o is not None else None
-        state = get_privileged_state(
-            venv, env_idx=0, mshab_object_name=mshab_object_name
-        )
+        state = get_privileged_state(venv, env_idx=0)
         graph_name = (
             getattr(state.active_obj, "name", None)
             if state.active_obj is not None else None
         )
         print(f"  active_obj_merged = {merged_name}")
-        print(
-            f"  active_obj_graph = {graph_name} "
-            f"(mode={mshab_object_name})"
-        )
+        print(f"  active_obj_graph = {graph_name}")
     if ptr < len(arts):
         a = arts[ptr]
         print(f"  active_articulation = "

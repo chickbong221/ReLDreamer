@@ -1,43 +1,13 @@
-"""Offline miner: per-subtask whitelists (replaces R4 domain-level E_domain).
+"""Mine one-hop per-subtask whitelists from successful rollout interactions.
 
-Reads the contact pkls produced by
-``teemo_sim_probe.adapters.collect_contact_data.FetchCollectContactDataWrapper``
-and emits one JSON per (subtask, target):
+For each ``(subtask, target)`` the output contains exactly the union of:
 
-    out_dir/
-        pick_024_bowl.json
-        pick_002_master_chef_can.json
-        open_<handle_link>.json
-        ...
+* the task target;
+* every non-robot entity contacted during a successful rollout;
+* direct supporters of those entities and the task target.
 
-Each file shape (schema_version=1)::
-
-    {
-      "_schema_version": 1,
-      "subtask": "pick",
-      "target":  "024_bowl",
-      "members": {
-        "024_bowl":            {"roles": ["task"],             "kind": "actor"},
-        "drawer3":             {"roles": ["support"],          "kind": "link",
-                                "support_frac": 0.83},
-        "kitchen_counter":     {"roles": ["support", "state"], "kind": "link",
-                                "support_frac": 0.71}
-      }
-    }
-
-Closure rule:
-  * Seed with the target.
-  * BFS to depth ``max_hops`` over the contact-pair graph.
-  * Filter: an entity must appear in at least ``min_support_frac`` fraction of
-    success frames for the (subtask, target). Filters transient incidental
-    contacts (a tipped-over neighbor brushing the target on a single rollout).
-  * Inclusive on supports (anything with a load-bearing dz), strict on
-    incidental contacts. Spec: "err toward inclusion for supports".
-
-Key normalization mirrors ``teemo_sim_probe.core.whitelist.match_key`` so the
-emitted strings match runtime exactly:
-  * Free actors:   ``canonical_affordance_key(name)``  (e.g. 024_bowl)
-  * Articulation links: bare ``name``                  (e.g. drawer3, body)
+Support is never expanded recursively. Frequency counts are emitted for audit
+but do not filter membership.
 """
 
 from __future__ import annotations
@@ -49,200 +19,130 @@ import pickle
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+
+from teemo_sim_probe.core.affordance import canonical_affordance_key
+from teemo_sim_probe.core.entity_identity import normalize_asset_key
+from teemo_sim_probe.core.whitelist import whitelist_target_slug
 
 
 log = logging.getLogger("build_subtask_whitelists")
 
 
-def _setup_logging(verbose: bool) -> None:
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
-
-def _normalize_key(name: str, kind: str) -> Optional[str]:
-    """Mirror ``teemo_sim_probe.core.whitelist.match_key`` on raw strings."""
-    from teemo_sim_probe.core.affordance import canonical_affordance_key
-    if not name:
-        return None
-    if kind == "actor":
-        return canonical_affordance_key(name) or name
-    if kind == "link":
-        return name
-    return name
-
-
-# --------------------------------------------------------------------------- #
-# Pkl ingestion
-# --------------------------------------------------------------------------- #
-def _iter_contact_pkls(root: Path):
-    for pkl in sorted(root.rglob("*.pkl")):
+def _iter_pickles(root: Path):
+    for path in sorted(root.rglob("*.pkl")):
         try:
-            with open(pkl, "rb") as f:
-                data = pickle.load(f)
+            with open(path, "rb") as stream:
+                payload = pickle.load(stream)
         except Exception as exc:
-            log.warning("skip %s: %r", pkl, exc)
+            log.warning("skip %s: %r", path, exc)
             continue
-        if not isinstance(data, dict):
-            continue
-        yield pkl, data
+        if isinstance(payload, dict):
+            yield path, payload
 
 
-# --------------------------------------------------------------------------- #
-# Per-(subtask, target) accumulation
-# --------------------------------------------------------------------------- #
-class _ClosureBuilder:
-    """Accumulates contact statistics for one (subtask, target) pair."""
-
+class _WhitelistBuilder:
     def __init__(self, subtask: str, target: str):
         self.subtask = subtask
         self.target = target
-        # member_key -> set of {role}
         self.roles: Dict[str, Set[str]] = defaultdict(set)
-        # member_key -> kind ("actor" / "link" / "other")
         self.kinds: Dict[str, str] = {}
-        # member_key -> count of success frames the member appeared in
+        self.names: Dict[str, str] = {}
+        self.rollout_count = 0
+        self.interaction_count: Dict[str, int] = defaultdict(int)
         self.support_count: Dict[str, int] = defaultdict(int)
-        self.contact_count: Dict[str, int] = defaultdict(int)
-        # total success frames observed.
-        self.frame_count: int = 0
+        self.supports: Dict[str, Set[str]] = defaultdict(set)
+        self.roles[target].add("task")
+        self.kinds[target] = "actor" if target.startswith("actor:") else "link"
 
-    def absorb(self, contact_graph: dict, max_hops: int, eps_dz: float) -> None:
-        """Walk one success frame's contact graph and update aggregates."""
-        self.frame_count += 1
+    def absorb(self, rollout: Dict[str, Any]) -> None:
+        self.rollout_count += 1
+        interacted_this_rollout: Set[str] = set()
+        for item in rollout.get("interacted", []) or []:
+            if not isinstance(item, dict):
+                continue
+            key = normalize_asset_key(item.get("key"), item.get("kind"))
+            if not key:
+                continue
+            self.roles[key].add("interacted")
+            self.kinds.setdefault(key, str(item.get("kind") or "other"))
+            self.names.setdefault(key, str(item.get("name") or key))
+            interacted_this_rollout.add(key)
+        for key in interacted_this_rollout:
+            self.interaction_count[key] += 1
 
-        target_name = contact_graph.get("target")
-        target_canonical = contact_graph.get("target_canonical") or self.target
-        target_key = _normalize_key(target_canonical, "actor")
-        if target_key is None:
-            return
-        self.roles[target_key].add("task")
-        self.kinds.setdefault(target_key, "actor")
+        # One hop only: the collector already restricts ``supported_key`` to
+        # the target or an interacted entity. No BFS/closure exists here.
+        supported_roots = set(interacted_this_rollout)
+        supported_roots.add(self.target)
+        supported_pairs_this_rollout: Set[Tuple[str, str]] = set()
+        for relation in rollout.get("supports", []) or []:
+            if not isinstance(relation, dict):
+                continue
+            supported = normalize_asset_key(relation.get("supported_key"))
+            supporter = relation.get("supporter")
+            if supported not in supported_roots or not isinstance(supporter, dict):
+                continue
+            supporter_key = normalize_asset_key(
+                supporter.get("key"), supporter.get("kind")
+            )
+            if not supporter_key or supporter_key == supported:
+                continue
+            self.roles[supporter_key].add("support")
+            self.kinds.setdefault(
+                supporter_key, str(supporter.get("kind") or "other")
+            )
+            self.names.setdefault(
+                supporter_key, str(supporter.get("name") or supporter_key)
+            )
+            self.supports[supporter_key].add(supported)
+            supported_pairs_this_rollout.add((supporter_key, supported))
+        for supporter_key, _supported in supported_pairs_this_rollout:
+            self.support_count[supporter_key] += 1
 
-        # Build adjacency: name -> [(other_name, other_kind, force, dz)].
-        adj: Dict[str, List[Tuple[str, str, float, Optional[float]]]] = defaultdict(list)
-        # Also remember each name's kind so we can normalize correctly later.
-        name_kind: Dict[str, str] = {target_name: "actor"}
-        for p in contact_graph.get("pairs", []) or []:
-            a = p.get("a"); b = p.get("b")
-            if not a or not b:
-                continue
-            ak = p.get("a_kind") or "other"
-            bk = p.get("b_kind") or "other"
-            force = float(p.get("force", 0.0))
-            dz = p.get("dz")
-            adj[a].append((b, bk, force, dz))
-            adj[b].append((a, ak, force, dz))
-            name_kind.setdefault(a, ak)
-            name_kind.setdefault(b, bk)
-
-        # BFS from the target's raw name. We track per-frame visited to avoid
-        # double counting one entity within one frame.
-        seen_keys: Set[str] = {target_key}
-        queue: List[Tuple[str, int]] = [(target_name, 0)]
-        while queue:
-            here, depth = queue.pop(0)
-            if depth >= max_hops:
-                continue
-            for other, other_kind, force, dz in adj.get(here, []):
-                key = _normalize_key(other, other_kind)
-                if key is None or key in seen_keys:
-                    continue
-                seen_keys.add(key)
-                self.kinds.setdefault(key, other_kind)
-                if dz is not None and abs(dz) >= eps_dz:
-                    # Load-bearing vertical contact -- treat as support.
-                    self.roles[key].add("support")
-                    self.support_count[key] += 1
-                else:
-                    self.roles[key].add("contact")
-                    self.contact_count[key] += 1
-                queue.append((other, depth + 1))
-
-    # ----- emit ----------------------------------------------------------- #
-    def to_payload(
-        self,
-        min_support_frac: float,
-        min_contact_frac: float,
-    ) -> Optional[dict]:
-        if self.frame_count == 0:
-            return None
-        members: Dict[str, dict] = {}
-        # Always include the target itself.
-        target_key = _normalize_key(self.target, "actor")
-        if target_key is None:
-            return None
-        members[target_key] = {
-            "roles": sorted(self.roles.get(target_key) or {"task"}),
-            "kind":  self.kinds.get(target_key, "actor"),
-        }
-        for key, roles in self.roles.items():
-            if key == target_key:
-                continue
-            support_frac = self.support_count.get(key, 0) / self.frame_count
-            contact_frac = self.contact_count.get(key, 0) / self.frame_count
-            # Spec: err toward inclusion for supports; strict for free contacts.
-            if "support" in roles and support_frac < min_support_frac:
-                continue
-            if roles == {"contact"} and contact_frac < min_contact_frac:
-                continue
-            entry = {
-                "roles": sorted(roles),
-                "kind":  self.kinds.get(key, "other"),
+    def payload(self) -> Dict[str, Any]:
+        members: Dict[str, Dict[str, Any]] = {}
+        for key in sorted(self.roles):
+            entry: Dict[str, Any] = {
+                "roles": sorted(self.roles[key]),
+                "kind": self.kinds.get(key, "other"),
             }
-            if support_frac > 0:
-                entry["support_frac"] = round(support_frac, 3)
-            if contact_frac > 0:
-                entry["contact_frac"] = round(contact_frac, 3)
+            if key in self.names:
+                entry["name"] = self.names[key]
+            if self.interaction_count.get(key):
+                entry["interaction_rollouts"] = self.interaction_count[key]
+            if self.support_count.get(key):
+                entry["support_rollouts"] = self.support_count[key]
+                entry["supports"] = sorted(self.supports[key])
             members[key] = entry
         return {
-            "_schema_version": 1,
-            "subtask":         self.subtask,
-            "target":          target_key,
-            "members":         members,
-            "_n_success_frames": self.frame_count,
+            "_schema_version": 2,
+            "subtask": self.subtask,
+            "target": self.target,
+            "members": members,
+            "_n_successful_rollouts": self.rollout_count,
         }
 
 
-# --------------------------------------------------------------------------- #
-# Main
-# --------------------------------------------------------------------------- #
+def _target_key(data: Dict[str, Any]) -> Optional[str]:
+    explicit = normalize_asset_key(data.get("entity_key"))
+    if explicit:
+        return explicit
+    raw = data.get("obj_id")
+    canonical = canonical_affordance_key(raw)
+    return f"actor:{canonical}" if canonical else None
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "--success-states-dir", required=True,
-        help="Root of robot_success_states/<robot_uid>/<subtask>/ produced by "
-             "FetchCollectContactDataWrapper.",
-    )
-    parser.add_argument(
-        "--out-dir", required=True,
-        help="Directory to write per-subtask whitelist JSONs into.",
-    )
-    parser.add_argument(
-        "--max-hops", type=int, default=2,
-        help="BFS depth from the target over the contact-pair graph.",
-    )
-    parser.add_argument(
-        "--eps-dz", type=float, default=0.01,
-        help="Vertical-offset (m) threshold above which a contact counts as "
-             "load-bearing 'support'.",
-    )
-    parser.add_argument(
-        "--min-support-frac", type=float, default=0.3,
-        help="Min fraction of success frames an entity must appear in to be "
-             "kept as a 'support' member (default 0.3 == lenient).",
-    )
-    parser.add_argument(
-        "--min-contact-frac", type=float, default=0.6,
-        help="Min fraction for entities seen ONLY as incidental contacts "
-             "(no support evidence).",
-    )
+    parser.add_argument("--success-states-dir", required=True)
+    parser.add_argument("--out-dir", required=True)
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
-    _setup_logging(args.verbose)
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
     root = Path(args.success_states_dir)
     if not root.is_dir():
@@ -251,53 +151,44 @@ def main(argv: Optional[List[str]] = None) -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    builders: Dict[Tuple[str, str], _ClosureBuilder] = {}
-    n_pkls = 0
-    n_frames = 0
-    for pkl, data in _iter_contact_pkls(root):
-        subtask = data.get("subtask_type") or pkl.parent.name
-        obj_id = data.get("obj_id") or pkl.stem
-        contact_graphs = data.get("contact_graphs") or []
-        if not isinstance(subtask, str) or not isinstance(obj_id, str):
+    builders: Dict[Tuple[str, str], _WhitelistBuilder] = {}
+    n_rollouts = 0
+    for path, data in _iter_pickles(root):
+        rollouts = data.get("interaction_rollouts") or []
+        if int(data.get("_schema_version", 0)) < 3 or not rollouts:
+            log.warning(
+                "skip %s: schema-v3 interaction_rollouts required; recollect "
+                "with --no-skip-done",
+                path,
+            )
             continue
-        if not contact_graphs:
+        subtask = str(data.get("subtask_type") or path.parent.name)
+        fallback_target = _target_key(data)
+        if not fallback_target:
             continue
-        n_pkls += 1
-        target_key = _normalize_key(obj_id, "actor")
-        if target_key is None:
-            continue
-        bucket = builders.setdefault((subtask, target_key),
-                                     _ClosureBuilder(subtask, target_key))
-        for cg in contact_graphs:
-            if isinstance(cg, dict):
-                bucket.absorb(cg, max_hops=args.max_hops, eps_dz=args.eps_dz)
-                n_frames += 1
+        builder = builders.setdefault(
+            (subtask, fallback_target),
+            _WhitelistBuilder(subtask, fallback_target),
+        )
+        for rollout in rollouts:
+            if isinstance(rollout, dict):
+                builder.absorb(rollout)
+                n_rollouts += 1
 
     if not builders:
-        log.error("no contact graphs found under %s", root)
+        log.error("no schema-v3 successful interaction rollouts found under %s", root)
         return 2
 
-    n_written = 0
-    for (subtask, target), bucket in sorted(builders.items()):
-        payload = bucket.to_payload(
-            min_support_frac=args.min_support_frac,
-            min_contact_frac=args.min_contact_frac,
-        )
-        if payload is None:
-            continue
-        out_path = out_dir / f"{subtask}_{target}.json"
-        with open(out_path, "w") as f:
-            json.dump(payload, f, indent=2, sort_keys=False)
-        n_written += 1
-        log.info(
-            "wrote %s  (%d members, %d frames)",
-            out_path.name, len(payload["members"]), bucket.frame_count,
-        )
+    for (subtask, target), builder in sorted(builders.items()):
+        filename_target = whitelist_target_slug(target)
+        out_path = out_dir / f"{subtask}_{filename_target}.json"
+        with open(out_path, "w") as stream:
+            json.dump(builder.payload(), stream, indent=2)
+        log.info("wrote %s (%d members)", out_path.name, len(builder.roles))
 
     log.info(
-        "mined %d (subtask,target) pairs from %d pkls / %d success frames; "
-        "wrote %d whitelist JSONs to %s",
-        len(builders), n_pkls, n_frames, n_written, out_dir,
+        "mined %d whitelists from %d successful rollouts",
+        len(builders), n_rollouts,
     )
     return 0
 

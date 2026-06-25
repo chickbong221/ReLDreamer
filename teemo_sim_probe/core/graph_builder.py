@@ -1,106 +1,38 @@
-"""Per-frame orchestration (Track A: hard whitelist gate, no soft score).
+"""Per-frame segmentation, whitelist selection, and relation orchestration.
 
     GraphBuilder(env, cfg).step(obs, frame, episode_boundary=False)
         -> (Graph, masks, camera, rgb)
 
 Pipeline:
 
-    build_nodes (background / robot / goals / static-scene / area filter)
-    -> classify_pair_types          (relation vocabulary specificity)
+    build_nodes (current visible segmentation, non-robot entities)
     -> selector.merge_persistent    (k-frame identity-keyed retention)
     -> tau_i bookkeeping            (steps_since_seen)
-    -> selector.expand_local_contact(V_{t-1} contact one hop, mask-gated)
-    -> _dedup_by_live_entity        (collapse double-keyed entities)
     -> selector.apply_whitelist     (hard per-subtask eligibility gate)
-    -> selector.overflow_truncate   (nearest-to-ee tiebroken by node_id)
+    -> classify_pair_types          (whitelist-role / affordance vocabulary)
+    -> selector.overflow_truncate   (role, distance, node_id)
     -> slot_manager.assign          (identity-keyed, reset_flag)
     -> build_absolute_edges + temporal edges (valid nodes only)
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
 from .affordance import canonical_affordance_key
-from .schema import Graph, Node, padding_node
+from .entity_identity import stable_entity_key
+from .schema import Edge, Graph, Node, padding_node
 from .node_builder import build_nodes, classify_pair_types
 from .relation_rules import build_absolute_edges
 from .temporal_buffer import TemporalBuffer
 from .mask_extractor import MaskAccumulator
-from .selector import NodeSelector, _resolve_live_entity
+from .selector import NodeSelector
 from .slot_manager import SlotManager
 from .whitelist import Whitelist, load_whitelist, resolve_whitelist_path
 from ..adapters.privileged_state import get_privileged_state
-
-
-def _dedup_by_live_entity(
-    nodes: Dict[str, Node], state,
-) -> Dict[str, Node]:
-    """Collapse multiple nodes that resolve to the same live SAPIEN entity.
-
-    Both the normal seg-id path and the local-contact path can produce nodes
-    for the same physical entity. After Bug 1's namespace fix this should be
-    rare, but it can still happen when MS-HAB persistence injects an
-    ``actor:env-0_X-3`` target that later appears under a different SAPIEN
-    wrapper. We collapse by live-entity identity, preferring the visible
-    representative and merging segmentation_ids + mshab/local-contact flags.
-    """
-    by_entity: Dict[int, str] = {}
-    keep: Dict[str, Node] = {}
-    for nid, n in nodes.items():
-        if n.node_type == "ee":
-            keep[nid] = n
-            continue
-        live = _resolve_live_entity(n, state)
-        if live is None:
-            keep[nid] = n
-            continue
-        key = id(live)
-        prior_nid = by_entity.get(key)
-        if prior_nid is None:
-            by_entity[key] = nid
-            keep[nid] = n
-            continue
-        # Pick the preferred winner; merge the other into it.
-        prior = keep[prior_nid]
-        winner, loser = _pick_winner(prior, n)
-        _merge_into(winner, loser)
-        # Replace stored entry with the winner under its own node_id.
-        if winner is not prior:
-            keep.pop(prior_nid, None)
-            keep[winner.node_id] = winner
-            by_entity[key] = winner.node_id
-    return keep
-
-
-def _pick_winner(a: Node, b: Node):
-    """Prefer (visible, non-persistent, has-pose) > rest. Stable for ties."""
-    def rank(n: Node):
-        return (
-            1 if n.visible else 0,
-            0 if n.persistent else 1,
-            1 if n.pose_world is not None else 0,
-            1 if n.segmentation_ids else 0,
-        )
-    if rank(a) >= rank(b):
-        return a, b
-    return b, a
-
-
-def _merge_into(winner: Node, loser: Node) -> None:
-    for sid in loser.segmentation_ids:
-        if sid not in winner.segmentation_ids:
-            winner.segmentation_ids.append(sid)
-    for k, v in loser.attributes.items():
-        # Don't overwrite the winner's own attributes; only fill gaps.
-        winner.attributes.setdefault(k, v)
-    if loser.pose_world is not None and winner.pose_world is None:
-        winner.pose_world = list(loser.pose_world)
-    if loser.visible and not winner.visible:
-        winner.visible = True
-
 
 class GraphBuilder:
     def __init__(
@@ -111,33 +43,27 @@ class GraphBuilder:
         env_idx: int = 0,
         env_id: str = "env",
         camera: Optional[str] = None,
-        include_goals: bool = False,
-        include_background: bool = False,
-        include_static_scene: bool = False,
-        mshab_object_name: str = "actual",
     ):
         self.env = env
         self.cfg = cfg
         self.env_idx = env_idx
         self.env_id = env_id
         self.camera = camera
-        self.include_goals = include_goals
-        self.include_background = include_background
-        self.include_static_scene = include_static_scene
-        self.mshab_object_name = mshab_object_name
 
         self.temporal = TemporalBuffer(K=cfg["temporal"]["K"])
         self.selector = NodeSelector(cfg)
         self.slots = SlotManager(n_slots=int(cfg["selection"]["n_slots"]))
 
-        # Track A: where the per-subtask whitelists live and which one is
-        # currently bound. ``whitelist_dir`` may be absolute or relative to
-        # the cfg directory; ``configs.loader`` resolves it.
+        # ``whitelist_dir`` may be absolute or relative to the config file.
         self._whitelist_dir: Optional[str] = cfg.get("whitelist_dir")
         self._whitelist_key: Optional[Tuple[str, str]] = None
 
         self._last_seen: Dict[str, int] = {}
         self._first_unseen: Dict[str, int] = {}
+        # Last fresh absolute relation per key. Frozen nodes reuse these edges
+        # with explicit stale metadata instead of mixing current ee state with
+        # an old object pose.
+        self._edge_history: Dict[Tuple[str, str, str], Edge] = {}
 
     # ---------------------------------------------------------------- reset
     def reset_episode(self) -> None:
@@ -146,6 +72,7 @@ class GraphBuilder:
         self.temporal = TemporalBuffer(K=self.cfg["temporal"]["K"])
         self._last_seen.clear()
         self._first_unseen.clear()
+        self._edge_history.clear()
         # Force whitelist re-resolution next step.
         self._whitelist_key = None
 
@@ -160,13 +87,17 @@ class GraphBuilder:
         advancement within a single episode as well as fresh episodes.
         """
         subtask = state.active_subtask_type
-        target = (
-            canonical_affordance_key(state.active_obj_id)
-            if state.active_obj_id else None
-        )
+        if state.active_handle_link is not None:
+            target = stable_entity_key(state.active_handle_link)
+        else:
+            canonical = (
+                canonical_affordance_key(state.active_obj_id)
+                if state.active_obj_id else None
+            )
+            target = f"actor:{canonical}" if canonical else None
         if subtask is None or target is None:
             raise RuntimeError(
-                "Track A whitelist gate requires both an active subtask type "
+                "whitelist selection requires both an active subtask type "
                 f"and an active_obj_id; got subtask={subtask!r}, "
                 f"active_obj_id={state.active_obj_id!r}. Probe must run inside "
                 "an MS-HAB-like env."
@@ -195,12 +126,9 @@ class GraphBuilder:
         if episode_boundary:
             self.reset_episode()
 
-        state = get_privileged_state(
-            self.env, self.env_idx, mshab_object_name=self.mshab_object_name,
-        )
+        state = get_privileged_state(self.env, self.env_idx)
 
-        # Track A: bind the active subtask's whitelist before any candidate
-        # construction. Done every step so MS-HAB subtask advancement within
+        # Done every step so MS-HAB subtask advancement within
         # an episode swaps the gate cleanly (idempotent when (subtask, target)
         # is unchanged).
         self._resolve_and_bind_whitelist(state)
@@ -208,60 +136,39 @@ class GraphBuilder:
         nodes, masks, cam, rgb = build_nodes(
             obs, state,
             camera=self.camera,
-            include_goals=self.include_goals,
-            include_background=self.include_background,
-            include_static_scene=self.include_static_scene,
-            min_pixels=self.cfg.get("node", {}).get("min_pixels", 32),
-            min_area_ratio=self.cfg.get("node", {}).get("min_area_ratio", 0.0005),
             seg_override=seg_override,
             rgb_override=rgb_override,
             camera_override=camera_override,
         )
 
-        # Relation vocabulary classification (uses affordance set).
-        classify_pair_types(nodes, self.cfg)
-
         # Identity-keyed persistence merge -- re-inject occluded entities
         # whose last_seen age is within k_persist.
         nodes = self.selector.merge_persistent(nodes, frame)
 
-        # tau_i update for every object node.
+        # Hard per-subtask whitelist gate. Everything failing the
+        # gate is dropped here; only the ee node and whitelisted entities
+        # survive into the slot assignment stage.
+        nodes = self.selector.apply_whitelist(nodes)
+
+        # Visibility age is tracked only for eligible semantic entities.
         for nid, n in nodes.items():
             if n.node_type == "ee":
                 continue
             if n.visible:
                 self._last_seen[nid] = frame
                 n.steps_since_seen = 0
+            elif nid not in self._last_seen:
+                first = self._first_unseen.setdefault(nid, frame)
+                n.steps_since_seen = max(1, frame - first + 1)
             else:
-                if nid not in self._last_seen:
-                    first = self._first_unseen.setdefault(nid, frame)
-                    n.steps_since_seen = max(1, frame - first + 1)
-                else:
-                    n.steps_since_seen = frame - self._last_seen[nid]
+                n.steps_since_seen = frame - self._last_seen[nid]
 
-        # Local-contact exception (uses V_{t-1} -- one-frame lag, acyclic).
-        nodes = self.selector.expand_local_contact(
-            nodes, state, self.selector.prev_selected, masks=masks,
-        )
-
-        # Bug 1 part 2: physical-entity dedup. After both the normal seg-id
-        # path and the local-contact path have populated ``nodes``, collapse
-        # any pair that resolves to the same live SAPIEN entity so a single
-        # entity never claims two slots. Prefer the visible representative and
-        # merge segmentation_ids + mshab flags forward.
-        nodes = _dedup_by_live_entity(nodes, state)
-
-        # Re-classify so newly added local-contact nodes get a pair_type.
+        # Relation vocabulary now uses affordances plus whitelist roles. A
+        # handle is an ordinary object and is interactive only when its role or
+        # affordance says so.
         classify_pair_types(nodes, self.cfg)
 
-        # Track A: hard per-subtask whitelist gate. Everything failing the
-        # gate is dropped here; only the ee node and whitelisted entities
-        # survive into the slot assignment stage.
-        nodes = self.selector.apply_whitelist(nodes)
-
-        # Track A: deterministic overflow truncation -- nearest n_slots to ee
-        # by planar distance, tie-broken on node_id ascending. The only place
-        # distance influences selection.
+        # Deterministic role-aware capacity; distance and node id break ties.
         selected_ids = self.selector.overflow_truncate(nodes)
 
         # Slot assignment (identity-keyed, reset_flag on identity change).
@@ -278,6 +185,8 @@ class GraphBuilder:
         for nid in expired:
             self._last_seen.pop(nid, None)
             self._first_unseen.pop(nid, None)
+            for key in [k for k in self._edge_history if nid in k[:2]]:
+                del self._edge_history[key]
 
         # Build final node list: ee + slots (ordered by slot_id) + padding.
         ee_node = nodes.get("ee")
@@ -308,7 +217,6 @@ class GraphBuilder:
             meta=dict(
                 is_mshab=state.is_mshab,
                 active_subtask=state.active_subtask_type,
-                mshab_object_name=self.mshab_object_name,
                 n_valid=sum(1 for n in ordered if n.valid_mask and n.node_type == "object"),
             ),
         )
@@ -317,9 +225,42 @@ class GraphBuilder:
         # graph.nodes; the relation functions guard against padding via the
         # valid_mask check added there).
         build_absolute_edges(graph, state, self.cfg)
+        self._attach_stale_edges(graph, frame)
         self.temporal.update(graph)
         graph.edges.extend(self.temporal.temporal_edges(graph, self.cfg))
 
         # Commit selection state for next frame.
-        self.selector.commit(selected_ids, nodes, frame)
+        self.selector.commit(nodes, frame)
         return graph, masks, cam, rgb
+
+    def _attach_stale_edges(self, graph: Graph, frame: int) -> None:
+        """Cache fresh relations and restore last observations for stale nodes."""
+        by_id = {n.node_id: n for n in graph.nodes if n.valid_mask}
+        fresh_ids = {nid for nid, n in by_id.items() if not n.frozen_pose}
+        stale_ids = set(by_id) - fresh_ids
+
+        # Replace cached relations only for pairs whose endpoints are both
+        # fresh. Pairs touching stale nodes keep their last fully observed edge.
+        for key in list(self._edge_history):
+            if key[0] in fresh_ids and key[1] in fresh_ids:
+                del self._edge_history[key]
+        for edge in graph.edges:
+            if edge.temporal or edge.stale:
+                continue
+            if edge.src in fresh_ids and edge.dst in fresh_ids:
+                key = (edge.src, edge.dst, edge.relation)
+                self._edge_history[key] = replace(
+                    edge, stale=False, observed_frame=frame, age=0,
+                )
+
+        existing = {(e.src, e.dst, e.relation) for e in graph.edges}
+        for key, cached in self._edge_history.items():
+            if key in existing:
+                continue
+            if cached.src not in by_id or cached.dst not in by_id:
+                continue
+            if cached.src not in stale_ids and cached.dst not in stale_ids:
+                continue
+            observed = cached.observed_frame
+            age = max(1, frame - observed) if observed is not None else 1
+            graph.edges.append(replace(cached, stale=True, age=age))

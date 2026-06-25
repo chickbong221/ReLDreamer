@@ -35,12 +35,8 @@ def parse_args():
     p.add_argument("--width", type=int, default=256)
     p.add_argument("--overlay-size", type=float, default=6.0)
     p.add_argument("--height", type=int, default=256)
-    p.add_argument("--include-goals", action="store_true")
-    p.add_argument("--include-background", action="store_true")
-    p.add_argument("--include-static-scene", action="store_true")
     p.add_argument("--k-persist", type=int, default=None)
     p.add_argument("--n-slots", type=int, default=None)
-    p.add_argument("--no-local-contact", action="store_true")
     p.add_argument("--whitelist-dir", default=None,
                    help="Override the per-subtask whitelist directory.")
     p.add_argument("--out", default=os.path.join(os.path.dirname(__file__),
@@ -73,9 +69,7 @@ def main():
     _apply_ablation_overrides(cfg, args)
     builder = GraphBuilder(
         env, cfg, env_idx=0, env_id=args.env_id,
-        camera=args.camera, include_goals=args.include_goals,
-        include_background=args.include_background,
-        include_static_scene=args.include_static_scene,
+        camera=args.camera,
     )
 
     obs, info = env.reset(seed=args.seed)
@@ -132,8 +126,6 @@ def _apply_ablation_overrides(cfg: dict, args) -> None:
         sel["k_persist"] = int(args.k_persist)
     if args.n_slots is not None:
         sel["n_slots"] = int(args.n_slots)
-    if args.no_local_contact:
-        sel["enable_local_contact"] = False
     if args.whitelist_dir is not None:
         cfg["whitelist_dir"] = args.whitelist_dir
 

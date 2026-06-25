@@ -21,9 +21,8 @@ support:
 affordances:
   asset_path: affordances.json
 
-# Track A: per-subtask whitelists (replaces the soft score + E_domain). The
-# probe loads <subtask>_<canonical_target>.json from this directory at episode
-# reset and fails loud if no file matches. Mine these via
+# The probe loads one per-(subtask,target) whitelist from this directory and
+# fails loud if no file matches. Mine these via
 # tools/build_subtask_whitelists.py.
 whitelists:
   dir: subtask_whitelists
@@ -31,7 +30,6 @@ whitelists:
 selection:
   n_slots: 10                       # hard slot capacity
   k_persist: 5                      # persistence window (frames)
-  enable_local_contact: true        # R7: one-hop V_{t-1} contact expansion
 
 profiles:
 

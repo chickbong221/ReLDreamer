@@ -1,19 +1,17 @@
-"""Step 2 driver: populate $MS_ASSET_DIR/data/robot_success_states/fetch/pick/.
+"""Collect successful Fetch manipulation rollouts into robot_success_states.
 
-Discovers per-object Fetch pick checkpoints under
-``<ckpt-root>/<task>/pick/<obj_id>/policy.pt`` and, for each one, rolls the
-policy out in a vectorised MS-HAB pick env wrapped in
-``FetchCollectRobotInitWrapper`` (teemo_sim_probe/adapters/collect_data.py
--- a local bug-fixed copy of the same class in mshab.envs.wrappers.collect_data
-that we use to keep mshab/ pristine). The wrapper records ``robot_qpos`` and
-``obj_pose_wrt_base`` at every
-``info["success"]`` and, on ``close()``, pickles
-``{obj_id, robot_qpos[Nx15], obj_pose_wrt_base[Nx7]}`` to::
+Discovers checkpoints under
+``<ckpt-root>/<task>/<subtask>/<target>/policy.pt`` and rolls each policy out
+in a vectorised MS-HAB subtask environment wrapped in
+the local ``FetchCollectContactDataWrapper``. MS-HAB remains untouched. The
+wrapper commits one schema-v3 record per successful environment rollout:
+success pose data, every robot-interacted entity, and direct supporters of the
+target/interacted entities. On ``close()`` it writes to::
 
     $MS_ASSET_DIR/data/robot_success_states/fetch/pick/<obj_id>.pkl
 
-That file is exactly what ``build_affordances.py`` (step 3) and
-``build_e_domain.py`` (step 4) consume.
+``build_affordances.py`` consumes the pose arrays and
+``build_subtask_whitelists.py`` consumes ``interaction_rollouts``.
 
 Usage::
 
@@ -41,6 +39,7 @@ from typing import Iterable, List, Optional, Tuple
 
 def _discover_work(
     ckpt_root: Path,
+    subtask: str,
     task_filter: List[str],
     obj_filter: List[str],
 ) -> List[Tuple[str, str, Path]]:
@@ -52,7 +51,7 @@ def _discover_work(
     in alphabetical order.
     """
     seen: dict = {}
-    for pt in sorted(ckpt_root.glob("*/pick/*/policy.pt")):
+    for pt in sorted(ckpt_root.glob(f"*/{subtask}/*/policy.pt")):
         parts = pt.parts
         if len(parts) < 4:
             continue
@@ -68,15 +67,21 @@ def _discover_work(
     return [seen[k] for k in sorted(seen)]
 
 
-def _already_done(asset_dir: Path, obj_id: str, min_samples: int) -> bool:
-    pkl = asset_dir / "robot_success_states" / "fetch" / "pick" / f"{obj_id}.pkl"
+def _already_done(
+    asset_dir: Path, subtask: str, obj_id: str, min_samples: int,
+) -> bool:
+    pkl = asset_dir / "robot_success_states" / "fetch" / subtask / f"{obj_id}.pkl"
     if not pkl.exists():
         return False
     try:
         import pickle
         with open(pkl, "rb") as f:
             d = pickle.load(f)
-        return len(d.get("robot_qpos", [])) >= min_samples
+        return (
+            int(d.get("_schema_version", 0)) >= 3
+            and len(d.get("robot_qpos", [])) >= min_samples
+            and len(d.get("interaction_rollouts", [])) >= min_samples
+        )
     except Exception:
         return False
 
@@ -100,10 +105,10 @@ def _build_env(task: str, obj_id: str, args):
     )
 
     RD = ASSET_DIR / "scene_datasets/replica_cad_dataset/rearrange"
-    plan_fp = RD / "task_plans" / task / "pick" / "train" / f"{obj_id}.json"
+    plan_fp = RD / "task_plans" / task / args.subtask / "train" / f"{obj_id}.json"
     if not plan_fp.exists():
         raise FileNotFoundError(f"missing task plan: {plan_fp}")
-    spawn_data_fp = RD / "spawn_data" / task / "pick" / "train" / "spawn_data.pt"
+    spawn_data_fp = RD / "spawn_data" / task / args.subtask / "train" / "spawn_data.pt"
     plan_data = plan_data_from_file(plan_fp)
     if not plan_data.plans:
         raise RuntimeError(f"{plan_fp} contained no plans")
@@ -115,7 +120,7 @@ def _build_env(task: str, obj_id: str, args):
     task_plans = [plan_data.plans[i % n_plans] for i in range(n_envs)]
 
     env = gym.make(
-        "PickSubtaskTrain-v0",
+        f"{args.subtask.capitalize()}SubtaskTrain-v0",
         num_envs=n_envs,
         obs_mode="rgb+depth+segmentation",
         sim_backend="gpu",
@@ -214,7 +219,11 @@ def parse_args(argv: Optional[Iterable[str]] = None):
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument(
         "--ckpt-root", default="mshab_checkpoints/rl",
-        help="Root containing <task>/pick/<obj_id>/policy.pt subtrees.",
+        help="Root containing <task>/<subtask>/<target>/policy.pt subtrees.",
+    )
+    p.add_argument(
+        "--subtask", default="pick", choices=["pick", "open", "close"],
+        help="Manipulation subtask checkpoint tree to collect.",
     )
     p.add_argument(
         "--n-success", type=int, default=30,
@@ -276,19 +285,24 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         print(f"ERROR: --ckpt-root not found: {ckpt_root}", file=sys.stderr)
         return 2
 
-    work = _discover_work(ckpt_root, args.task, args.obj)
+    work = _discover_work(ckpt_root, args.subtask, args.task, args.obj)
     if not work:
         print("ERROR: no per-object checkpoints matched the filters under "
               f"{ckpt_root}", file=sys.stderr)
         return 2
 
     print(f"[plan] {len(work)} (task, obj) units; n_success target={args.n_success}")
-    print(f"[plan] writing under {asset_dir}/robot_success_states/fetch/pick/")
+    print(
+        f"[plan] writing under "
+        f"{asset_dir}/robot_success_states/fetch/{args.subtask}/"
+    )
     ok = 0
     failed: List[str] = []
     for task, obj_id, ckpt_dir in work:
         print(f"\n=== {task}/{obj_id}   ckpt={ckpt_dir.name} ===")
-        if not args.no_skip_done and _already_done(asset_dir, obj_id, args.n_success):
+        if not args.no_skip_done and _already_done(
+            asset_dir, args.subtask, obj_id, args.n_success,
+        ):
             print(f"[skip] {obj_id}: existing .pkl already has "
                   f">= {args.n_success} samples (use --no-skip-done to redo)")
             ok += 1

@@ -1,4 +1,4 @@
-"""Offline miner: MS-HAB pick-success rollouts -> ``affordances.json``.
+"""Offline miner: successful manipulation rollouts -> ``affordances.json``.
 
 Walks ``ASSET_DIR/robot_success_states/<robot_uid>/pick/<obj_id>.pkl`` (saved
 by ``mshab.envs.wrappers.collect_data.FetchCollectRobotInitWrapper``) and
@@ -74,8 +74,14 @@ def _canonical_key(name: Optional[str]) -> Optional[str]:
     the importer provides. We deliberately import the runtime helper here so
     the two implementations cannot drift.
     """
+    if not name:
+        return None
+    value = str(name)
+    if value.startswith(("actor:", "link:", "object:")):
+        return value
     from teemo_sim_probe.core.affordance import canonical_affordance_key
-    return canonical_affordance_key(name)
+    canonical = canonical_affordance_key(value)
+    return f"actor:{canonical}" if canonical else None
 
 
 # --------------------------------------------------------------------------- #
@@ -325,7 +331,7 @@ def _mine_object(
 
     qpos_list = np.asarray(data["robot_qpos"], dtype=float)
     pose_list = np.asarray(data["obj_pose_wrt_base"], dtype=float)
-    raw_obj_id = data.get("obj_id")
+    raw_obj_id = data.get("entity_key") or data.get("obj_id")
     canonical = _canonical_key(raw_obj_id)
     if canonical is None:
         log.error("%s: obj_id %r did not canonicalize", pkl_path, raw_obj_id)
@@ -460,19 +466,25 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--success-states-dir",
         required=True,
-        help="Path to robot_success_states/ (parent of <robot_uid>/pick/).",
+        help="Path to robot_success_states/ (parent of <robot_uid>/<subtask>/).",
     )
     parser.add_argument(
         "--robot", default="fetch",
         help="Robot uid subdirectory (default: fetch).",
     )
     parser.add_argument(
-        "--subtask", default="pick", choices=["pick"],
-        help="Only 'pick' is supported (place success has ~is_grasped).",
+        "--subtask", default="pick", choices=["pick", "open", "close"],
+        help="Successful manipulation subtask. Place is excluded because its "
+             "success pose is the robot rest pose.",
     )
     parser.add_argument(
         "--out", required=True,
         help="Output affordances.json path.",
+    )
+    parser.add_argument(
+        "--merge-existing", action="store_true",
+        help="Preserve entities already present in --out and update/add the "
+             "entities mined by this run.",
     )
     parser.add_argument(
         "--n-components", type=int, default=4,
@@ -549,11 +561,23 @@ def main(argv: Optional[List[str]] = None) -> int:
             "components": rec["components"],
         }
 
-    # Coverage warnings against the known YCB pool.
-    for ycb in _KNOWN_YCB_POOL:
-        if ycb not in by_object:
-            log.warning("no data for canonical key %s -- runtime will emit no "
-                        "affordance edges for it", ycb)
+    # Coverage warnings apply only to the known pickable actor pool.
+    if args.subtask == "pick":
+        for ycb in _KNOWN_YCB_POOL:
+            if f"actor:{ycb}" not in by_object:
+                log.warning("no data for canonical key %s -- runtime will emit no "
+                            "affordance edges for it", ycb)
+
+    if args.merge_existing and os.path.isfile(args.out):
+        try:
+            with open(args.out) as stream:
+                existing = json.load(stream)
+            existing_objects = existing.get("objects", {})
+            if isinstance(existing_objects, dict):
+                by_object = {**existing_objects, **by_object}
+        except Exception as exc:
+            log.error("failed to merge existing affordance asset %s: %r", args.out, exc)
+            return 2
 
     payload = {
         "_README": (

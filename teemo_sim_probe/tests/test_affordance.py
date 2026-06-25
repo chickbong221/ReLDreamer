@@ -294,6 +294,23 @@ class LookupComponentsTests(unittest.TestCase):
         node = _interactive_obj_node(name="999_phantom", mshab_id="999_phantom")
         self.assertIsNone(lookup_components(s, node))
 
+    def test_link_uses_exact_stable_entity_key(self):
+        key = "link:cabinet-2/drawer_handle"
+        s = AffordanceSet(by_object={
+            key: [AffordanceComponent(np.array([0.0, 0.02, 0.0]), 0.04)],
+        })
+        node = Node(
+            node_id=key,
+            node_type="object",
+            name="drawer_handle",
+            attributes={
+                "is_link": True,
+                "entity_key": key,
+                "pair_type": "interactive_object",
+            },
+        )
+        self.assertIsNotNone(lookup_components(s, node))
+
 
 class HasAffordanceTests(unittest.TestCase):
     def test_true_when_set(self):
@@ -408,15 +425,11 @@ class InteractiveEdgeTests(unittest.TestCase):
 # Persistence stripping
 # --------------------------------------------------------------------------- #
 class PersistenceStrippingTests(unittest.TestCase):
-    def test_snapshot_strips_dynamic_mshab_attrs(self):
+    def test_snapshot_strips_dynamic_component_only(self):
         n = _interactive_obj_node()
-        n.attributes["is_mshab_active_target"] = True
-        n.attributes["mshab_kind"] = "obj"
         n.attributes["affordance_a_star"] = 1
         snap = _snapshot(n)
-        for k in ("is_mshab_active_target", "mshab_kind", "mshab_obj_id",
-                  "affordance_a_star"):
-            self.assertNotIn(k, snap.attributes)
+        self.assertNotIn("affordance_a_star", snap.attributes)
         # Non-dynamic attrs are preserved.
         self.assertIn("is_actor", snap.attributes)
 

@@ -30,7 +30,7 @@ class Node:
 
     persistent: bool = False
     steps_since_seen: int = 0
-    source: str = "segmentation"     # "segmentation" | "mshab_task" | "local_contact"
+    source: str = "segmentation"
     frozen_pose: bool = False
 
     # R12 slot bookkeeping. slot_id == None for the ee node and for bare
@@ -70,6 +70,11 @@ class Edge:
     raw_value: Optional[float] = None
     temporal: bool = False
     masked: bool = False
+    # A stale edge is the last fully observed relation for a pair touching a
+    # frozen persistent node. It is never recomputed from mixed-time poses.
+    stale: bool = False
+    observed_frame: Optional[int] = None
+    age: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

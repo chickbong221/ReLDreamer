@@ -1,4 +1,4 @@
-"""Per-subtask whitelist (replaces R4 domain-level E_domain).
+"""Per-subtask whitelist used as the runtime's sole relevance gate.
 
 The whitelist is a *small* per-(subtask, target) JSON asset, mined offline from
 demonstration contact graphs by ``tools/build_subtask_whitelists.py``. It is
@@ -6,29 +6,25 @@ the hard eligibility gate used by the runtime selector: every non-ee node in a
 frame must have a ``match_key`` listed in the active subtask's whitelist or it
 is dropped before slot assignment.
 
-Asset shape (``_schema_version: 1``)::
+Asset shape (``_schema_version: 2``)::
 
     {
-      "_schema_version": 1,
+      "_schema_version": 2,
       "subtask": "pick",
       "target": "024_bowl",
       "members": {
-        "024_bowl":            {"roles": ["task"],              "kind": "actor"},
-        "drawer3":             {"roles": ["support"],           "kind": "link"},
-        "kitchen_counter":     {"roles": ["support", "state"],  "kind": "link"}
+        "actor:024_bowl":      {"roles": ["task", "interacted"], "kind": "actor"},
+        "link:cabinet/drawer3": {"roles": ["support"],            "kind": "link"}
       }
     }
 
-Match-key conventions (see A3 in the hand-off):
+Match-key conventions:
 
-  * Free actors (YCB objects, ``is_actor=True``): key = ``canonical_affordance_key(name)``.
+  * Free actors: ``actor:<canonical object id>``.
     Strips ``env-N_`` prefix and ``-N`` instance suffix so every instance of the
     same YCB type shares one key.
-  * Articulation links (``is_link=True``): key = ``node.name`` exactly. Bare
-    SAPIEN link names (e.g. ``drawer3``, ``body``) are already specific enough
-    to discriminate sibling drawers of the same cabinet -- canonicalizing them
-    would collapse that distinction.
-  * Everything else: key = ``node.name`` as a defensive fallback.
+  * Articulation links: ``link:<articulation instance>/<link name>``.
+  * Handles are ordinary links and have no special admission path.
 """
 
 from __future__ import annotations
@@ -39,6 +35,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional, Set
 
 from .affordance import canonical_affordance_key
+from .entity_identity import normalize_asset_key
 from .schema import Node
 
 
@@ -55,11 +52,14 @@ def match_key(node: Node) -> Optional[str]:
     if not name:
         return None
     attrs = node.attributes or {}
+    stable = attrs.get("entity_key")
+    if stable:
+        return normalize_asset_key(str(stable), attrs.get("entity_kind"))
     if attrs.get("is_actor"):
-        return canonical_affordance_key(name) or name
+        return normalize_asset_key(canonical_affordance_key(name) or name, "actor")
     if attrs.get("is_link") or attrs.get("is_articulation_link"):
-        return name
-    return name
+        return normalize_asset_key(name, "link")
+    return normalize_asset_key(name)
 
 
 # --------------------------------------------------------------------------- #
@@ -90,9 +90,7 @@ class Whitelist:
 def load_whitelist(path: str) -> Whitelist:
     """Load a per-subtask whitelist. Raises FileNotFoundError if missing.
 
-    Track A is "fail-loud": a missing whitelist must NOT silently fall back to
-    "admit everything", because that's exactly what the soft-score machinery
-    used to do and is the failure mode we're fixing.
+    A missing whitelist must not silently fall back to "admit everything".
     """
     if not path or not os.path.isfile(path):
         raise FileNotFoundError(
@@ -118,7 +116,10 @@ def load_whitelist(path: str) -> Whitelist:
                 for r in roles:
                     if isinstance(r, str):
                         roles_set.add(r)
-        by_key[k] = roles_set or {"task"}
+        kind = entry.get("kind") if isinstance(entry, dict) else None
+        normalized = normalize_asset_key(k, kind)
+        if normalized:
+            by_key[normalized] = roles_set or {"task"}
 
     if not by_key:
         raise ValueError(f"whitelist {path!r}: 'members' is empty")
@@ -142,11 +143,17 @@ def resolve_whitelist_path(
     """Return the on-disk path for ``<subtask>_<target>.json`` if it exists.
 
     Returns None if any of the inputs is missing or the file is absent. The
-    caller decides whether to raise (Track A's fail-loud requirement applies
-    only after we have both subtask + target).
+    caller decides whether to raise.
     """
     if not whitelist_dir or not subtask_type or not target_canonical:
         return None
-    fname = f"{subtask_type}_{target_canonical}.json"
+    target_slug = whitelist_target_slug(target_canonical)
+    fname = f"{subtask_type}_{target_slug}.json"
     path = os.path.join(whitelist_dir, fname)
     return path if os.path.isfile(path) else None
+
+
+def whitelist_target_slug(target_key: str) -> str:
+    """Filesystem-safe target portion shared by runtime and offline miner."""
+    value = str(target_key).split(":", 1)[-1]
+    return value.replace("/", "__").replace("\\", "__").replace(":", "_")

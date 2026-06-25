@@ -1,48 +1,18 @@
-"""Track B collection wrapper: contact-graph capture at success frames.
+"""Local successful-rollout interaction collector (schema version 3).
 
-Extends ``FetchCollectRobotInitWrapper`` to ALSO record, at each per-env
-success transition, the pairwise contact graph in a neighborhood of the
-manipulation target. The existing affordance + e_domain pipeline depended only
-on ``robot_qpos`` and ``obj_pose_wrt_base``; this wrapper preserves both and
-adds the data the new per-subtask whitelist miner needs.
+MS-HAB is treated as read-only.  This wrapper observes the simulator through
+public environment state, buffers each vector environment independently, and
+commits a rollout only when that environment succeeds.
 
-Writes to the SAME path the upstream wrapper used --
-``$MS_ASSET_DIR/robot_success_states/<robot_uid>/<subtask>/<obj_id>.pkl`` --
-so ``build_affordances.py`` keeps reading it unchanged. The pkl is a strict
-superset of the old shape: ``robot_qpos`` and ``obj_pose_wrt_base`` are
-preserved; ``contact_graphs`` is added as a new top-level field that the
-new ``tools/build_subtask_whitelists.py`` consumes.
+For each successful rollout it records:
 
-On-disk pkl shape (schema_version=2)::
+* every non-robot entity contacted by any robot link;
+* the task target;
+* direct supporters of the target and interacted entities (one hop only).
 
-    {
-      "_schema_version": 2,
-      "obj_id":            "024_bowl",
-      "subtask_type":      "pick",
-      "robot_qpos":        [[...15...], ...],            # unchanged
-      "obj_pose_wrt_base": [[x,y,z,qw,qx,qy,qz], ...],   # unchanged
-      "contact_graphs":    [                              # NEW: one per success
-        {
-          "target":     "env-0_024_bowl-3",
-          "target_canonical": "024_bowl",
-          "pairs": [
-            {"a": "env-0_024_bowl-3", "b": "kitchen_counter",
-             "force": 3.4, "dz": 0.012,
-             "a_kind": "actor", "b_kind": "link"},
-            ...
-          ]
-        },
-        ...
-      ]
-    }
-
-Only pairs with ``force > eps_force`` are recorded. The miner then takes the
-transitive closure: target ∪ contacts(target) ∪ contacts(contacts) ∪ ...
-clipped to a small hop budget so unrelated scene clutter doesn't leak in.
-
-Runtime cost: ``get_pairwise_contact_forces`` is O(1) per pair on GPU sim.
-We restrict the scan to entities within a planar radius of the target, so the
-per-step cost is bounded by O(n_nearby) -- well under one ms in practice.
+Robot links are evidence of interaction, never whitelist members.  The legacy
+``robot_qpos`` and ``obj_pose_wrt_base`` arrays remain in the payload so the
+affordance miner continues to consume the same success samples.
 """
 
 from __future__ import annotations
@@ -50,7 +20,7 @@ from __future__ import annotations
 import os
 import pickle
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import gymnasium as gym
 import numpy as np
@@ -60,42 +30,27 @@ from mani_skill import ASSET_DIR
 from mani_skill.agents.robots import Fetch
 
 from teemo_sim_probe.core.affordance import canonical_affordance_key
+from teemo_sim_probe.core.entity_identity import (
+    entity_kind,
+    entity_name,
+    stable_entity_key,
+)
+from teemo_sim_probe.adapters.privileged_state import get_privileged_state
 
 if TYPE_CHECKING:
     from mshab.envs.sequential_task import SequentialTaskEnv
 
 
-_SCHEMA_VERSION = 2
-
-# Pairs whose contact force exceeds this magnitude (Newtons) are recorded.
-# Matches the runtime ``contact.eps_force`` in thresholds.yaml so the miner
-# and runtime use the same "in contact" criterion.
+_SCHEMA_VERSION = 3
 _EPS_FORCE_DEFAULT = 0.05
-
-# Planar radius (m) around the target within which pairs are scanned. Wider
-# than n_slots' overflow radius so the miner sees both direct supports and
-# any second-hop scene structure even when the first hop is small.
-_NEIGHBORHOOD_RADIUS_M = 1.5
+_EPS_Z_DEFAULT = 0.01
+_MIN_VERTICAL_FORCE_RATIO_DEFAULT = 0.5
 
 
 def _to_np(x) -> np.ndarray:
     if hasattr(x, "detach"):
         x = x.detach().cpu().numpy()
     return np.asarray(x)
-
-
-def _entity_name(ent) -> str:
-    return getattr(ent, "name", str(ent))
-
-
-def _entity_kind(ent) -> str:
-    """``actor`` / ``link`` / ``other`` -- mirrors selector match_key kinds."""
-    t = type(ent).__name__
-    if t == "Actor":
-        return "actor"
-    if t == "Link":
-        return "link"
-    return "other"
 
 
 def _entity_xyz(ent, env_idx: int) -> Optional[np.ndarray]:
@@ -110,213 +65,302 @@ def _entity_xyz(ent, env_idx: int) -> Optional[np.ndarray]:
         if env_idx >= p.shape[0]:
             return None
         p = p[env_idx]
-    if p.shape != (3,) or not np.all(np.isfinite(p)):
-        return None
-    return p.astype(float)
+    p = np.asarray(p, dtype=float).reshape(-1)
+    return p[:3] if p.size >= 3 and np.all(np.isfinite(p[:3])) else None
 
 
 def _pairwise_force(scene, a, b, env_idx: int) -> Optional[np.ndarray]:
-    """World-frame contact-force vector for one env, or None on failure."""
     try:
-        f = _to_np(scene.get_pairwise_contact_forces(a, b))
+        force = _to_np(scene.get_pairwise_contact_forces(a, b))
     except Exception:
         return None
-    if f.ndim == 1:
-        return f.astype(float)
-    if env_idx >= f.shape[0]:
+    if force.ndim == 1:
+        return np.asarray(force, dtype=float)
+    if env_idx >= force.shape[0]:
         return None
-    return f[env_idx].astype(float)
+    return np.asarray(force[env_idx], dtype=float)
+
+
+def _record(ent, *, key: Optional[str] = None) -> Optional[Dict[str, str]]:
+    stable = key or stable_entity_key(ent)
+    if not stable:
+        return None
+    return {
+        "key": stable,
+        "name": entity_name(ent),
+        "kind": entity_kind(ent),
+    }
 
 
 class FetchCollectContactDataWrapper(gym.Wrapper):
-    """Drop-in replacement for ``FetchCollectRobotInitWrapper`` that also
-    captures per-success contact graphs around the manipulation target.
-
-    Single-subtask plans only (same constraint as the upstream wrapper); the
-    output pkl is keyed by canonical YCB id, like the existing affordance and
-    success-state pipelines.
-    """
+    """Collect successful-rollout interactions without modifying MS-HAB."""
 
     def __init__(
         self,
         env,
         *,
         eps_force: float = _EPS_FORCE_DEFAULT,
-        neighborhood_radius: float = _NEIGHBORHOOD_RADIUS_M,
+        eps_z: float = _EPS_Z_DEFAULT,
+        min_vertical_force_ratio: float = _MIN_VERTICAL_FORCE_RATIO_DEFAULT,
         out_root: Optional[str] = None,
     ) -> None:
         super().__init__(env)
-        uenv: "SequentialTaskEnv" = env.unwrapped
-        self._base_env = uenv
-        self.agent: Fetch = self._base_env.agent
-        assert isinstance(self.agent, Fetch), (
-            f"{self.__class__.__name__} currently only supports fetch"
-        )
+        base: "SequentialTaskEnv" = env.unwrapped
+        self._base_env = base
+        self.agent: Fetch = base.agent
+        if not isinstance(self.agent, Fetch):
+            raise TypeError(f"{self.__class__.__name__} currently supports Fetch only")
 
-        all_task_plans = [
-            tp for tps in self._base_env.bc_to_task_plans.values() for tp in tps
-        ]
-        assert all(len(tp.subtasks) == 1 for tp in all_task_plans), (
-            "Must have only one subtask"
-        )
+        plans = [tp for values in base.bc_to_task_plans.values() for tp in values]
+        if not plans or not all(len(tp.subtasks) == 1 for tp in plans):
+            raise ValueError("interaction collection requires single-subtask plans")
         canonical_ids = {
             canonical_affordance_key(tp.subtasks[0].obj_id)
-            for tp in all_task_plans
+            for tp in plans
         }
-        assert len(canonical_ids) == 1, (
-            f"All task plans must reference the same canonical object; "
-            f"got {sorted(canonical_ids)}"
-        )
+        if len(canonical_ids) != 1:
+            raise ValueError(
+                "all task plans must reference the same canonical target; "
+                f"got {sorted(canonical_ids)}"
+            )
         self.obj_id = next(iter(canonical_ids))
+        self.subtask_type = plans[0].subtasks[0].type
+        self.num_envs = int(getattr(base, "num_envs", 1))
 
-        tp0 = all_task_plans[0].subtasks[0]
-        self.subtask_type = tp0.type
+        self.eps_force = float(eps_force)
+        self.eps_z = float(eps_z)
+        self.min_vertical_force_ratio = float(min_vertical_force_ratio)
 
         self.success_robot_qpos: List[List[float]] = []
         self.success_obj_pose_wrt_base: List[List[float]] = []
-        self.contact_graphs: List[Dict[str, Any]] = []
+        self.interaction_rollouts: List[Dict[str, Any]] = []
+        self._reset_buffers()
 
-        self.eps_force = float(eps_force)
-        self.neighborhood_radius = float(neighborhood_radius)
-
-        # Drop-in replacement for FetchCollectRobotInitWrapper: same output
-        # path so build_affordances.py keeps working unchanged.
         root = Path(out_root) if out_root else Path(ASSET_DIR) / "robot_success_states"
-        save_dir = root / self._base_env.agent.uid / self.subtask_type
+        save_dir = root / self.agent.uid / self.subtask_type
         os.makedirs(save_dir, exist_ok=True)
         self.save_path = save_dir / f"{self.obj_id}.pkl"
 
-    # ----- per-step --------------------------------------------------------- #
+    def _reset_buffers(self, env_indices=None) -> None:
+        if not hasattr(self, "_episode_interacted"):
+            self._episode_interacted = [dict() for _ in range(self.num_envs)]
+            self._episode_entities = [dict() for _ in range(self.num_envs)]
+            self._episode_supports = [dict() for _ in range(self.num_envs)]
+            self._success_latched = np.zeros(self.num_envs, dtype=bool)
+        indices = range(self.num_envs) if env_indices is None else env_indices
+        for idx in indices:
+            self._episode_interacted[int(idx)].clear()
+            self._episode_entities[int(idx)].clear()
+            self._episode_supports[int(idx)].clear()
+            self._success_latched[int(idx)] = False
+
+    def reset(self, *args, **kwargs):
+        result = super().reset(*args, **kwargs)
+        self._reset_buffers()
+        return result
+
     def step(self, action, *args, **kwargs):
         obs, rew, term, trunc, info = super().step(action, *args, **kwargs)
         if not physx.is_gpu_enabled():
             raise NotImplementedError(
-                f"{self.__class__.__name__} doesn't work on CPU sim yet"
+                f"{self.__class__.__name__} does not support CPU simulation"
             )
+
+        for env_idx in range(self.num_envs):
+            self._observe_step(env_idx)
 
         success = info.get("success")
-        if success is None or len(success) == 0:
-            return obs, rew, term, trunc, info
-
-        success_np = _to_np(success)
-        # robot_qpos & obj_pose_wrt_base: unchanged from upstream wrapper.
-        self.success_robot_qpos += (
-            self.agent.robot.qpos[success].cpu().numpy().tolist()
+        success_np = (
+            np.zeros(self.num_envs, dtype=bool)
+            if success is None else _to_np(success).astype(bool).reshape(-1)
         )
-        self.success_obj_pose_wrt_base += (
-            (
-                self.agent.base_link.pose.inv()
-                * self._base_env.subtask_objs[0].pose
-            )
-            .raw_pose[success].cpu().numpy().tolist()
-        )
+        if success_np.size < self.num_envs:
+            success_np = np.pad(success_np, (0, self.num_envs - success_np.size))
+        newly_successful = success_np[:self.num_envs] & ~self._success_latched
+        for env_idx in np.where(newly_successful)[0].tolist():
+            self._commit_success(int(env_idx))
+            self._success_latched[int(env_idx)] = True
 
-        # NEW: per-success-env contact-graph capture.
-        for env_idx in np.where(success_np)[0].tolist():
-            cg = self._capture_contact_graph(int(env_idx))
-            if cg is not None:
-                self.contact_graphs.append(cg)
+        done = np.logical_or(
+            _to_np(term).astype(bool).reshape(-1),
+            _to_np(trunc).astype(bool).reshape(-1),
+        )
+        self._reset_buffers(np.where(done[:self.num_envs])[0].tolist())
         return obs, rew, term, trunc, info
 
-    # ----- contact-graph snapshot ------------------------------------------ #
-    def _capture_contact_graph(self, env_idx: int) -> Optional[Dict[str, Any]]:
-        e = self._base_env
-        scene = e.scene
-        seg_id_map: Dict[int, Any] = dict(getattr(e, "segmentation_id_map", {}))
-        if not seg_id_map:
-            return None
-
-        target = e.subtask_objs[0]
-        # Per-env name disambiguation: the merged actor's name typically still
-        # carries the env-prefixed instance string for the right env.
-        target_name = _entity_name(target)
-        target_canonical = canonical_affordance_key(target_name) or target_name
-
-        target_xyz = _entity_xyz(target, env_idx)
-
-        # Build the neighborhood entity list. Robot links excluded -- the
-        # whitelist gate is about scene physics, not the manipulator.
+    def _robot_links(self) -> Tuple[List[Any], set]:
         try:
-            robot_links = set(self.agent.robot.get_links())
+            links = list(self.agent.robot.get_links())
         except Exception:
-            robot_links = set()
+            links = []
+        names = {entity_name(link) for link in links}
+        return links, names
 
-        nearby: List[Any] = []
-        for seg_id, ent in seg_id_map.items():
-            if ent is None or seg_id == 0 or ent in robot_links:
+    def _scene_entities(self) -> List[Any]:
+        seg_map = dict(getattr(self._base_env, "segmentation_id_map", {}))
+        robot_links, robot_names = self._robot_links()
+        robot_ids = {id(link) for link in robot_links}
+        entities: List[Any] = []
+        seen = set()
+        for seg_id, ent in seg_map.items():
+            if not seg_id or ent is None:
                 continue
-            if ent is target:
+            if id(ent) in robot_ids or entity_name(ent) in robot_names:
                 continue
-            if target_xyz is not None:
-                xyz = _entity_xyz(ent, env_idx)
-                if xyz is not None:
-                    if np.linalg.norm(xyz[:2] - target_xyz[:2]) > self.neighborhood_radius:
-                        continue
-            nearby.append(ent)
-
-        # Always include the target itself in the participating set.
-        participants = [target] + nearby
-
-        pairs: List[Dict[str, Any]] = []
-        seen: set = set()
-
-        def _add_pair(a, b, force_vec: np.ndarray) -> None:
-            force = float(np.linalg.norm(force_vec))
-            if force <= self.eps_force:
-                return
-            pa = _entity_xyz(a, env_idx)
-            pb = _entity_xyz(b, env_idx)
-            dz: Optional[float] = None
-            if pa is not None and pb is not None:
-                dz = float(pa[2] - pb[2])
-            key = frozenset((id(a), id(b)))
-            if key in seen:
-                return
+            key = stable_entity_key(ent)
+            if not key or key in seen:
+                continue
             seen.add(key)
-            pairs.append({
-                "a": _entity_name(a),
-                "b": _entity_name(b),
-                "a_kind": _entity_kind(a),
-                "b_kind": _entity_kind(b),
-                "force": force,
-                "dz": dz,
-            })
+            entities.append(ent)
+        return entities
 
-        # Target <-> every nearby entity.
-        for ent in nearby:
-            fv = _pairwise_force(scene, target, ent, env_idx)
-            if fv is None:
-                continue
-            _add_pair(target, ent, fv)
-
-        # Second hop: every (nearby_a, nearby_b) pair. Bounded by neighborhood
-        # so this stays O(|nearby|^2) on a small set.
-        n = len(nearby)
-        for i in range(n):
-            a = nearby[i]
-            for j in range(i + 1, n):
-                b = nearby[j]
-                fv = _pairwise_force(scene, a, b, env_idx)
-                if fv is None:
-                    continue
-                _add_pair(a, b, fv)
-
-        return {
-            "target": target_name,
-            "target_canonical": target_canonical,
-            "pairs": pairs,
-        }
-
-    # ----- shutdown --------------------------------------------------------- #
-    def close(self):
-        payload = dict(
-            _schema_version=_SCHEMA_VERSION,
-            obj_id=self.obj_id,
-            subtask_type=self.subtask_type,
-            robot_qpos=self.success_robot_qpos,
-            obj_pose_wrt_base=self.success_obj_pose_wrt_base,
-            contact_graphs=self.contact_graphs,
+    def _target(self, env_idx: int) -> Tuple[Optional[Any], str]:
+        state = get_privileged_state(self, env_idx, mshab_object_name="actual")
+        target = (
+            state.active_handle_link
+            if state.active_handle_link is not None
+            else state.active_obj
         )
-        with open(self.save_path, "wb") as f:
-            pickle.dump(payload, f)
+        if target is not None:
+            key = stable_entity_key(target)
+            if key:
+                return target, key
+        # Pick assets use the original canonical id even when MS-HAB exposes a
+        # merged ``obj_0`` handle internally.
+        return target, f"actor:{self.obj_id}"
+
+    def _observe_step(self, env_idx: int) -> None:
+        scene = self._base_env.scene
+        entities = self._scene_entities()
+        robot_links, _ = self._robot_links()
+        target_ent, target_key = self._target(env_idx)
+
+        entity_by_key: Dict[str, Any] = {}
+        for ent in entities:
+            key = stable_entity_key(ent)
+            if key:
+                entity_by_key[key] = ent
+        if target_ent is not None:
+            # Alias the actual target to the task key when appropriate.
+            raw_key = stable_entity_key(target_ent)
+            if raw_key:
+                entity_by_key[target_key] = target_ent
+
+        interacted = self._episode_interacted[env_idx]
+        episode_entities = self._episode_entities[env_idx]
+        for key, ent in entity_by_key.items():
+            total_force = 0.0
+            for robot_link in robot_links:
+                vector = _pairwise_force(scene, robot_link, ent, env_idx)
+                if vector is not None:
+                    total_force += float(np.linalg.norm(vector))
+            if total_force <= self.eps_force:
+                continue
+            rec = _record(ent, key=key)
+            if rec is not None:
+                rec["max_robot_force"] = float(total_force)
+                prior = interacted.get(key)
+                if prior is None or total_force > prior.get("max_robot_force", 0.0):
+                    interacted[key] = rec
+                episode_entities[key] = ent
+
+        # The target is always a root for support observation, even before the
+        # first robot contact. Other roots are added at their first interaction.
+        roots = dict(episode_entities)
+        if target_ent is not None:
+            roots[target_key] = target_ent
+        for supported_key, supported in roots.items():
+            self._observe_direct_supporters(
+                env_idx, supported_key, supported, entity_by_key,
+            )
+
+    def _observe_direct_supporters(
+        self,
+        env_idx: int,
+        supported_key: str,
+        supported: Any,
+        candidates: Dict[str, Any],
+    ) -> None:
+        supported_xyz = _entity_xyz(supported, env_idx)
+        if supported_xyz is None:
+            return
+        scene = self._base_env.scene
+        for supporter_key, supporter in candidates.items():
+            if supporter_key == supported_key:
+                continue
+            vector = _pairwise_force(scene, supporter, supported, env_idx)
+            if vector is None:
+                continue
+            force = float(np.linalg.norm(vector))
+            if force <= self.eps_force:
+                continue
+            vertical_ratio = abs(float(vector[2])) / force if force > 0 else 0.0
+            if vertical_ratio < self.min_vertical_force_ratio:
+                continue
+            supporter_xyz = _entity_xyz(supporter, env_idx)
+            if supporter_xyz is None or supporter_xyz[2] + self.eps_z >= supported_xyz[2]:
+                continue
+            rec = {
+                "supporter": _record(supporter, key=supporter_key),
+                "supported_key": supported_key,
+                "force": force,
+                "vertical_force_ratio": vertical_ratio,
+                "dz": float(supported_xyz[2] - supporter_xyz[2]),
+            }
+            pair = (supporter_key, supported_key)
+            prior = self._episode_supports[env_idx].get(pair)
+            if prior is None or force > prior.get("force", 0.0):
+                self._episode_supports[env_idx][pair] = rec
+
+    def _commit_success(self, env_idx: int) -> None:
+        # Preserve the legacy affordance samples, but record only the success
+        # transition rather than every frame while success remains true.
+        qpos = _to_np(self.agent.robot.qpos)[env_idx]
+        merged_state = get_privileged_state(
+            self, env_idx, mshab_object_name="merged"
+        )
+        pose_target = (
+            merged_state.active_handle_link
+            if merged_state.active_handle_link is not None
+            else merged_state.active_obj
+        )
+        if pose_target is None or getattr(pose_target, "pose", None) is None:
+            raise RuntimeError("successful rollout has no resolvable target pose")
+        relative_pose = _to_np(
+            (self.agent.base_link.pose.inv() * pose_target.pose).raw_pose
+        )
+        obj_pose = relative_pose[env_idx] if relative_pose.ndim == 2 else relative_pose
+        self.success_robot_qpos.append(np.asarray(qpos, dtype=float).tolist())
+        self.success_obj_pose_wrt_base.append(np.asarray(obj_pose, dtype=float).tolist())
+
+        _target_ent, target_key = self._target(env_idx)
+        interacted = list(self._episode_interacted[env_idx].values())
+        root_keys = {target_key, *(item["key"] for item in interacted)}
+        supports = [
+            value for (_supporter, supported), value
+            in self._episode_supports[env_idx].items()
+            if supported in root_keys and value.get("supporter") is not None
+        ]
+        self.interaction_rollouts.append({
+            "target_key": target_key,
+            "interacted": interacted,
+            "supports": supports,
+        })
+
+    def close(self):
+        entity_key = (
+            self.interaction_rollouts[0].get("target_key")
+            if self.interaction_rollouts else f"actor:{self.obj_id}"
+        )
+        payload = {
+            "_schema_version": _SCHEMA_VERSION,
+            "obj_id": self.obj_id,
+            "entity_key": entity_key,
+            "subtask_type": self.subtask_type,
+            "robot_qpos": self.success_robot_qpos,
+            "obj_pose_wrt_base": self.success_obj_pose_wrt_base,
+            "interaction_rollouts": self.interaction_rollouts,
+        }
+        with open(self.save_path, "wb") as stream:
+            pickle.dump(payload, stream)
         return super().close()

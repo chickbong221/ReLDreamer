@@ -148,11 +148,6 @@ def _resolve_entity(node: Node, state: PrivilegedState):
         ent = state.seg_id_map.get(seg_id)
         if ent is not None and getattr(ent, "name", None) == name:
             return ent
-    if node.attributes.get("is_mshab_active_target"):
-        if node.attributes.get("mshab_kind") == "obj":
-            return state.active_obj
-        if node.attributes.get("mshab_kind") == "handle":
-            return state.active_handle_link
     ents = [state.seg_id_map.get(s) for s in node.segmentation_ids]
     ents = [e for e in ents if e is not None]
     if not ents:
@@ -217,7 +212,7 @@ def ee_static_object_edges(
     for node in graph.nodes:
         if node.node_type != "object" or _is_interactive(node):
             continue
-        if not node.valid_mask:
+        if not node.valid_mask or node.frozen_pose:
             continue
         ent = _resolve_entity(node, state)
         obj_xyz = _xyz(node)
@@ -271,7 +266,7 @@ def ee_interactive_object_edges(
     for node in graph.nodes:
         if node.node_type != "object" or not _is_interactive(node):
             continue
-        if not node.valid_mask:
+        if not node.valid_mask or node.frozen_pose:
             continue
         ent = _resolve_entity(node, state)
 
@@ -331,12 +326,8 @@ def object_object_edges(
 ) -> List[Edge]:
     """Pairwise object--object: mutually exclusive contact or directed support.
 
-    Bug 3a fix: a node is eligible for object-object physics only when it has
-    a non-empty ``segmentation_ids`` list. Maskless graph nodes (e.g. the
-    MS-HAB persistent target during an occlusion, or the now-removed phantom
-    'body' synthesized by the old local-contact path) carry no real geometry,
-    so running ``pairwise_force_vector`` against them produces phantom support
-    edges that propagate into ``lose-support`` temporal transitions.
+    Current physics is evaluated only for fresh segmented nodes. Frozen nodes
+    receive their explicitly marked last-observed edges from ``GraphBuilder``.
     """
     eps_contact = cfg["contact"]["eps_force"]
     eps_z = cfg["support"]["eps_z"]
@@ -347,6 +338,7 @@ def object_object_edges(
         if n.node_type == "object"
         and n.valid_mask
         and n.segmentation_ids
+        and not n.frozen_pose
     ]
     edges: List[Edge] = []
     for i in range(len(objs)):

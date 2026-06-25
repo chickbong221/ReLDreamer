@@ -27,6 +27,11 @@ def _radial_layout(graph: Graph, radius: float) -> Dict[str, np.ndarray]:
     if has_ee:
         pos["ee"] = np.array([0.0, 0.0])
     n = max(len(objects), 1)
+    if has_ee and len(objects) == 1:
+        # Compact sparse layout: a short left-to-right semantic statement.
+        pos["ee"] = np.array([-0.9, 0.0])
+        pos[objects[0]] = np.array([0.9, 0.0])
+        return pos
     r = radius if has_ee else 0.0
     for i, nid in enumerate(objects):
         ang = np.pi / 2 - 2 * np.pi * i / n
@@ -52,7 +57,9 @@ def render_graph(
                 if n.node_type == "object" and n.valid_mask)
     # Scale radius + canvas with node count so crowded graphs spread out.
     radius = 2.2 + 0.18 * max(n_obj - 4, 0)
-    figsize = (max(9, 7 + 0.45 * n_obj), max(8, 6 + 0.40 * n_obj))
+    figsize = (6.4, 4.0) if n_obj <= 2 else (
+        max(9, 7 + 0.45 * n_obj), max(8, 6 + 0.40 * n_obj)
+    )
 
     pos = _radial_layout(graph, radius)
     fig, ax = plt.subplots(figsize=figsize, dpi=130)
@@ -77,21 +84,33 @@ def render_graph(
         u = d / L
         a0 = p0 + u * node_r
         a1 = p1 - u * node_r
+        is_stale = any(e.stale for e in elist)
+        edge_color = "#2f75b5" if is_stale else "#444"
         ax.annotate(
             "", xy=a1, xytext=a0,
-            arrowprops=dict(arrowstyle="-|>", color="#444", lw=1.2,
-                            alpha=0.8),
+            arrowprops=dict(
+                arrowstyle="-|>", color=edge_color, lw=1.5 if is_stale else 1.2,
+                alpha=0.9 if is_stale else 0.8,
+                linestyle=(0, (4, 2)) if is_stale else "solid",
+            ),
             zorder=2,
         )
         # Label toward the object end (65% along) so labels fan outward and
         # don't stack at the center where all edges converge.
         anchor = a0 + (a1 - a0) * 0.62
-        labels = [e.label for e in elist]
+        labels = [f"{e.relation}: {e.label}" for e in elist]
+        label_bg = "#d9ecff" if is_stale else bg
         ax.text(
             anchor[0], anchor[1], "\n".join(labels),
             fontsize=6.5, ha="center", va="center", style="italic",
-            color="#333", zorder=4, linespacing=0.95,
-            bbox=dict(facecolor=bg, edgecolor="none", pad=0.2, alpha=0.85),
+            color=edge_color if is_stale else "#333", zorder=4, linespacing=0.95,
+            bbox=dict(
+                facecolor=label_bg,
+                edgecolor=edge_color if is_stale else "none",
+                linewidth=0.6,
+                pad=0.35,
+                alpha=0.92,
+            ),
         )
 
     for node in graph.nodes:
@@ -101,9 +120,7 @@ def render_graph(
         if not node.valid_mask:
             continue
         x, y = pos[nid]
-        # Retained-with-frozen-pose nodes get a distinctive blue fill + dashed
-        # outline, so they read differently from MS-HAB active-target persistents
-        # (which still receive fresh poses from SAPIEN).
+        # Retained frozen nodes use the same blue language as their stale edges.
         if node.frozen_pose:
             color = (0.29, 0.56, 0.89)        # #4a90e2
             edgecol = "#1c3d6e"

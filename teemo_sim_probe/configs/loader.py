@@ -1,7 +1,7 @@
 """Load thresholds.yaml and flatten the chosen scale profile into ``cfg``.
 
-Track A: E_domain is retired. The runtime gate is now the per-subtask
-whitelist directory (``whitelists.dir``). The affordance asset is still
+The runtime relevance gate is the per-subtask whitelist directory
+(``whitelists.dir``). The affordance asset is still
 required; the whitelist directory is required ONLY when the probe runs the
 selector (it's resolved lazily at episode reset). Pass ``require_assets=False``
 to skip the affordance check -- useful for unit tests that wire their own
@@ -62,7 +62,7 @@ def load_config(
     whitelists_cfg["dir_abs"] = _abs_asset_path(cfg_dir, whitelists_cfg.get("dir"))
 
     selection_cfg = raw.get("selection", {
-        "n_slots": 10, "k_persist": 5, "enable_local_contact": True,
+        "n_slots": 10, "k_persist": 5,
     })
 
     aff_set = load_affordance_set(affordances_cfg["asset_path_abs"])
@@ -85,6 +85,5 @@ def load_config(
         "selection": selection_cfg,
         "profile": raw["profiles"][profile],
         "profile_name": profile,
-        "node": raw.get("node", {"min_pixels": 32, "min_area_ratio": 0.0005}),
     }
     return cfg

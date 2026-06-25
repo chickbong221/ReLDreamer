@@ -1,4 +1,4 @@
-"""Tests for NodeSelector + SlotManager (Track A: hard whitelist gate)."""
+"""Tests for whitelist selection, persistence, and slot assignment."""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ class _State:
         return np.zeros(3)
 
 
-def _cfg(n_slots=10, k_persist=5, enable_local=True, aff_set=None):
+def _cfg(n_slots=10, k_persist=5, aff_set=None):
     return {
         "contact": {"eps_force": 0.05},
         "grasp": {"max_angle": 30},
@@ -56,7 +56,6 @@ def _cfg(n_slots=10, k_persist=5, enable_local=True, aff_set=None):
         "selection": {
             "n_slots": n_slots,
             "k_persist": k_persist,
-            "enable_local_contact": enable_local,
         },
     }
 
@@ -99,12 +98,12 @@ def _whitelist(members):
 
 
 # --------------------------------------------------------------------------- #
-# Whitelist gate (Track A core)
+# Whitelist gate
 # --------------------------------------------------------------------------- #
 class WhitelistGateTests(unittest.TestCase):
     def test_drops_off_whitelist_actor(self):
         sel = NodeSelector(_cfg())
-        sel.set_whitelist(_whitelist({"024_bowl": {"task"}}))
+        sel.set_whitelist(_whitelist({"actor:024_bowl": {"task"}}))
         bowl = _obj("env-0_024_bowl-3", (0.1, 0, 0))   # canonicalizes to 024_bowl
         scrap = _obj("env-0_999_phantom-1", (0.2, 0, 0))
         out = sel.apply_whitelist({"ee": _ee(), bowl.node_id: bowl, scrap.node_id: scrap})
@@ -115,7 +114,9 @@ class WhitelistGateTests(unittest.TestCase):
     def test_link_specificity(self):
         """A whitelist with `drawer3` must NOT admit `drawer1`/`drawer2`."""
         sel = NodeSelector(_cfg())
-        sel.set_whitelist(_whitelist({"024_bowl": {"task"}, "drawer3": {"support"}}))
+        sel.set_whitelist(_whitelist({
+            "actor:024_bowl": {"task"}, "link:drawer3": {"support"},
+        }))
         bowl = _obj("env-0_024_bowl-3", (0.0, 0, 0))
         d1 = _link("drawer1", (0.1, 0, 0))
         d3 = _link("drawer3", (0.2, 0, 0))
@@ -132,12 +133,14 @@ class WhitelistGateTests(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
-# Overflow truncation (Track A determinism)
+# Role-aware overflow determinism
 # --------------------------------------------------------------------------- #
 class OverflowTruncationTests(unittest.TestCase):
     def test_keeps_nearest_to_ee(self):
         sel = NodeSelector(_cfg(n_slots=2))
-        sel.set_whitelist(_whitelist({"a": {"task"}, "b": {"task"}, "c": {"task"}}))
+        sel.set_whitelist(_whitelist({
+            "actor:a": {"task"}, "actor:b": {"task"}, "actor:c": {"task"},
+        }))
         nodes = {
             "ee": _ee(),
             "actor:a": _obj("a", (0.1, 0, 0)),
@@ -159,6 +162,21 @@ class OverflowTruncationTests(unittest.TestCase):
         out = sel.overflow_truncate(nodes)
         self.assertEqual(out, ["actor:a", "actor:b"])
 
+    def test_role_priority_precedes_distance(self):
+        sel = NodeSelector(_cfg(n_slots=2))
+        task = _obj("task", (2.0, 0, 0), attrs={"whitelist_roles": ["task"]})
+        support = _obj(
+            "support", (3.0, 0, 0), attrs={"whitelist_roles": ["support"]},
+        )
+        nearby = _obj(
+            "nearby", (0.1, 0, 0), attrs={"whitelist_roles": ["interacted"]},
+        )
+        out = sel.overflow_truncate({
+            "ee": _ee(), task.node_id: task, support.node_id: support,
+            nearby.node_id: nearby,
+        })
+        self.assertEqual(out, [task.node_id, support.node_id])
+
 
 # --------------------------------------------------------------------------- #
 # Persistence horizon (Bug P)
@@ -167,7 +185,7 @@ class PersistenceTests(unittest.TestCase):
     def test_visible_node_kept_within_k(self):
         sel = NodeSelector(_cfg(k_persist=3))
         n0 = _obj("bowl", (0.1, 0.0, 0.0))
-        sel.commit(["actor:bowl"], {"actor:bowl": n0}, frame=0)
+        sel.commit({"actor:bowl": n0}, frame=0)
         merged = sel.merge_persistent({}, frame=3)
         self.assertIn("actor:bowl", merged)
         self.assertTrue(merged["actor:bowl"].persistent)
@@ -185,21 +203,21 @@ class PersistenceTests(unittest.TestCase):
         sel = NodeSelector(_cfg(k_persist=4))
         bowl = _obj("bowl", (0.1, 0.0, 0.0))
         # selected_ids is EMPTY but bowl is visible.
-        sel.commit([], {"actor:bowl": bowl}, frame=0)
+        sel.commit({"actor:bowl": bowl}, frame=0)
         merged = sel.merge_persistent({}, frame=2)
         self.assertIn("actor:bowl", merged)
 
     def test_evict_expired_drops_only_aged_out(self):
         sel = NodeSelector(_cfg(k_persist=3))
-        sel.commit([], {"actor:bowl": _obj("bowl", (0.1, 0, 0))}, frame=0)
-        sel.commit([], {"actor:cup":  _obj("cup",  (0.2, 0, 0))}, frame=2)
+        sel.commit({"actor:bowl": _obj("bowl", (0.1, 0, 0))}, frame=0)
+        sel.commit({"actor:cup":  _obj("cup",  (0.2, 0, 0))}, frame=2)
         expired = sel.evict_expired(frame=4)
         # bowl: age=4, > 3 -> expired. cup: age=2, kept.
         self.assertEqual(expired, ["actor:bowl"])
 
     def test_k_persist_zero_disables_persistence(self):
         sel = NodeSelector(_cfg(k_persist=0))
-        sel.commit([], {"actor:bowl": _obj("bowl", (0.1, 0, 0))}, frame=0)
+        sel.commit({"actor:bowl": _obj("bowl", (0.1, 0, 0))}, frame=0)
         self.assertEqual(sel.merge_persistent({}, frame=1), {})
 
 
@@ -233,33 +251,6 @@ class SlotManagerTests(unittest.TestCase):
         sm = SlotManager(n_slots=2)
         out = sm.assign(["a", "b", "c", "d"])
         self.assertEqual(len(out), 2)
-
-
-# --------------------------------------------------------------------------- #
-# Local-contact expansion (Bugs 1 + 2 surface coverage)
-# --------------------------------------------------------------------------- #
-class LocalContactTests(unittest.TestCase):
-    def test_adds_ee_touching_entity_under_canonical_key(self):
-        """Bug 1: keys land in canonical_object_key namespace, not local:."""
-        sel = NodeSelector(_cfg())
-        ent = _Ent("scratchpad")
-        state = _State(contacts={ent})
-        state.seg_id_map = {7: ent}
-        out = sel.expand_local_contact({"ee": _ee()}, state, prev_selected=set())
-        added = [n for n in out.values()
-                 if n.attributes.get("is_local_contact")]
-        self.assertEqual(len(added), 1)
-        self.assertEqual(added[0].name, "scratchpad")
-        # Old namespace must be gone.
-        self.assertNotIn("local:scratchpad", out)
-
-    def test_disabled_by_flag(self):
-        sel = NodeSelector(_cfg(enable_local=False))
-        ent = _Ent("scratchpad")
-        state = _State(contacts={ent})
-        state.seg_id_map = {7: ent}
-        out = sel.expand_local_contact({"ee": _ee()}, state, set())
-        self.assertNotIn("local:scratchpad", out)
 
 
 if __name__ == "__main__":

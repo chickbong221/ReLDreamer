@@ -6,7 +6,7 @@ agnostic (numpy only, no SAPIEN / ManiSkill imports) so the asset can be reused
 across benchmarks -- MS-HAB today, vanilla ManiSkill / BEHAVIOR-1K next -- as
 long as the offline miner produces the JSON shape below.
 
-Per object key, the asset stores a sparse list of components. Each component is
+Per stable actor or articulation-link key, the asset stores components. Each is
 ``(anchor_obj_frame, approach_dir_obj_frame, preferred_width)``:
 
   * ``anchor_obj_frame`` -- 3D point in the OBJECT frame, in metres.
@@ -85,8 +85,8 @@ def _quat_wxyz_to_rotmat(q: np.ndarray) -> Optional[np.ndarray]:
 # Key canonicalization
 # --------------------------------------------------------------------------- #
 # MS-HAB exposes per-env-prefixed and per-instance-suffixed actor names
-# (env-0_024_bowl-3). The miner and runtime both canonicalize them down to the
-# benchmark's object key (024_bowl) so they share one table.
+# (env-0_024_bowl-3). Actor fallbacks canonicalize them to the benchmark key.
+# Articulation links use their exact qualified stable key.
 _ENV_PREFIX_RE = re.compile(r"^env-\d+_")
 _INSTANCE_SUFFIX_RE = re.compile(r"-\d+$")
 
@@ -119,7 +119,7 @@ def load_affordance_set(path: Optional[str]) -> AffordanceSet:
         { "_README": "...",
           "_schema_version": 2,
           "objects": {
-            "024_bowl": { "components": [
+            "actor:024_bowl": { "components": [
                 {"anchor": [x, y, z],
                  "approach_dir": [ax, ay, az],   # optional, OBJECT frame unit
                  "width": 0.045},
@@ -265,14 +265,24 @@ def lookup_components(
     """Resolve component list for an object node.
 
     Lookup order:
-      1. canonicalize ``node.attributes['mshab_obj_id']`` (set by node_builder
-         when an MS-HAB active target carries an obj_id);
-      2. fall back to canonicalize ``node.name`` (works for any benchmark that
-         names actors with the canonical object key).
+      1. exact stable ``entity_key`` (supports actors and articulation links);
+      2. legacy actor key without the ``actor:`` prefix;
+      3. legacy MS-HAB object id;
+      4. canonicalized display name.
     Returns ``None`` if the set is empty or no match.
     """
     if aff_set is None or aff_set.is_empty():
         return None
+
+    entity_key = node.attributes.get("entity_key") if node.attributes else None
+    if entity_key:
+        entity_key = str(entity_key)
+        if entity_key in aff_set.by_object:
+            return aff_set.by_object[entity_key]
+        if entity_key.startswith("actor:"):
+            legacy_actor = entity_key.split(":", 1)[1]
+            if legacy_actor in aff_set.by_object:
+                return aff_set.by_object[legacy_actor]
 
     mshab_id = node.attributes.get("mshab_obj_id") if node.attributes else None
     key = canonical_affordance_key(mshab_id) if mshab_id else None

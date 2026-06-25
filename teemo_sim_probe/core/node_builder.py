@@ -6,9 +6,11 @@ Implements the detection rules from the design doc:
   R2  merge gripper / tcp / finger links into the single ``ee`` node
   R3  every non-bg, non-robot Actor  -> object node
   R4  every non-robot Link           -> object node (articulation parts/handles)
-  R5  exclude helper/goal actors by default (``include_goals`` to keep)
-  R6  minimum visible-area threshold (with active-target exception)
-  R7  add MS-HAB active target even if not currently visible (persistent)
+  R5  every admitted object comes from current segmentation
+
+Task relevance is decided later by the hard per-subtask whitelist.  This
+module deliberately avoids name-based scene filtering so a visible supporter
+or articulation link cannot be discarded before the whitelist sees it.
 """
 
 from __future__ import annotations
@@ -17,7 +19,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .affordance import canonical_affordance_key, has_affordance
+from .affordance import has_affordance
+from .entity_identity import entity_kind, stable_entity_key, stable_node_id
 from .schema import Node
 from .mask_extractor import (
     MaskAccumulator,
@@ -62,57 +65,9 @@ def _is_ee_link(entity, ee_links: List[Any]) -> bool:
     return getattr(entity, "name", None) in ee_names
 
 
-# Substrings that mark a helper/goal/visualization actor (R5).
-_GOAL_HINTS = ("goal", "ee_rest", "site", "marker", "target_site")
-
-# Substrings that mark scene background / static furniture clutter.
-# MS-HAB exposes these as actors (e.g. "scs-[0]_scene_background",
-# "scs-[0]_frl_apartment_table_02-4"); the draft keeps only the end-effector
-# and manipulation-relevant objects, so these are filtered by default.
-_BACKGROUND_HINTS = (
-    "scene_background", "background", "_bg",
-)
-_STATIC_SCENE_HINTS = (
-    "frl_apartment", "apartment_", "_wall", "_floor", "_ceiling",
-    "room_", "stage", "arena",
-)
-
-# Substrings that strongly imply a STATIC scene object (support surface /
-# obstacle / structure) even when not filtered out of the graph entirely.
-# Used only to set ``pair_type`` when the object has no affordance set.
-_STATIC_PAIR_HINTS = (
-    "table", "wall", "floor", "ground", "counter", "cabinet_body",
-    "fridge_body", "sink", "shelf", "support", "obstacle", "ceiling",
-)
-
-# Articulated-part hints that are manipulation-relevant => interactive even
-# without a mined affordance asset (e.g. drawer / cabinet / fridge handles).
-# Active MS-HAB handle links are also forced interactive below.
-_INTERACTIVE_PART_HINTS = ("handle", "knob", "lever", "drawer")
-
-
-def _is_helper_goal(entity) -> bool:
-    name = _entity_name(entity).lower()
-    return any(h in name for h in _GOAL_HINTS)
-
-
-def _is_background(entity) -> bool:
-    name = _entity_name(entity).lower()
-    return any(h in name for h in _BACKGROUND_HINTS)
-
-
-def _is_static_scene(entity) -> bool:
-    name = _entity_name(entity).lower()
-    return any(h in name for h in _STATIC_SCENE_HINTS)
-
-
 def canonical_object_key(entity) -> str:
     """Stable node id. ManiSkill already provides stable simulator objects."""
-    if _is_actor(entity):
-        return f"actor:{_entity_name(entity)}"
-    if _is_link(entity):
-        return f"link:{_entity_name(entity)}"
-    return f"obj:{_entity_name(entity)}"
+    return stable_node_id(entity)
 
 
 # --------------------------------------------------------------------------- #
@@ -150,27 +105,10 @@ def make_object_node(entity, state: PrivilegedState) -> Node:
             is_actor=_is_actor(entity),
             is_link=_is_link(entity),
             is_articulation_link=_is_link(entity),
+            entity_kind=entity_kind(entity),
+            entity_key=stable_entity_key(entity),
         ),
     )
-
-
-def make_persistent_target_node(entity, state: PrivilegedState, kind: str) -> Node:
-    node = make_object_node(entity, state)
-    node.visible = False
-    node.persistent = True
-    node.source = "mshab_task"
-    node.attributes["is_mshab_active_target"] = True
-    node.attributes["mshab_kind"] = kind          # "obj" | "handle"
-    if kind == "obj":
-        # Carry the canonical YCB key forward so affordance lookup works even
-        # when the segmentation node uses the env-prefixed scene name. Handles
-        # do not have an affordance asset, so we deliberately omit it for them.
-        oid = state.active_obj_id
-        canonical = canonical_affordance_key(oid) if oid else \
-            canonical_affordance_key(node.name)
-        if canonical:
-            node.attributes["mshab_obj_id"] = canonical
-    return node
 
 
 # --------------------------------------------------------------------------- #
@@ -181,11 +119,6 @@ def build_nodes(
     state: PrivilegedState,
     *,
     camera: Optional[str] = None,
-    include_goals: bool = False,
-    include_background: bool = False,
-    include_static_scene: bool = False,
-    min_pixels: int = 32,
-    min_area_ratio: float = 0.0005,
     seg_override: Optional[np.ndarray] = None,
     rgb_override: Optional[np.ndarray] = None,
     camera_override: Optional[str] = None,
@@ -206,7 +139,7 @@ def build_nodes(
         cam = pick_camera(obs, camera)
         rgb, seg, _depth = extract_camera_obs(obs, cam, state.env_idx)
     H, W = seg.shape
-    masks = MaskAccumulator(H, W, seg=seg)
+    masks = MaskAccumulator(H, W)
 
     nodes: Dict[str, Node] = {}
 
@@ -228,21 +161,11 @@ def build_nodes(
                 nodes["ee"].segmentation_ids.append(seg_id)
             continue
 
-        # R5: helper/goal actors excluded unless requested.
-        if _is_helper_goal(entity) and not include_goals:
-            continue
-
-        # Background scene actor excluded unless requested (draft filters bg).
-        if _is_background(entity) and not include_background:
-            continue
-
-        # Static scene furniture (apartment props, walls) excluded by default.
-        if _is_static_scene(entity) and not include_static_scene:
-            continue
-
-        # R6: area threshold.
+        # Every non-empty current mask becomes a candidate.  The whitelist is
+        # the sole relevance gate, so supporters and ordinary links are not
+        # lost to name or area heuristics before mask registration.
         area = pixel_area(m)
-        if area < min_pixels and (area / (H * W)) < min_area_ratio:
+        if area <= 0:
             continue
 
         # R3 / R4: actor or non-robot link -> object node.
@@ -255,39 +178,7 @@ def build_nodes(
 
     nodes["ee"].pixel_area = masks.area("ee")
 
-    # 7. MS-HAB active target persistence (added even if mask empty).
-    if state.is_mshab:
-        _add_mshab_targets(nodes, masks, state)
-
     return nodes, masks, cam, rgb
-
-
-def _add_mshab_targets(
-    nodes: Dict[str, Node], masks: MaskAccumulator, state: PrivilegedState
-) -> None:
-    """R7: ensure the current subtask's obj / handle exist as object nodes."""
-    for entity, kind in (
-        (state.active_obj, "obj"),
-        (state.active_handle_link, "handle"),
-    ):
-        if entity is None:
-            continue
-        key = canonical_object_key(entity)
-        if key in nodes:
-            nodes[key].attributes["is_mshab_active_target"] = True
-            nodes[key].attributes["mshab_kind"] = kind
-            if kind == "obj":
-                # mshab_obj_id lets affordance lookup work even when the
-                # segmentation node's display name is env-prefixed
-                # ("env-0_024_bowl-3") rather than the canonical YCB key.
-                oid = state.active_obj_id
-                canonical = canonical_affordance_key(oid) if oid else \
-                    canonical_affordance_key(nodes[key].name)
-                if canonical:
-                    nodes[key].attributes["mshab_obj_id"] = canonical
-        else:
-            # Not visible this frame -> persistent, mask empty.
-            nodes[key] = make_persistent_target_node(entity, state, kind)
 
 
 # --------------------------------------------------------------------------- #
@@ -300,40 +191,32 @@ def _add_mshab_targets(
 #
 # Eligibility rule (most specific wins):
 #   1. object has a mined affordance set            -> interactive_object
-#   2. object is the MS-HAB active handle link      -> interactive_object
-#   3. name matches an interactive part hint         -> interactive_object
-#   4. name matches a static-pair hint               -> static_object
-#   5. otherwise: free actors default interactive, links default static.
-# Rule (1) is the primary "has-an-affordance-set" criterion; (2)-(5) are
-# fallbacks for objects not yet mined or benchmarks that have no asset yet.
+#   2. whitelist role contains task/interacted       -> interactive_object
+#   3. whitelist role is support only                -> static_object
+#   4. otherwise: free actors default interactive, links default static.
 def classify_pair_types(nodes: Dict[str, Node], cfg: dict) -> None:
     """Annotate each object node in place with ``attributes['pair_type']``."""
     aff_set = cfg.get("affordance_set")
     for node in nodes.values():
         if node.node_type != "object":
             continue
-        name = node.name.lower()
         attrs = node.attributes
 
         # (1) affordance asset present -> interactive.
         if aff_set is not None and has_affordance(aff_set, node):
             attrs["pair_type"] = "interactive_object"
             continue
-        # (2) active MS-HAB handle link -> interactive (no asset, but it is a
-        #     manipulation-relevant articulated part this subtask).
-        if (attrs.get("is_mshab_active_target")
-                and attrs.get("mshab_kind") == "handle"):
+        roles = set(attrs.get("whitelist_roles") or [])
+        # (2) task and interacted members are ordinary interactive objects.
+        if roles.intersection({"task", "interacted"}):
             attrs["pair_type"] = "interactive_object"
             continue
-        # (3) interactive part by name (handle / knob / lever / drawer).
-        if any(h in name for h in _INTERACTIVE_PART_HINTS):
-            attrs["pair_type"] = "interactive_object"
-            continue
-        # (4) static structure / support surface by name.
-        if any(h in name for h in _STATIC_PAIR_HINTS):
+        # (3) direct supporters are static unless they have their own mined
+        # affordance, handled above.
+        if "support" in roles:
             attrs["pair_type"] = "static_object"
             continue
-        # (5) default by entity kind: links are usually structure, free actors
+        # (4) default by entity kind: links are usually structure, free actors
         #     are usually manipulable. Interactive default lets a not-yet-mined
         #     manipulation object still receive center-based interactive
         #     relations (orientation-alignment is simply skipped without an
