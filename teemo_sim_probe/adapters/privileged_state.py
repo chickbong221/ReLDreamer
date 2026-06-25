@@ -76,6 +76,12 @@ class PrivilegedState:
         forces = _to_np(self.scene.get_pairwise_contact_forces(a, b))
         if forces.ndim == 1:
             return forces.astype(float)
+        # ManiSkill builds the contact query from ``zip(a._bodies, b._bodies)``
+        # (mani_skill/envs/scene.py), so when one entity is a per-env wrapper
+        # with a single body the result is shape (1, 3) regardless of env_idx.
+        # That pair is also cross-scene (zero contact), so treat as no contact.
+        if self.env_idx >= forces.shape[0]:
+            return np.zeros(3, dtype=float)
         return np.asarray(forces[self.env_idx], dtype=float)
 
     def pairwise_force(self, a: Any, b: Any) -> float:
@@ -97,7 +103,10 @@ class PrivilegedState:
             g = self.agent.is_grasping(obj, max_angle=max_angle)
         except TypeError:
             g = self.agent.is_grasping(obj)
-        return bool(_to_np(g)[self.env_idx])
+        g = _to_np(g).reshape(-1)
+        if self.env_idx >= g.shape[0]:
+            return False
+        return bool(g[self.env_idx])
 
 
 # --------------------------------------------------------------------------- #
