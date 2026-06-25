@@ -50,29 +50,27 @@ class ObjectRelationTests(unittest.TestCase):
             ("table", "cube", "support"),
         )
 
-    def test_horizontal_touch_emits_contact_plus_masked_no_support(self):
+    def test_horizontal_touch_emits_only_contact(self):
         left = _node("left", 0.0)
         right = _node("right", 0.2)
         graph = Graph(0, "env", "cam", nodes=[left, right])
 
         edges = object_object_edges(graph, _State([2.0, 0.0, 0.1]), _cfg())
 
-        rels = {(e.relation, e.label, e.masked) for e in edges}
-        self.assertIn(("contact", "contact", False), rels)
-        self.assertIn(("support", "no-support", True), rels)
-        self.assertEqual(len(edges), 2)
+        self.assertEqual(len(edges), 1)
+        self.assertEqual(
+            (edges[0].relation, edges[0].label, edges[0].masked),
+            ("contact", "contact", False),
+        )
 
-    def test_no_touch_emits_masked_no_contact_and_no_support(self):
+    def test_no_touch_emits_no_edges(self):
         a = _node("a", 0.0)
         b = _node("b", 1.0)
         graph = Graph(0, "env", "cam", nodes=[a, b])
 
         edges = object_object_edges(graph, _State([0.0, 0.0, 0.0]), _cfg())
 
-        rels = {(e.relation, e.label, e.masked) for e in edges}
-        self.assertIn(("contact", "no-contact", True), rels)
-        self.assertIn(("support", "no-support", True), rels)
-        self.assertEqual(len(edges), 2)
+        self.assertEqual(edges, [])
 
 
 if __name__ == "__main__":

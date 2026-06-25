@@ -12,7 +12,8 @@ produces a sparse set of affordance components per object:
 Per success sample:
 
     width = robot_qpos[-2] + robot_qpos[-1]    # qpos-sum convention
-    tcp_in_base = FK(Fetch, robot_qpos)        # SAPIEN required
+    tcp_in_base = data["tcp_pose_wrt_base"][i] # schema v4 from collector
+                  # or FK(Fetch, robot_qpos)   # legacy v3 fallback (SAPIEN)
     anchor_obj  = inv(obj_pose_wrt_base) * tcp_in_base   (position only)
 
 N samples per object -> K components via farthest-point + k-means on anchors;
@@ -318,11 +319,13 @@ def _load_pkl(path: Path) -> Optional[Dict]:
         log.error("missing keys in %s: have=%s, need=%s",
                   path, sorted(data), required)
         return None
+    # tcp_pose_wrt_base is optional (added in schema v4). When present we
+    # prefer it over URDF FK; FK is the legacy fallback.
     return data
 
 
 def _mine_object(
-    pkl_path: Path, fk: _FetchFK, n_components: int, max_samples: int,
+    pkl_path: Path, fk: Optional[_FetchFK], n_components: int, max_samples: int,
     approach_axis_local: np.ndarray,
 ) -> Optional[Dict]:
     data = _load_pkl(pkl_path)
@@ -331,6 +334,9 @@ def _mine_object(
 
     qpos_list = np.asarray(data["robot_qpos"], dtype=float)
     pose_list = np.asarray(data["obj_pose_wrt_base"], dtype=float)
+    tcp_in_base_list: Optional[np.ndarray] = None
+    if "tcp_pose_wrt_base" in data and data["tcp_pose_wrt_base"]:
+        tcp_in_base_list = np.asarray(data["tcp_pose_wrt_base"], dtype=float)
     raw_obj_id = data.get("entity_key")
     canonical = _canonical_key(raw_obj_id)
     if canonical is None:
@@ -353,6 +359,23 @@ def _mine_object(
         log.error("%s: qpos width %d < 2 (need gripper joints)",
                   pkl_path, qpos_list.shape[1])
         return None
+    if tcp_in_base_list is not None:
+        if (
+            tcp_in_base_list.ndim != 2
+            or tcp_in_base_list.shape[0] != qpos_list.shape[0]
+            or tcp_in_base_list.shape[1] < 7
+        ):
+            log.error(
+                "%s: tcp_pose_wrt_base shape %s incompatible with qpos %s",
+                pkl_path, tcp_in_base_list.shape, qpos_list.shape,
+            )
+            return None
+    elif fk is None:
+        log.error(
+            "%s: no tcp_pose_wrt_base (schema-v4) and no FK fallback available",
+            pkl_path,
+        )
+        return None
 
     n_samples = qpos_list.shape[0]
     if n_samples == 0:
@@ -364,6 +387,8 @@ def _mine_object(
         sel = np.random.default_rng(0).choice(n_samples, size=max_samples, replace=False)
         qpos_list = qpos_list[sel]
         pose_list = pose_list[sel]
+        if tcp_in_base_list is not None:
+            tcp_in_base_list = tcp_in_base_list[sel]
         n_samples = max_samples
 
     anchors_obj: List[np.ndarray] = []
@@ -373,10 +398,13 @@ def _mine_object(
     for i in range(n_samples):
         qpos = qpos_list[i]
         obj_pose = pose_list[i, :7]
-        tcp_in_base = fk.tcp_in_base(qpos)
-        if tcp_in_base is None:
-            fk_failures += 1
-            continue
+        if tcp_in_base_list is not None:
+            tcp_in_base = tcp_in_base_list[i, :7]
+        else:
+            tcp_in_base = fk.tcp_in_base(qpos)
+            if tcp_in_base is None:
+                fk_failures += 1
+                continue
         anchor = _inv_transform_point(obj_pose, tcp_in_base[:3])
         if anchor is None or not np.all(np.isfinite(anchor)):
             continue
@@ -520,18 +548,27 @@ def main(argv: Optional[List[str]] = None) -> int:
         log.error("expected directory %s does not exist", root)
         return 2
 
+    # FK is only a fallback for legacy (schema < 4) PKLs that do not carry
+    # ``tcp_pose_wrt_base``. Schema-v4 PKLs are anchor-correct without FK and
+    # do not need a URDF, so we set ``fk`` to None when FK setup fails rather
+    # than aborting.
     urdf_path = args.urdf or _default_fetch_urdf()
-    if not urdf_path:
-        log.error("Could not locate fetch.urdf. Pass --urdf explicitly.")
-        return 2
-    log.info("FK URDF: %s", urdf_path)
-
-    try:
-        fk = _FetchFK(urdf_path, tcp_link_name=args.tcp_link)
-    except Exception as exc:
-        log.error("FK setup failed: %s", exc)
-        log.error("Refusing to write placeholder anchors; aborting.")
-        return 2
+    fk: Optional[_FetchFK] = None
+    if urdf_path:
+        log.info("FK URDF (legacy fallback): %s", urdf_path)
+        try:
+            fk = _FetchFK(urdf_path, tcp_link_name=args.tcp_link)
+        except Exception as exc:
+            log.warning(
+                "FK setup failed (%s); legacy PKLs without tcp_pose_wrt_base "
+                "will be skipped",
+                exc,
+            )
+    else:
+        log.warning(
+            "Could not locate fetch.urdf; legacy PKLs without "
+            "tcp_pose_wrt_base will be skipped"
+        )
 
     pkls = sorted(root.glob("*.pkl"))
     if not pkls:

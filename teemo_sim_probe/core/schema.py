@@ -75,6 +75,7 @@ class Edge:
     stale: bool = False
     observed_frame: Optional[int] = None
     age: int = 0
+    attributes: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

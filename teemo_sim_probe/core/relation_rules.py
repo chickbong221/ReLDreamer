@@ -302,17 +302,26 @@ def ee_interactive_object_edges(
                     ang,
                 ))
 
-        # contact predicate.
+        # Compute grasp first; while grasped the contact edge is suppressed
+        # (grasp owns the interaction). The contact edge is still emitted so
+        # downstream consumers can audit force, but it is masked from the
+        # render and tagged so the temporal buffer treats it as not observed
+        # (rather than emitting a phantom lose-contact at grasp onset).
+        grasped = False
+        if _graspable(node):
+            grasped = state.is_grasping(ent, max_angle=grasp_angle)
+
         force = state.ee_object_contact_force(ent)
+        contact_attrs: dict = {"suppressed_by_grasp": True} if grasped else {}
         edges.append(Edge(
             "ee", node.node_id, "contact",
             "contact" if force > eps_contact else "no-contact",
-            force, masked=(force <= eps_contact),
+            force, masked=(force <= eps_contact) or grasped,
+            attributes=contact_attrs,
         ))
 
         # grasp predicate (graspable interactive objects only).
         if _graspable(node):
-            grasped = state.is_grasping(ent, max_angle=grasp_angle)
             edges.append(Edge(
                 "ee", node.node_id, "grasp",
                 "grasp" if grasped else "no-grasp",
@@ -324,10 +333,12 @@ def ee_interactive_object_edges(
 def object_object_edges(
     graph: Graph, state: PrivilegedState, cfg: dict
 ) -> List[Edge]:
-    """Pairwise object--object: mutually exclusive contact or directed support.
+    """Pairwise object--object: at most one physical edge per pair.
 
-    Current physics is evaluated only for fresh segmented nodes. Frozen nodes
-    receive their explicitly marked last-observed edges from ``GraphBuilder``.
+    Emits exactly one of ``support`` (directed supporter -> supported),
+    ``contact``, or nothing. Current physics is evaluated only for fresh
+    segmented nodes; frozen nodes receive their explicitly marked
+    last-observed edges from ``GraphBuilder``.
     """
     eps_contact = cfg["contact"]["eps_force"]
     eps_z = cfg["support"]["eps_z"]
@@ -350,11 +361,13 @@ def object_object_edges(
             force_vector = state.pairwise_force_vector(ea, eb)
             force = float(np.linalg.norm(force_vector))
             in_contact = force > eps_contact
+            if not in_contact:
+                continue
 
             # Support = load-bearing contact: vertical-dominated force AND
             # supporter centre below supported centre.
             support_pair = None
-            if in_contact and force > 0.0:
+            if force > 0.0:
                 vertical_ratio = abs(float(force_vector[2])) / force
                 if vertical_ratio >= min_vertical_ratio:
                     pa, pb = _xyz(a), _xyz(b)
@@ -369,16 +382,11 @@ def object_object_edges(
                 edges.append(Edge(
                     supporter.node_id, supported.node_id,
                     "support", "support", force,
+                    attributes={"support_role": "supporter"},
                 ))
             else:
                 edges.append(Edge(
-                    a.node_id, b.node_id, "contact",
-                    "contact" if in_contact else "no-contact",
-                    force, masked=(not in_contact),
-                ))
-                edges.append(Edge(
-                    a.node_id, b.node_id, "support", "no-support",
-                    force, masked=True,
+                    a.node_id, b.node_id, "contact", "contact", force,
                 ))
     return edges
 

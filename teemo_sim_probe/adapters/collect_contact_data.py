@@ -1,4 +1,4 @@
-"""Local successful-rollout interaction collector (schema version 3).
+"""Local successful-rollout interaction collector (schema version 4).
 
 MS-HAB is treated as read-only.  This wrapper observes the simulator through
 public environment state, buffers each vector environment independently, and
@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from mshab.envs.sequential_task import SequentialTaskEnv
 
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 _EPS_FORCE_DEFAULT = 0.05
 _EPS_Z_DEFAULT = 0.01
 _MIN_VERTICAL_FORCE_RATIO_DEFAULT = 0.5
@@ -135,6 +135,10 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
 
         self.success_robot_qpos: List[List[float]] = []
         self.success_obj_pose_wrt_base: List[List[float]] = []
+        # Simulator TCP pose in the robot base frame, recorded at success.
+        # The affordance miner consumes this directly so it does not need to
+        # run URDF FK and risk re-introducing the base joints into the chain.
+        self.success_tcp_pose_wrt_base: List[List[float]] = []
         self.interaction_rollouts: List[Dict[str, Any]] = []
         self._reset_buffers()
 
@@ -348,9 +352,12 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         supported: Any,
         candidates: Dict[str, Any],
     ) -> None:
+        # Keep the best-ever observation per pair, ranked by
+        # (is_resting, peak_force). Non-resting near-misses are buffered so
+        # that the peak resting observation survives a later lift-off frame
+        # where the force vanishes; commit-time filtering then discards
+        # any pair that never reached a confirmed resting state.
         supported_xyz = _entity_xyz(supported, env_idx)
-        if supported_xyz is None:
-            return
         scene = self._base_env.scene
         for supporter_key, supporter in candidates.items():
             if supporter_key == supported_key:
@@ -362,21 +369,36 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             if force <= self.eps_force:
                 continue
             vertical_ratio = abs(float(vector[2])) / force if force > 0 else 0.0
-            if vertical_ratio < self.min_vertical_force_ratio:
-                continue
             supporter_xyz = _entity_xyz(supporter, env_idx)
-            if supporter_xyz is None or supporter_xyz[2] + self.eps_z >= supported_xyz[2]:
-                continue
+            is_resting = bool(
+                vertical_ratio >= self.min_vertical_force_ratio
+                and supporter_xyz is not None
+                and supported_xyz is not None
+                and supporter_xyz[2] + self.eps_z < supported_xyz[2]
+            )
+            dz = (
+                float(supported_xyz[2] - supporter_xyz[2])
+                if (supporter_xyz is not None and supported_xyz is not None)
+                else None
+            )
             rec = {
                 "supporter": _record(supporter, key=supporter_key),
                 "supported_key": supported_key,
                 "force": force,
                 "vertical_force_ratio": vertical_ratio,
-                "dz": float(supported_xyz[2] - supporter_xyz[2]),
+                "dz": dz,
+                "is_resting": is_resting,
             }
             pair = (supporter_key, supported_key)
             prior = self._episode_supports[env_idx].get(pair)
-            if prior is None or force > prior.get("force", 0.0):
+            if prior is None:
+                self._episode_supports[env_idx][pair] = rec
+                continue
+            prior_rank = (
+                bool(prior.get("is_resting", False)),
+                float(prior.get("force", 0.0)),
+            )
+            if (is_resting, force) > prior_rank:
                 self._episode_supports[env_idx][pair] = rec
 
     def _commit_success(self, env_idx: int) -> None:
@@ -396,16 +418,33 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             (self.agent.base_link.pose.inv() * pose_target.pose).raw_pose
         )
         obj_pose = relative_pose[env_idx] if relative_pose.ndim == 2 else relative_pose
+        # Simulator TCP in the base frame -- avoids URDF FK (which leaks the
+        # robot's mobile-base joints into the chain and produces meter-scale
+        # anchors in the object frame).
+        tcp_relative_pose = _to_np(
+            (self.agent.base_link.pose.inv() * self.agent.tcp.pose).raw_pose
+        )
+        tcp_pose = (
+            tcp_relative_pose[env_idx] if tcp_relative_pose.ndim == 2
+            else tcp_relative_pose
+        )
         self.success_robot_qpos.append(np.asarray(qpos, dtype=float).tolist())
         self.success_obj_pose_wrt_base.append(np.asarray(obj_pose, dtype=float).tolist())
+        self.success_tcp_pose_wrt_base.append(np.asarray(tcp_pose, dtype=float).tolist())
 
         _target_ent, target_key = self._target(env_idx)
         interacted = list(self._episode_interacted[env_idx].values())
+        # Always seed the active target as a support root: clean picks may
+        # never cross the robot-interaction force floor on the target itself,
+        # but its supporter is still the relevant scene anchor.
         root_keys = {item["key"] for item in interacted}
+        root_keys.add(target_key)
         supports = [
             value for (_supporter, supported), value
             in self._episode_supports[env_idx].items()
-            if supported in root_keys and value.get("supporter") is not None
+            if supported in root_keys
+            and value.get("supporter") is not None
+            and bool(value.get("is_resting"))
         ]
         self.interaction_rollouts.append({
             "target_key": target_key,
@@ -425,6 +464,7 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             "subtask_type": self.subtask_type,
             "robot_qpos": self.success_robot_qpos,
             "obj_pose_wrt_base": self.success_obj_pose_wrt_base,
+            "tcp_pose_wrt_base": self.success_tcp_pose_wrt_base,
             "interaction_rollouts": self.interaction_rollouts,
         }
         with open(self.save_path, "wb") as stream:
