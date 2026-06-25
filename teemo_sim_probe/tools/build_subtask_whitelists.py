@@ -2,9 +2,8 @@
 
 For each ``(subtask, target)`` the output contains exactly the union of:
 
-* the task target;
 * every non-robot entity contacted during a successful rollout;
-* direct supporters of those entities and the task target.
+* direct supporters of those contacted entities.
 
 Support is never expanded recursively. Frequency counts are emitted for audit
 but do not filter membership.
@@ -52,8 +51,6 @@ class _WhitelistBuilder:
         self.interaction_count: Dict[str, int] = defaultdict(int)
         self.support_count: Dict[str, int] = defaultdict(int)
         self.supports: Dict[str, Set[str]] = defaultdict(set)
-        self.roles[target].add("task")
-        self.kinds[target] = "actor" if target.startswith("actor:") else "link"
 
     def absorb(self, rollout: Dict[str, Any]) -> None:
         self.rollout_count += 1
@@ -71,10 +68,10 @@ class _WhitelistBuilder:
         for key in interacted_this_rollout:
             self.interaction_count[key] += 1
 
-        # One hop only: the collector already restricts ``supported_key`` to
-        # the target or an interacted entity. No BFS/closure exists here.
+        # One hop only: supporters are kept only when they directly support an
+        # entity that was actually contacted in this successful rollout.  The
+        # task target is metadata for file selection, not an injected member.
         supported_roots = set(interacted_this_rollout)
-        supported_roots.add(self.target)
         supported_pairs_this_rollout: Set[Tuple[str, str]] = set()
         for relation in rollout.get("supports", []) or []:
             if not isinstance(relation, dict):

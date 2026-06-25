@@ -129,9 +129,9 @@ class NodeSelector:
     ) -> List[str]:
         """Return at most ``n_slots`` eligible entity_ids.
 
-        Task members are retained first, direct supporters second, and other
-        interacted members third. Distance and node id break ties within a
-        role. The ee node is tracked separately.
+        Interacted/task entities are retained first, direct supporters second,
+        and distance plus node id break ties within a role. The ee node is
+        tracked separately.
         """
         ee = nodes.get("ee")
         ee_xy: Optional[np.ndarray] = None
@@ -143,7 +143,9 @@ class NodeSelector:
             if n.node_type == "ee":
                 continue
             roles = set(n.attributes.get("whitelist_roles") or [])
-            role_rank = 0 if "task" in roles else (1 if "support" in roles else 2)
+            role_rank = 0 if roles.intersection({"interacted", "task"}) else (
+                1 if "support" in roles else 2
+            )
             d = _planar_dist(n, ee_xy)
             candidates.append((role_rank, d, ent_id))
         candidates.sort(key=lambda t: (t[0], t[1], t[2]))

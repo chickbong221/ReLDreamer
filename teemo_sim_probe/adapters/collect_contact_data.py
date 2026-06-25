@@ -7,12 +7,14 @@ commits a rollout only when that environment succeeds.
 For each successful rollout it records:
 
 * every non-robot entity contacted by any robot link;
-* the task target;
-* direct supporters of the target and interacted entities (one hop only).
+* the task target key, used to name/select offline assets;
+* direct supporters of contacted entities (one hop only).
 
-Robot links are evidence of interaction, never whitelist members.  The legacy
-``robot_qpos`` and ``obj_pose_wrt_base`` arrays remain in the payload so the
-affordance miner continues to consume the same success samples.
+The active target is not injected as a whitelist member unless the robot
+actually contacts it. Robot links are evidence of interaction, never whitelist
+members.  The legacy ``robot_qpos`` and ``obj_pose_wrt_base`` arrays remain in
+the payload so the affordance miner continues to consume the same success
+samples.
 """
 
 from __future__ import annotations
@@ -216,17 +218,17 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
 
     def _target(self, env_idx: int) -> Tuple[Optional[Any], str]:
         state = get_privileged_state(self, env_idx, mshab_object_name="actual")
-        target = (
-            state.active_handle_link
-            if state.active_handle_link is not None
-            else state.active_obj
-        )
+        if self.subtask_type == "pick":
+            # MS-HAB may expose pick targets through a merged runtime actor
+            # named ``obj_0``.  The offline assets and runtime whitelist are
+            # keyed by the original task object id instead.
+            return state.active_obj, f"actor:{self.obj_id}"
+
+        target = state.active_handle_link or state.active_obj
         if target is not None:
             key = stable_entity_key(target)
             if key:
                 return target, key
-        # Pick assets use the original canonical id even when MS-HAB exposes a
-        # merged ``obj_0`` handle internally.
         return target, f"actor:{self.obj_id}"
 
     def _observe_step(self, env_idx: int) -> None:
@@ -241,10 +243,13 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             if key:
                 entity_by_key[key] = ent
         if target_ent is not None:
-            # Alias the actual target to the task key when appropriate.
+            # Alias the actual target to the task key when appropriate.  For
+            # pick tasks this removes the generic ``actor:obj_0`` key so one
+            # physical object is not recorded twice.
             raw_key = stable_entity_key(target_ent)
-            if raw_key:
-                entity_by_key[target_key] = target_ent
+            if raw_key and raw_key != target_key:
+                entity_by_key.pop(raw_key, None)
+            entity_by_key[target_key] = target_ent
 
         interacted = self._episode_interacted[env_idx]
         episode_entities = self._episode_entities[env_idx]
@@ -264,11 +269,10 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
                     interacted[key] = rec
                 episode_entities[key] = ent
 
-        # The target is always a root for support observation, even before the
-        # first robot contact. Other roots are added at their first interaction.
+        # Support observation is one hop from interacted entities only.  The
+        # task target is not injected as a member just because it is active; if
+        # it is contacted, it enters ``episode_entities`` like any other object.
         roots = dict(episode_entities)
-        if target_ent is not None:
-            roots[target_key] = target_ent
         for supported_key, supported in roots.items():
             self._observe_direct_supporters(
                 env_idx, supported_key, supported, entity_by_key,
@@ -320,9 +324,8 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             self, env_idx, mshab_object_name="merged"
         )
         pose_target = (
-            merged_state.active_handle_link
-            if merged_state.active_handle_link is not None
-            else merged_state.active_obj
+            merged_state.active_obj if self.subtask_type == "pick"
+            else (merged_state.active_handle_link or merged_state.active_obj)
         )
         if pose_target is None or getattr(pose_target, "pose", None) is None:
             raise RuntimeError("successful rollout has no resolvable target pose")
@@ -335,7 +338,7 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
 
         _target_ent, target_key = self._target(env_idx)
         interacted = list(self._episode_interacted[env_idx].values())
-        root_keys = {target_key, *(item["key"] for item in interacted)}
+        root_keys = {item["key"] for item in interacted}
         supports = [
             value for (_supporter, supported), value
             in self._episode_supports[env_idx].items()

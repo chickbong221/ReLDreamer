@@ -164,18 +164,21 @@ class OverflowTruncationTests(unittest.TestCase):
 
     def test_role_priority_precedes_distance(self):
         sel = NodeSelector(_cfg(n_slots=2))
-        task = _obj("task", (2.0, 0, 0), attrs={"whitelist_roles": ["task"]})
+        interacted = _obj(
+            "interacted", (2.0, 0, 0),
+            attrs={"whitelist_roles": ["interacted"]},
+        )
         support = _obj(
             "support", (3.0, 0, 0), attrs={"whitelist_roles": ["support"]},
         )
         nearby = _obj(
-            "nearby", (0.1, 0, 0), attrs={"whitelist_roles": ["interacted"]},
+            "nearby", (0.1, 0, 0), attrs={"whitelist_roles": []},
         )
         out = sel.overflow_truncate({
-            "ee": _ee(), task.node_id: task, support.node_id: support,
+            "ee": _ee(), interacted.node_id: interacted, support.node_id: support,
             nearby.node_id: nearby,
         })
-        self.assertEqual(out, [task.node_id, support.node_id])
+        self.assertEqual(out, [interacted.node_id, support.node_id])
 
 
 # --------------------------------------------------------------------------- #

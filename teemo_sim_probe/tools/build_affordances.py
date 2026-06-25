@@ -313,7 +313,7 @@ def _load_pkl(path: Path) -> Optional[Dict]:
     if not isinstance(data, dict):
         log.error("unexpected pkl shape in %s: %s", path, type(data))
         return None
-    required = ("obj_id", "robot_qpos", "obj_pose_wrt_base")
+    required = ("obj_id", "entity_key", "robot_qpos", "obj_pose_wrt_base")
     if not all(r in data for r in required):
         log.error("missing keys in %s: have=%s, need=%s",
                   path, sorted(data), required)
@@ -331,10 +331,10 @@ def _mine_object(
 
     qpos_list = np.asarray(data["robot_qpos"], dtype=float)
     pose_list = np.asarray(data["obj_pose_wrt_base"], dtype=float)
-    raw_obj_id = data.get("entity_key") or data.get("obj_id")
+    raw_obj_id = data.get("entity_key")
     canonical = _canonical_key(raw_obj_id)
     if canonical is None:
-        log.error("%s: obj_id %r did not canonicalize", pkl_path, raw_obj_id)
+        log.error("%s: entity_key %r did not canonicalize", pkl_path, raw_obj_id)
         return None
 
     if qpos_list.ndim != 2 or pose_list.ndim != 2:

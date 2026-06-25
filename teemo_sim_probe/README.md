@@ -22,12 +22,13 @@ whitelist. Supporters and handles use separate stable identities.
 A buffer is committed only when that environment succeeds; failed episodes are
 discarded. One committed rollout contains:
 
-1. the task target;
+1. the task target key, used only to name/select the offline asset;
 2. every scene entity contacted by any robot link;
-3. direct supporters of the target and interacted entities.
+3. direct supporters of contacted entities.
 
 Support stops after one hop. There is no contact BFS and no recursive supporter
-closure. Robot links provide interaction evidence but are never members.
+closure. The task target is not injected as a member just because it is active.
+Robot links provide interaction evidence but are never members.
 
 The collector writes schema-v3 pickles:
 
@@ -50,8 +51,7 @@ enough for whitelist membership but not enough to create an affordance.
 `build_subtask_whitelists` takes the union across successful rollouts:
 
 ```text
-members = target
-        ∪ robot-interacted entities
+members = robot-interacted entities
         ∪ direct supporters of those entities
 ```
 
@@ -68,7 +68,7 @@ active (subtask, target key)
   -> merge ordinary short-term persistence
   -> hard whitelist gate
   -> classify by affordance + whitelist role
-  -> role-aware capacity (task, support, interacted)
+  -> role-aware capacity (interacted/task, support, other)
   -> stable slots
   -> absolute and temporal relations
 ```

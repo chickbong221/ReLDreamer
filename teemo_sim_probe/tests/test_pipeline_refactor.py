@@ -50,6 +50,7 @@ class OneHopWhitelistTests(unittest.TestCase):
         builder = _WhitelistBuilder("pick", "actor:024_bowl")
         builder.absorb({"interacted": [], "supports": []})
         self.assertNotIn("link:cabinet/handle", builder.payload()["members"])
+        self.assertNotIn("actor:024_bowl", builder.payload()["members"])
 
 
 class StaleEdgeTests(unittest.TestCase):

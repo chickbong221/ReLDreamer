@@ -11,10 +11,10 @@ Asset shape (``_schema_version: 2``)::
     {
       "_schema_version": 2,
       "subtask": "pick",
-      "target": "024_bowl",
+      "target": "actor:024_bowl",
       "members": {
-        "actor:024_bowl":      {"roles": ["task", "interacted"], "kind": "actor"},
-        "link:cabinet/drawer3": {"roles": ["support"],            "kind": "link"}
+        "actor:024_bowl":       {"roles": ["interacted"], "kind": "actor"},
+        "link:cabinet/drawer3": {"roles": ["support"],    "kind": "link"}
       }
     }
 
@@ -119,7 +119,7 @@ def load_whitelist(path: str) -> Whitelist:
         kind = entry.get("kind") if isinstance(entry, dict) else None
         normalized = normalize_asset_key(k, kind)
         if normalized:
-            by_key[normalized] = roles_set or {"task"}
+            by_key[normalized] = roles_set
 
     if not by_key:
         raise ValueError(f"whitelist {path!r}: 'members' is empty")
