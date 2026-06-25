@@ -29,7 +29,7 @@ class OneHopWhitelistTests(unittest.TestCase):
                     "supported_key": "actor:024_bowl",
                 },
                 # Recursive cabinet -> drawer evidence must be ignored because
-                # drawer is a supporter, not a task/interacted root.
+                # drawer is a supporter, not an interacted root.
                 {
                     "supporter": {
                         "key": "link:cabinet/body", "kind": "link",
@@ -51,6 +51,20 @@ class OneHopWhitelistTests(unittest.TestCase):
         builder.absorb({"interacted": [], "supports": []})
         self.assertNotIn("link:cabinet/handle", builder.payload()["members"])
         self.assertNotIn("actor:024_bowl", builder.payload()["members"])
+
+    def test_supporter_requires_supported_interaction(self):
+        builder = _WhitelistBuilder("pick", "actor:024_bowl")
+        builder.absorb({
+            "interacted": [],
+            "supports": [{
+                "supporter": {
+                    "key": "link:cabinet/drawer", "kind": "link",
+                    "name": "drawer",
+                },
+                "supported_key": "actor:024_bowl",
+            }],
+        })
+        self.assertNotIn("link:cabinet/drawer", builder.payload()["members"])
 
 
 class StaleEdgeTests(unittest.TestCase):

@@ -7,8 +7,8 @@ Pipeline:
 
     build_nodes (current visible segmentation, non-robot entities)
     -> selector.merge_persistent    (k-frame identity-keyed retention)
-    -> tau_i bookkeeping            (steps_since_seen)
     -> selector.apply_whitelist     (hard per-subtask eligibility gate)
+    -> tau_i bookkeeping            (steps_since_seen)
     -> classify_pair_types          (whitelist-role / affordance vocabulary)
     -> selector.overflow_truncate   (role, distance, node_id)
     -> slot_manager.assign          (identity-keyed, reset_flag)
@@ -31,7 +31,7 @@ from .temporal_buffer import TemporalBuffer
 from .mask_extractor import MaskAccumulator
 from .selector import NodeSelector
 from .slot_manager import SlotManager
-from .whitelist import Whitelist, load_whitelist, resolve_whitelist_path
+from .whitelist import load_whitelist, resolve_whitelist_path
 from ..adapters.privileged_state import get_privileged_state
 
 class GraphBuilder:
@@ -97,10 +97,11 @@ class GraphBuilder:
             target = f"actor:{canonical}" if canonical else None
         if subtask is None or target is None:
             raise RuntimeError(
-                "whitelist selection requires both an active subtask type "
-                f"and an active_obj_id; got subtask={subtask!r}, "
-                f"active_obj_id={state.active_obj_id!r}. Probe must run inside "
-                "an MS-HAB-like env."
+                "whitelist selection requires an active subtask type and "
+                f"target key; got subtask={subtask!r}, "
+                f"active_obj_id={state.active_obj_id!r}, "
+                f"active_handle_link={state.active_handle_link!r}. Probe must "
+                "run inside an MS-HAB-like env."
             )
         key = (subtask, target)
         if self._whitelist_key == key and self.selector.whitelist is not None:

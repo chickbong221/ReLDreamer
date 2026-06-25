@@ -6,7 +6,7 @@ in a vectorised MS-HAB subtask environment wrapped in
 the local ``FetchCollectContactDataWrapper``. MS-HAB remains untouched. The
 wrapper commits one schema-v3 record per successful environment rollout:
 success pose data, every robot-interacted entity, and direct supporters of the
-target/interacted entities. On ``close()`` it writes to::
+interacted entities. On ``close()`` it writes to::
 
     $MS_ASSET_DIR/data/robot_success_states/fetch/pick/<obj_id>.pkl
 

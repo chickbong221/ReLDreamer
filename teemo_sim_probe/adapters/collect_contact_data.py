@@ -216,8 +216,10 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             entities.append(ent)
         return entities
 
-    def _target(self, env_idx: int) -> Tuple[Optional[Any], str]:
-        state = get_privileged_state(self, env_idx, mshab_object_name="actual")
+    def _target(self, env_idx: int, state=None) -> Tuple[Optional[Any], str]:
+        state = state or get_privileged_state(
+            self, env_idx, mshab_object_name="actual"
+        )
         if self.subtask_type == "pick":
             # MS-HAB may expose pick targets through a merged runtime actor
             # named ``obj_0``.  The offline assets and runtime whitelist are
@@ -231,11 +233,53 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
                 return target, key
         return target, f"actor:{self.obj_id}"
 
+    def _mark_interacted(
+        self,
+        env_idx: int,
+        key: str,
+        ent: Any,
+        *,
+        max_robot_force: float = 0.0,
+        grasped: bool = False,
+    ) -> None:
+        rec = _record(ent, key=key)
+        if rec is None:
+            return
+        rec["max_robot_force"] = float(max_robot_force)
+        if grasped:
+            rec["grasped"] = True
+
+        interacted = self._episode_interacted[env_idx]
+        prior = interacted.get(key)
+        prior_force = 0.0 if prior is None else float(
+            prior.get("max_robot_force", 0.0)
+        )
+        if prior is not None and prior.get("grasped"):
+            rec["grasped"] = True
+        if prior is None or grasped or max_robot_force > prior_force:
+            interacted[key] = rec
+        self._episode_entities[env_idx][key] = ent
+
     def _observe_step(self, env_idx: int) -> None:
         scene = self._base_env.scene
         entities = self._scene_entities()
         robot_links, _ = self._robot_links()
-        target_ent, target_key = self._target(env_idx)
+        actual_state = get_privileged_state(
+            self, env_idx, mshab_object_name="actual"
+        )
+        target_ent, target_key = self._target(env_idx, actual_state)
+        physics_target_ent = target_ent
+
+        # For pick, MS-HAB's grasp predicate and contact forces are most
+        # reliable on the merged runtime actor.  We still record the canonical
+        # task key, so the whitelist never learns ``actor:obj_0``.
+        merged_state = None
+        if self.subtask_type == "pick":
+            merged_state = get_privileged_state(
+                self, env_idx, mshab_object_name="merged"
+            )
+            if getattr(merged_state, "active_obj", None) is not None:
+                physics_target_ent = merged_state.active_obj
 
         entity_by_key: Dict[str, Any] = {}
         for ent in entities:
@@ -249,10 +293,12 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             raw_key = stable_entity_key(target_ent)
             if raw_key and raw_key != target_key:
                 entity_by_key.pop(raw_key, None)
-            entity_by_key[target_key] = target_ent
+        if physics_target_ent is not None:
+            raw_key = stable_entity_key(physics_target_ent)
+            if raw_key and raw_key != target_key:
+                entity_by_key.pop(raw_key, None)
+            entity_by_key[target_key] = physics_target_ent
 
-        interacted = self._episode_interacted[env_idx]
-        episode_entities = self._episode_entities[env_idx]
         for key, ent in entity_by_key.items():
             total_force = 0.0
             for robot_link in robot_links:
@@ -261,18 +307,35 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
                     total_force += float(np.linalg.norm(vector))
             if total_force <= self.eps_force:
                 continue
-            rec = _record(ent, key=key)
-            if rec is not None:
-                rec["max_robot_force"] = float(total_force)
-                prior = interacted.get(key)
-                if prior is None or total_force > prior.get("max_robot_force", 0.0):
-                    interacted[key] = rec
-                episode_entities[key] = ent
+            self._mark_interacted(
+                env_idx, key, ent, max_robot_force=total_force
+            )
 
-        # Support observation is one hop from interacted entities only.  The
-        # task target is not injected as a member just because it is active; if
-        # it is contacted, it enters ``episode_entities`` like any other object.
-        roots = dict(episode_entities)
+        if self.subtask_type == "pick" and physics_target_ent is not None:
+            grasped = False
+            if merged_state is not None:
+                grasped = merged_state.is_grasping(physics_target_ent)
+            if not grasped:
+                grasped = actual_state.is_grasping(target_ent)
+            if grasped:
+                force = actual_state.ee_object_contact_force(target_ent)
+                if merged_state is not None:
+                    force = max(
+                        force,
+                        merged_state.ee_object_contact_force(physics_target_ent),
+                    )
+                self._mark_interacted(
+                    env_idx, target_key, physics_target_ent,
+                    max_robot_force=force, grasped=True,
+                )
+
+        # Support evidence may be visible before the robot touches the object.
+        # We buffer it for interacted entities plus the active target, but at
+        # commit time we keep only supports whose supported object was actually
+        # interacted with during the successful rollout.
+        roots = dict(self._episode_entities[env_idx])
+        if physics_target_ent is not None:
+            roots[target_key] = physics_target_ent
         for supported_key, supported in roots.items():
             self._observe_direct_supporters(
                 env_idx, supported_key, supported, entity_by_key,

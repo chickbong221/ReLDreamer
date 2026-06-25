@@ -60,10 +60,10 @@ def parse_args():
                    help="cameras to build overlays/graphs for")
     p.add_argument("--save-every", type=int, default=20,
                    help="save outputs every N steps (policy still steps every frame)")
-    p.add_argument("--width", type=int, default=256,
-                   help="probe camera width (independent of policy obs)")
-    p.add_argument("--height", type=int, default=256,
-                   help="probe camera height (independent of policy obs)")
+    p.add_argument("--width", type=int, default=128,
+                   help="sensor width used by both policy obs and probe output")
+    p.add_argument("--height", type=int, default=128,
+                   help="sensor height used by both policy obs and probe output")
     p.add_argument("--overlay-size", type=float, default=6.0,
                    help="overlay figure size in inches (display size)")
     p.add_argument("--eval-view", action="store_true", default=True,

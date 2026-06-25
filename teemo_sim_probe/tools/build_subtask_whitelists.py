@@ -18,9 +18,8 @@ import pickle
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from teemo_sim_probe.core.affordance import canonical_affordance_key
 from teemo_sim_probe.core.entity_identity import normalize_asset_key
 from teemo_sim_probe.core.whitelist import whitelist_target_slug
 
@@ -122,12 +121,7 @@ class _WhitelistBuilder:
 
 
 def _target_key(data: Dict[str, Any]) -> Optional[str]:
-    explicit = normalize_asset_key(data.get("entity_key"))
-    if explicit:
-        return explicit
-    raw = data.get("obj_id")
-    canonical = canonical_affordance_key(raw)
-    return f"actor:{canonical}" if canonical else None
+    return normalize_asset_key(data.get("entity_key"))
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -160,12 +154,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
             continue
         subtask = str(data.get("subtask_type") or path.parent.name)
-        fallback_target = _target_key(data)
-        if not fallback_target:
+        target = _target_key(data)
+        if not target:
+            log.warning("skip %s: schema-v3 entity_key is required", path)
             continue
         builder = builders.setdefault(
-            (subtask, fallback_target),
-            _WhitelistBuilder(subtask, fallback_target),
+            (subtask, target),
+            _WhitelistBuilder(subtask, target),
         )
         for rollout in rollouts:
             if isinstance(rollout, dict):
@@ -174,6 +169,24 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if not builders:
         log.error("no schema-v3 successful interaction rollouts found under %s", root)
+        return 2
+
+    empty = [
+        (subtask, target)
+        for (subtask, target), builder in sorted(builders.items())
+        if not builder.roles
+    ]
+    if empty:
+        for subtask, target in empty:
+            log.error(
+                "empty whitelist for subtask=%s target=%s; collection recorded "
+                "no robot-interacted entities for successful rollouts",
+                subtask, target,
+            )
+        log.error(
+            "refusing to write invalid whitelist assets; recollect with the "
+            "current collector and --no-skip-done"
+        )
         return 2
 
     for (subtask, target), builder in sorted(builders.items()):

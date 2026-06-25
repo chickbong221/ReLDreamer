@@ -68,7 +68,7 @@ active (subtask, target key)
   -> merge ordinary short-term persistence
   -> hard whitelist gate
   -> classify by affordance + whitelist role
-  -> role-aware capacity (interacted/task, support, other)
+  -> role-aware capacity (interacted, support, other)
   -> stable slots
   -> absolute and temporal relations
 ```

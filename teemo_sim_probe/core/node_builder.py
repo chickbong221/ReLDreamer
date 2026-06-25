@@ -191,7 +191,7 @@ def build_nodes(
 #
 # Eligibility rule (most specific wins):
 #   1. object has a mined affordance set            -> interactive_object
-#   2. whitelist role contains task/interacted       -> interactive_object
+#   2. whitelist role contains interacted            -> interactive_object
 #   3. whitelist role is support only                -> static_object
 #   4. otherwise: free actors default interactive, links default static.
 def classify_pair_types(nodes: Dict[str, Node], cfg: dict) -> None:
@@ -207,8 +207,8 @@ def classify_pair_types(nodes: Dict[str, Node], cfg: dict) -> None:
             attrs["pair_type"] = "interactive_object"
             continue
         roles = set(attrs.get("whitelist_roles") or [])
-        # (2) task and interacted members are ordinary interactive objects.
-        if roles.intersection({"task", "interacted"}):
+        # (2) interacted members are ordinary interactive objects.
+        if "interacted" in roles:
             attrs["pair_type"] = "interactive_object"
             continue
         # (3) direct supporters are static unless they have their own mined

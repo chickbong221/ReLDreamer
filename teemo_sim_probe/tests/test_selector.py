@@ -103,7 +103,7 @@ def _whitelist(members):
 class WhitelistGateTests(unittest.TestCase):
     def test_drops_off_whitelist_actor(self):
         sel = NodeSelector(_cfg())
-        sel.set_whitelist(_whitelist({"actor:024_bowl": {"task"}}))
+        sel.set_whitelist(_whitelist({"actor:024_bowl": {"interacted"}}))
         bowl = _obj("env-0_024_bowl-3", (0.1, 0, 0))   # canonicalizes to 024_bowl
         scrap = _obj("env-0_999_phantom-1", (0.2, 0, 0))
         out = sel.apply_whitelist({"ee": _ee(), bowl.node_id: bowl, scrap.node_id: scrap})
@@ -115,7 +115,7 @@ class WhitelistGateTests(unittest.TestCase):
         """A whitelist with `drawer3` must NOT admit `drawer1`/`drawer2`."""
         sel = NodeSelector(_cfg())
         sel.set_whitelist(_whitelist({
-            "actor:024_bowl": {"task"}, "link:drawer3": {"support"},
+            "actor:024_bowl": {"interacted"}, "link:drawer3": {"support"},
         }))
         bowl = _obj("env-0_024_bowl-3", (0.0, 0, 0))
         d1 = _link("drawer1", (0.1, 0, 0))
@@ -139,7 +139,9 @@ class OverflowTruncationTests(unittest.TestCase):
     def test_keeps_nearest_to_ee(self):
         sel = NodeSelector(_cfg(n_slots=2))
         sel.set_whitelist(_whitelist({
-            "actor:a": {"task"}, "actor:b": {"task"}, "actor:c": {"task"},
+            "actor:a": {"interacted"},
+            "actor:b": {"interacted"},
+            "actor:c": {"interacted"},
         }))
         nodes = {
             "ee": _ee(),
