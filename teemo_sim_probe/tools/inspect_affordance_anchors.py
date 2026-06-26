@@ -73,12 +73,21 @@ def main() -> int:
             quat_R(q).T @ (t - o) for o, q, t in zip(obj_p, obj_q, tcp_p)
         ])
         mag = np.linalg.norm(anchors, axis=1)
+        # Position-only distance in base frame: TCP and OBJ are both wrt base,
+        # so |tcp_p - obj_p| is the world-frame TCP-to-object distance.
+        pos_diff = np.linalg.norm(tcp_p - obj_p, axis=1)
         print(
             f"{os.path.basename(p):35s} {len(obj):3d}  "
             f"{str(obj_p.mean(0).round(3)):>26s}  "
             f"{str(obj_q.mean(0).round(3)):>34s}  "
-            f"{mag.mean():9.3f} {mag.min():8.3f} {mag.max():8.3f}"
+            f"{mag.mean():9.3f} {mag.min():8.3f} {mag.max():8.3f}  "
+            f"posdiff: mean={pos_diff.mean():.3f} min={pos_diff.min():.3f} max={pos_diff.max():.3f}"
         )
+        # Show one full sample for the first object so we can eyeball the raw values.
+        if os.path.basename(p).startswith("002_") or os.path.basename(p).startswith("024_"):
+            i = 0
+            print(f"    sample 0:  obj_p={obj_p[i].round(4)}  obj_q={obj_q[i].round(4)}  "
+                  f"tcp_p={tcp_p[i].round(4)}  anchor={anchors[i].round(4)}")
     return 0
 
 
