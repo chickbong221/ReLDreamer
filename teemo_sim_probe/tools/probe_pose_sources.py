@@ -190,7 +190,7 @@ def main() -> int:
 
     print(f"\n{'env':>3s} {'A(actual) |tcp-obj|':>22s}  "
           f"{'B(merged) |tcp-obj|':>22s}  "
-          f"{'C(sapien) |tcp-obj|':>22s}")
+          f"{'D(collector code)':>22s}")
     n_committed = 0
     t0 = time.time()
     for step in range(args.max_steps):
@@ -224,19 +224,30 @@ def main() -> int:
                     results[label] = float(
                         np.linalg.norm(tcp_in_base - obj_in_base))
 
-            ent_pq = _sapien_entity_pose(merged_state.active_obj, env_idx)
-            if ent_pq is not None:
-                obj_in_base_C = _to_base_frame(base_pq, ent_pq)
-                results["C"] = float(
-                    np.linalg.norm(tcp_in_base - obj_in_base_C))
-            else:
-                results["C"] = None
+            # D: the EXACT code path used by _commit_success today, so we can
+            # tell whether the SAPIEN Pose math + [env_idx] indexing produces
+            # the same result as the manual base-frame math in A.
+            try:
+                pose_target = actual_state.active_obj
+                rel = _to_np(
+                    (agent.base_link.pose.inv() * pose_target.pose).raw_pose
+                )
+                obj_row = rel[env_idx] if rel.ndim == 2 else rel
+                tcp_rel = _to_np(
+                    (agent.base_link.pose.inv() * agent.tcp.pose).raw_pose
+                )
+                tcp_row = tcp_rel[env_idx] if tcp_rel.ndim == 2 else tcp_rel
+                results["D"] = float(
+                    np.linalg.norm(tcp_row[:3] - obj_row[:3]))
+            except Exception as exc:
+                results["D"] = None
+                print(f"  (D failed for env {env_idx}: {exc!r})")
 
             def fmt(v):
                 return f"{v:.4f}" if v is not None else "  N/A "
             print(f"{env_idx:>3d} {fmt(results['A']):>22s}  "
                   f"{fmt(results['B']):>22s}  "
-                  f"{fmt(results['C']):>22s}")
+                  f"{fmt(results['D']):>22s}")
             n_committed += 1
             if n_committed >= args.max_successes:
                 break
