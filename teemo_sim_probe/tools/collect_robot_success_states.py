@@ -162,6 +162,63 @@ def _build_env(task: str, obj_id: str, args):
     return venv, collect, plan_fp
 
 
+def _to_np(x):
+    if hasattr(x, "detach"):
+        x = x.detach().cpu().numpy()
+    import numpy as np
+    return np.asarray(x)
+
+
+def _commit_successes_at_script_level(venv, collect, info, committed_mask):
+    """Detect newly-successful envs and call collect.commit_success.
+
+    Reading pose/qpos here -- AFTER venv.step has fully returned -- is the
+    point at which the simulator state matches what MS-HAB's evaluate() saw.
+    Doing the read from inside the wrapper's step sees the post-stowage
+    state, where the active actor is parked at ~[-1e4,-1e4,-1e4] and
+    is_grasping returns False. ``committed_mask`` is a per-env boolean
+    array owned by the script that prevents duplicate commits within a
+    single episode; it is the caller's responsibility to reset entries on
+    episode boundary.
+    """
+    import numpy as np
+    success = info.get("success")
+    if success is None:
+        return
+    n_envs = collect.num_envs
+    success_np = _to_np(success).astype(bool).reshape(-1)
+    if success_np.size < n_envs:
+        success_np = np.pad(success_np, (0, n_envs - success_np.size))
+    newly = success_np[:n_envs] & ~committed_mask
+    if not newly.any():
+        return
+
+    base_env = venv.unwrapped
+    agent = base_env.agent
+    ptrs = _to_np(base_env.subtask_pointer).astype(int).reshape(-1)
+    base_inv = agent.base_link.pose.inv()
+    tcp_rel_all = _to_np((base_inv * agent.tcp.pose).raw_pose)
+    qpos_all = _to_np(agent.robot.qpos)
+
+    for env_idx in np.where(newly)[0].tolist():
+        ptr = int(min(ptrs[env_idx], len(base_env.task_plan) - 1))
+        if ptr >= len(base_env.subtask_objs):
+            continue
+        target = base_env.subtask_objs[ptr]
+        if target is None or getattr(target, "pose", None) is None:
+            continue
+        obj_rel_all = _to_np((base_inv * target.pose).raw_pose)
+        obj_pose = (
+            obj_rel_all[env_idx] if obj_rel_all.ndim == 2 else obj_rel_all
+        )
+        tcp_pose = (
+            tcp_rel_all[env_idx] if tcp_rel_all.ndim == 2 else tcp_rel_all
+        )
+        qpos = qpos_all[env_idx] if qpos_all.ndim == 2 else qpos_all
+        collect.commit_success(int(env_idx), qpos, obj_pose, tcp_pose)
+        committed_mask[env_idx] = True
+
+
 def _collect_one(task: str, obj_id: str, ckpt_dir: Path, args) -> int:
     from teemo_sim_probe.adapters.policy_loader import load_policy
 
@@ -174,6 +231,12 @@ def _collect_one(task: str, obj_id: str, ckpt_dir: Path, args) -> int:
         print(f"[warn] {obj_id}: policy loader fell back to random actions; "
               "success rate will be ~0. Check ckpt-dir and config.yml.")
 
+    import numpy as np
+    n_envs = collect.num_envs
+    # Per-env latch: True once we've committed in the current episode.
+    # Cleared on truncation / termination signal so the next episode can
+    # contribute another sample.
+    committed_mask = np.zeros(n_envs, dtype=bool)
     n_target = args.n_success
     t0 = time.time()
     step = 0
@@ -200,7 +263,20 @@ def _collect_one(task: str, obj_id: str, ckpt_dir: Path, args) -> int:
             break
 
         action = policy.act(obs)
-        obs, _rew, _term, _trunc, _info = venv.step(action)
+        obs, _rew, term, trunc, info = venv.step(action)
+        # Commit successes RIGHT HERE -- this is the same point at which
+        # the probe (probe_pose_sources.py) read state and got |tcp-obj|
+        # ~5 cm. Doing it inside the wrapper sees the post-stowage state.
+        _commit_successes_at_script_level(venv, collect, info, committed_mask)
+        # Clear the per-episode latch on done so the next episode can
+        # contribute its own commit.
+        done = (
+            _to_np(term).astype(bool).reshape(-1)
+            | _to_np(trunc).astype(bool).reshape(-1)
+        )
+        if done.size < n_envs:
+            done = np.pad(done, (0, n_envs - done.size))
+        committed_mask[done[:n_envs]] = False
         step += 1
         if step - last_log >= args.log_every:
             last_log = step
