@@ -433,12 +433,31 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         self.success_robot_qpos.append(np.asarray(qpos, dtype=float).tolist())
         self.success_obj_pose_wrt_base.append(np.asarray(obj_pose, dtype=float).tolist())
         self.success_tcp_pose_wrt_base.append(np.asarray(tcp_pose, dtype=float).tolist())
-        # DEBUG: log what was just appended so we can compare with the saved pkl.
+        # DEBUG: Compare three candidates for the active-target pose so we
+        # can see whether the wrapper we're reading is actually the can.
         _op = np.asarray(obj_pose, dtype=float)[:3]
         _tp = np.asarray(tcp_pose, dtype=float)[:3]
+        _pt_name = getattr(pose_target, "name", "?")
+        _pt_si = _to_np(getattr(pose_target, "_scene_idxs", np.array([-1]))).reshape(-1).tolist()
+        _pt_world_p = _to_np(pose_target.pose.p)
+        _merged_obj = merged_state.active_obj
+        _merged_name = getattr(_merged_obj, "name", "?") if _merged_obj is not None else "None"
+        _merged_si = (
+            _to_np(getattr(_merged_obj, "_scene_idxs", np.array([-1]))).reshape(-1).tolist()
+            if _merged_obj is not None else []
+        )
+        _merged_world_p = (
+            _to_np(_merged_obj.pose.p) if _merged_obj is not None and getattr(_merged_obj, "pose", None) is not None else None
+        )
+        _tcp_world_p = _to_np(self.agent.tcp.pose.p)
         print(f"[commit env={env_idx}] obj_p={_op.round(4).tolist()}  "
-              f"tcp_p={_tp.round(4).tolist()}  "
-              f"|tcp-obj|={float(np.linalg.norm(_tp - _op)):.4f}")
+              f"tcp_p={_tp.round(4).tolist()}  |tcp-obj|={float(np.linalg.norm(_tp - _op)):.4f}")
+        print(f"    pose_target: name={_pt_name!r}  scene_idxs={_pt_si}  "
+              f"world_p.shape={_pt_world_p.shape}  world_p={_pt_world_p.round(4).tolist()}")
+        if _merged_world_p is not None:
+            print(f"    merged.active_obj: name={_merged_name!r}  scene_idxs={_merged_si}  "
+                  f"world_p.shape={_merged_world_p.shape}  world_p={_merged_world_p.round(4).tolist()}")
+        print(f"    tcp.pose.p: shape={_tcp_world_p.shape}  world_p={_tcp_world_p.round(4).tolist()}")
 
         _target_ent, target_key = self._target(env_idx)
         interacted = list(self._episode_interacted[env_idx].values())
