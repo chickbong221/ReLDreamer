@@ -433,6 +433,12 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         self.success_robot_qpos.append(np.asarray(qpos, dtype=float).tolist())
         self.success_obj_pose_wrt_base.append(np.asarray(obj_pose, dtype=float).tolist())
         self.success_tcp_pose_wrt_base.append(np.asarray(tcp_pose, dtype=float).tolist())
+        # DEBUG: log what was just appended so we can compare with the saved pkl.
+        _op = np.asarray(obj_pose, dtype=float)[:3]
+        _tp = np.asarray(tcp_pose, dtype=float)[:3]
+        print(f"[commit env={env_idx}] obj_p={_op.round(4).tolist()}  "
+              f"tcp_p={_tp.round(4).tolist()}  "
+              f"|tcp-obj|={float(np.linalg.norm(_tp - _op)):.4f}")
 
         _target_ent, target_key = self._target(env_idx)
         interacted = list(self._episode_interacted[env_idx].values())
