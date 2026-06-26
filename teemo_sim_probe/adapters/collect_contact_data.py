@@ -136,6 +136,17 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         # run URDF FK and risk re-introducing the base joints into the chain.
         self.success_tcp_pose_wrt_base: List[List[float]] = []
         self.interaction_rollouts: List[Dict[str, Any]] = []
+        # MS-HAB's pick success (is_grasped & ee_rest & robot_rest & is_static)
+        # flips to True on the same env-step that the subtask transition stows
+        # the active actor at ~[-10000, -10000, -10200]. Reading any pose at
+        # the success step thus captures stale / proxy values, not the gripper
+        # state. So we sample one step earlier: on every step where the gates
+        # we care about (is_grasping & ee_rest) hold, cache the current
+        # (qpos, obj_pose_wrt_base, tcp_pose_wrt_base) per env, and commit
+        # the most recent cached tuple when success transitions to True.
+        self._cached_qpos: List[Optional[np.ndarray]] = [None] * self.num_envs
+        self._cached_obj_pose: List[Optional[np.ndarray]] = [None] * self.num_envs
+        self._cached_tcp_pose: List[Optional[np.ndarray]] = [None] * self.num_envs
         self._reset_buffers()
 
         root = Path(out_root) if out_root else Path(ASSET_DIR) / "robot_success_states"
@@ -155,6 +166,9 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             self._episode_entities[int(idx)].clear()
             self._episode_supports[int(idx)].clear()
             self._success_latched[int(idx)] = False
+            self._cached_qpos[int(idx)] = None
+            self._cached_obj_pose[int(idx)] = None
+            self._cached_tcp_pose[int(idx)] = None
 
     def reset(self, *args, **kwargs):
         result = super().reset(*args, **kwargs)
@@ -170,6 +184,7 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
 
         for env_idx in range(self.num_envs):
             self._observe_step(env_idx)
+            self._update_grasp_cache(env_idx)
 
         success = info.get("success")
         success_np = (
@@ -393,102 +408,127 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             if (vertical_support, force) > prior_rank:
                 self._episode_supports[env_idx][pair] = rec
 
-    def _commit_success(self, env_idx: int) -> None:
-        # Record one pose sample at the first success transition.
-        qpos = _to_np(self.agent.robot.qpos)[env_idx]
+    def _resolve_pose_target(self, env_idx: int):
+        """Resolve the pose source used for both the cache and the commit.
+
+        Pick subtasks use the actively-grasped merged actor; open/close use
+        the handle link. The seg_id_map ``actual`` resolution is preferred so
+        we end up reading the visible per-env entity's pose; the merged
+        fallback handles the case where seg_id_map doesn't yet expose it.
+        """
         actual_state = get_privileged_state(
             self, env_idx, mshab_object_name="actual"
         )
         merged_state = get_privileged_state(
             self, env_idx, mshab_object_name="merged"
         )
-        # Mine affordances in the real target/link frame. The merged MS-HAB
-        # actor is useful for grasp/contact predicates, but its pose origin can
-        # be a task-level proxy rather than the visible object's local frame.
-        pose_target = (
+        target = (
             actual_state.active_obj if self.subtask_type == "pick"
             else (actual_state.active_handle_link or actual_state.active_obj)
         )
-        if pose_target is None:
-            pose_target = (
+        if target is None or getattr(target, "pose", None) is None:
+            target = (
                 merged_state.active_obj if self.subtask_type == "pick"
                 else (merged_state.active_handle_link or merged_state.active_obj)
             )
-        if pose_target is None or getattr(pose_target, "pose", None) is None:
-            raise RuntimeError("successful rollout has no resolvable target pose")
-        relative_pose = _to_np(
-            (self.agent.base_link.pose.inv() * pose_target.pose).raw_pose
+        # The merged actor is what is_grasping is gated against in
+        # _pick_check_success, so prefer it for the grasp predicate to stay
+        # consistent with MS-HAB's own success criterion.
+        grasp_target = (
+            merged_state.active_obj if self.subtask_type == "pick"
+            else (merged_state.active_handle_link or merged_state.active_obj)
         )
-        obj_pose = relative_pose[env_idx] if relative_pose.ndim == 2 else relative_pose
-        # Simulator TCP in the base frame -- avoids URDF FK (which leaks the
-        # robot's mobile-base joints into the chain and produces meter-scale
-        # anchors in the object frame).
-        tcp_relative_pose = _to_np(
-            (self.agent.base_link.pose.inv() * self.agent.tcp.pose).raw_pose
+        return target, grasp_target
+
+    def _read_pose_pair(self, target: Any, env_idx: int):
+        """(qpos, obj_pose_wrt_base, tcp_pose_wrt_base) for env_idx, or None.
+
+        Computed manually in per-env base frame to avoid the wrapper /
+        scene_idxs broadcasting subtleties of SAPIEN's Pose multiplication.
+        """
+        if target is None or getattr(target, "pose", None) is None:
+            return None
+        try:
+            qpos = _to_np(self.agent.robot.qpos)[env_idx]
+            obj_relative = _to_np(
+                (self.agent.base_link.pose.inv() * target.pose).raw_pose
+            )
+            obj_pose = (
+                obj_relative[env_idx]
+                if obj_relative.ndim == 2 else obj_relative
+            )
+            tcp_relative = _to_np(
+                (self.agent.base_link.pose.inv() * self.agent.tcp.pose).raw_pose
+            )
+            tcp_pose = (
+                tcp_relative[env_idx]
+                if tcp_relative.ndim == 2 else tcp_relative
+            )
+        except Exception:
+            return None
+        return (
+            np.asarray(qpos, dtype=float),
+            np.asarray(obj_pose, dtype=float),
+            np.asarray(tcp_pose, dtype=float),
         )
-        tcp_pose = (
-            tcp_relative_pose[env_idx] if tcp_relative_pose.ndim == 2
-            else tcp_relative_pose
+
+    def _update_grasp_cache(self, env_idx: int) -> None:
+        """Refresh the per-env cache when the gripper is holding the target.
+
+        Skipping the ``ee_rest`` gate intentionally: any frame in which
+        ``is_grasping(merged_target)`` is True is a valid grasp pose for
+        affordance mining, including the moment the fingers close on the
+        object (pre-lift). The MOST RECENT cached pair is the one we want
+        because the policy ends each rollout at the rest pose with the
+        object in hand; the last grasp frame before MS-HAB stows the actor
+        is therefore at the rest-and-grasping configuration that the
+        success gate is meant to fingerprint.
+        """
+        if self._success_latched[env_idx]:
+            return
+        target, grasp_target = self._resolve_pose_target(env_idx)
+        if grasp_target is None or not hasattr(self.agent, "is_grasping"):
+            return
+        try:
+            grasped = self.agent.is_grasping(grasp_target, max_angle=30)
+            grasped_np = _to_np(grasped).reshape(-1)
+        except Exception:
+            return
+        if env_idx >= grasped_np.shape[0] or not bool(grasped_np[env_idx]):
+            return
+        # Use ``target`` (visible per-env actor) for the pose so the recorded
+        # frame matches the visible object's URDF root, while gating on
+        # ``grasp_target`` (merged actor) which is what MS-HAB checks force
+        # against.
+        pair = self._read_pose_pair(target, env_idx)
+        if pair is None:
+            return
+        qpos, obj_pose, tcp_pose = pair
+        self._cached_qpos[env_idx] = qpos
+        self._cached_obj_pose[env_idx] = obj_pose
+        self._cached_tcp_pose[env_idx] = tcp_pose
+
+    def _commit_success(self, env_idx: int) -> None:
+        # MS-HAB stows the active actor on the same step it flips
+        # info["success"] to True, so reading state here gives a parking-lot
+        # pose. Consume the cached (qpos, obj_pose, tcp_pose) tuple captured
+        # one or more steps earlier while the gripper was actually holding
+        # the target.
+        cached = (
+            self._cached_qpos[env_idx],
+            self._cached_obj_pose[env_idx],
+            self._cached_tcp_pose[env_idx],
         )
+        if any(c is None for c in cached):
+            # No frame in this episode had is_grasping(target)=True. Skip
+            # rather than committing a stowage pose. The episode then
+            # contributes nothing to affordance mining, which is correct.
+            return
+        qpos, obj_pose, tcp_pose = cached
+
         self.success_robot_qpos.append(np.asarray(qpos, dtype=float).tolist())
         self.success_obj_pose_wrt_base.append(np.asarray(obj_pose, dtype=float).tolist())
         self.success_tcp_pose_wrt_base.append(np.asarray(tcp_pose, dtype=float).tolist())
-        # DEBUG: Compare three candidates for the active-target pose so we
-        # can see whether the wrapper we're reading is actually the can.
-        _op = np.asarray(obj_pose, dtype=float)[:3]
-        _tp = np.asarray(tcp_pose, dtype=float)[:3]
-        _pt_name = getattr(pose_target, "name", "?")
-        _pt_si = _to_np(getattr(pose_target, "_scene_idxs", np.array([-1]))).reshape(-1).tolist()
-        _pt_world_p = _to_np(pose_target.pose.p)
-        _merged_obj = merged_state.active_obj
-        _merged_name = getattr(_merged_obj, "name", "?") if _merged_obj is not None else "None"
-        _merged_si = (
-            _to_np(getattr(_merged_obj, "_scene_idxs", np.array([-1]))).reshape(-1).tolist()
-            if _merged_obj is not None else []
-        )
-        _merged_world_p = (
-            _to_np(_merged_obj.pose.p) if _merged_obj is not None and getattr(_merged_obj, "pose", None) is not None else None
-        )
-        _tcp_world_p = _to_np(self.agent.tcp.pose.p)
-        print(f"[commit env={env_idx}] obj_p={_op.round(4).tolist()}  "
-              f"tcp_p={_tp.round(4).tolist()}  |tcp-obj|={float(np.linalg.norm(_tp - _op)):.4f}")
-        print(f"    pose_target: name={_pt_name!r}  scene_idxs={_pt_si}  "
-              f"world_p.shape={_pt_world_p.shape}  world_p={_pt_world_p.round(4).tolist()}")
-        if _merged_world_p is not None:
-            print(f"    merged.active_obj: name={_merged_name!r}  scene_idxs={_merged_si}  "
-                  f"world_p.shape={_merged_world_p.shape}  world_p[{env_idx}]={_merged_world_p[env_idx].round(4).tolist()}")
-        print(f"    tcp.pose.p: shape={_tcp_world_p.shape}  world_p[{env_idx}]={_tcp_world_p[env_idx].round(4).tolist()}")
-        # Read the underlying per-env SAPIEN entity for env_idx directly, to
-        # see if the merged wrapper's batched pose actually tracks the live
-        # physx entity.
-        try:
-            objs = getattr(_merged_obj, "_objs", None)
-            scene_idxs_list = _to_np(getattr(_merged_obj, "_scene_idxs", np.array([]))).reshape(-1).tolist()
-            if objs is not None and env_idx in scene_idxs_list:
-                row = scene_idxs_list.index(env_idx)
-                ent = objs[row]
-                ent_name = getattr(ent, "name", "?")
-                ent_pose = getattr(ent, "pose", None)
-                if ent_pose is not None:
-                    ent_p = _to_np(ent_pose.p).reshape(-1)[:3]
-                    print(f"    underlying SAPIEN[{env_idx}]: name={ent_name!r}  "
-                          f"world_p={ent_p.round(4).tolist()}")
-        except Exception as _exc:
-            print(f"    (underlying entity read failed: {_exc!r})")
-        # Direct grasp/contact verification against the merged actor.
-        try:
-            f1 = _to_np(self._base_env.scene.get_pairwise_contact_forces(
-                self.agent.finger1_link, _merged_obj))
-            f2 = _to_np(self._base_env.scene.get_pairwise_contact_forces(
-                self.agent.finger2_link, _merged_obj))
-            f1_e = float(np.linalg.norm(f1[env_idx] if f1.ndim == 2 else f1))
-            f2_e = float(np.linalg.norm(f2[env_idx] if f2.ndim == 2 else f2))
-            grasped_now = self.agent.is_grasping(_merged_obj, max_angle=30)
-            grasped_e = bool(_to_np(grasped_now).reshape(-1)[env_idx])
-            print(f"    finger contact: f1_force={f1_e:.4f}N  f2_force={f2_e:.4f}N  "
-                  f"is_grasping(merged)[{env_idx}]={grasped_e}")
-        except Exception as _exc:
-            print(f"    (contact check failed: {_exc!r})")
 
         _target_ent, target_key = self._target(env_idx)
         interacted = list(self._episode_interacted[env_idx].values())
