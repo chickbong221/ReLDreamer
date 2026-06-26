@@ -456,8 +456,39 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
               f"world_p.shape={_pt_world_p.shape}  world_p={_pt_world_p.round(4).tolist()}")
         if _merged_world_p is not None:
             print(f"    merged.active_obj: name={_merged_name!r}  scene_idxs={_merged_si}  "
-                  f"world_p.shape={_merged_world_p.shape}  world_p={_merged_world_p.round(4).tolist()}")
-        print(f"    tcp.pose.p: shape={_tcp_world_p.shape}  world_p={_tcp_world_p.round(4).tolist()}")
+                  f"world_p.shape={_merged_world_p.shape}  world_p[{env_idx}]={_merged_world_p[env_idx].round(4).tolist()}")
+        print(f"    tcp.pose.p: shape={_tcp_world_p.shape}  world_p[{env_idx}]={_tcp_world_p[env_idx].round(4).tolist()}")
+        # Read the underlying per-env SAPIEN entity for env_idx directly, to
+        # see if the merged wrapper's batched pose actually tracks the live
+        # physx entity.
+        try:
+            objs = getattr(_merged_obj, "_objs", None)
+            scene_idxs_list = _to_np(getattr(_merged_obj, "_scene_idxs", np.array([]))).reshape(-1).tolist()
+            if objs is not None and env_idx in scene_idxs_list:
+                row = scene_idxs_list.index(env_idx)
+                ent = objs[row]
+                ent_name = getattr(ent, "name", "?")
+                ent_pose = getattr(ent, "pose", None)
+                if ent_pose is not None:
+                    ent_p = _to_np(ent_pose.p).reshape(-1)[:3]
+                    print(f"    underlying SAPIEN[{env_idx}]: name={ent_name!r}  "
+                          f"world_p={ent_p.round(4).tolist()}")
+        except Exception as _exc:
+            print(f"    (underlying entity read failed: {_exc!r})")
+        # Direct grasp/contact verification against the merged actor.
+        try:
+            f1 = _to_np(self._base_env.scene.get_pairwise_contact_forces(
+                self.agent.finger1_link, _merged_obj))
+            f2 = _to_np(self._base_env.scene.get_pairwise_contact_forces(
+                self.agent.finger2_link, _merged_obj))
+            f1_e = float(np.linalg.norm(f1[env_idx] if f1.ndim == 2 else f1))
+            f2_e = float(np.linalg.norm(f2[env_idx] if f2.ndim == 2 else f2))
+            grasped_now = self.agent.is_grasping(_merged_obj, max_angle=30)
+            grasped_e = bool(_to_np(grasped_now).reshape(-1)[env_idx])
+            print(f"    finger contact: f1_force={f1_e:.4f}N  f2_force={f2_e:.4f}N  "
+                  f"is_grasping(merged)[{env_idx}]={grasped_e}")
+        except Exception as _exc:
+            print(f"    (contact check failed: {_exc!r})")
 
         _target_ent, target_key = self._target(env_idx)
         interacted = list(self._episode_interacted[env_idx].values())
