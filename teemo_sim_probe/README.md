@@ -135,7 +135,7 @@ Run an MS-HAB probe:
 ```bash
 python -m teemo_sim_probe.run_mshab_probe \
     --ckpt-dir mshab_checkpoints/rl/set_table/pick/024_bowl \
-    --steps 200 --save-every 20 --video
+    --steps 200 --save-every 2 --video
 ```
 
 `--save-every` controls rendering only. Selection and temporal state still
