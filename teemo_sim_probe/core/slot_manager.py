@@ -1,4 +1,4 @@
-"""R12: identity-keyed slot assignment with reset_flag on identity change."""
+"""Identity-keyed slot assignment with reset_flag on identity change."""
 
 from __future__ import annotations
 

@@ -8,8 +8,8 @@ under `teemo_sim_probe/adapters/`.
 
 There are two node types:
 
-* `ee` — the end effector;
-* `object` — every non-robot actor or articulation link, including handles,
+* `ee` - the end effector;
+* `object` - every non-robot actor or articulation link, including handles,
   drawers, counters, and free objects.
 
 A handle has no special admission rule. It appears only when the robot touched
@@ -30,29 +30,32 @@ Support stops after one hop. There is no contact BFS and no recursive supporter
 closure. The task target is not injected as a member just because it is active.
 Robot links provide interaction evidence but are never members.
 
-The collector writes schema-v3 pickles:
+The collector writes schema-v4 pickles:
 
 ```text
 {
-  _schema_version: 3,
+  _schema_version: 4,
   obj_id,
   entity_key,
   subtask_type,
   robot_qpos,
   obj_pose_wrt_base,
+  tcp_pose_wrt_base,
   interaction_rollouts
 }
 ```
 
-The legacy pose arrays remain for affordance mining. Affordances use the same
-entity-key namespace for actors and articulation links. Incidental contact is
-enough for whitelist membership but not enough to create an affordance.
+The pose arrays are consumed by affordance mining. Affordances use the same
+entity-key namespace for actors and articulation links. Each usable success
+pose becomes one affordance candidate; runtime selects from those candidates
+using live TCP distance plus approach orientation. Incidental contact is enough
+for whitelist membership but not enough to create an affordance.
 
 `build_subtask_whitelists` takes the union across successful rollouts:
 
 ```text
 members = robot-interacted entities
-        ∪ direct supporters of those entities
+        union direct supporters of those entities
 ```
 
 Counts are stored for audit and never filter membership.
@@ -65,7 +68,6 @@ The graph builder advances every environment step:
 active (subtask, target key)
   -> load per-subtask whitelist
   -> build all current non-robot segmentation candidates
-  -> merge ordinary short-term persistence
   -> hard whitelist gate
   -> classify by affordance + whitelist role
   -> role-aware capacity (interacted, support, other)
@@ -80,10 +82,6 @@ Name-based scene filters are deliberately absent. Relevance comes from the
 whitelist, so a visible whitelisted drawer or counter keeps its segmentation
 mask and appears in the overlay.
 
-Previously visible nodes may remain for `k_persist` frames. Their last observed
-relations are marked `stale`, carry `observed_frame` and `age`, render as blue
-dashed edges, and do not update temporal histories.
-
 ## Setup
 
 Set the ManiSkill root (the parent of `data/`):
@@ -92,7 +90,7 @@ Set the ManiSkill root (the parent of `data/`):
 export MS_ASSET_DIR=/root/.maniskill
 ```
 
-Collect schema-v3 successful rollouts:
+Collect schema-v4 successful rollouts:
 
 ```bash
 python -m teemo_sim_probe.tools.collect_robot_success_states \
@@ -101,7 +99,7 @@ python -m teemo_sim_probe.tools.collect_robot_success_states \
     --no-skip-done
 ```
 
-`--no-skip-done` is required once when replacing schema-v2 assets.
+`--no-skip-done` is required when replacing schema-v3 or older assets.
 
 Mine affordances:
 
@@ -109,8 +107,7 @@ Mine affordances:
 python -m teemo_sim_probe.tools.build_affordances \
     --success-states-dir "$MS_ASSET_DIR/data/robot_success_states" \
     --robot fetch --subtask pick \
-    --out teemo_sim_probe/configs/affordances.json \
-    --n-components 4
+    --out teemo_sim_probe/configs/affordances.json
 ```
 
 If released/local `open` or `close` checkpoints are available, collect them
@@ -122,7 +119,7 @@ python -m teemo_sim_probe.tools.build_affordances \
     --success-states-dir "$MS_ASSET_DIR/data/robot_success_states" \
     --robot fetch --subtask open \
     --out teemo_sim_probe/configs/affordances.json \
-    --n-components 4 --merge-existing
+    --merge-existing
 ```
 
 Mine whitelists:

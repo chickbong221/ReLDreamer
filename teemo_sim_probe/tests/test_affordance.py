@@ -199,6 +199,32 @@ class SelectActiveComponentTests(unittest.TestCase):
             select_active_component(np.array([0.4, 0.0, 0.0]), anchors), 2
         )
 
+    def test_orientation_breaks_near_tie(self):
+        anchors = np.array([[0.0, 0.0, 0.0], [0.001, 0.0, 0.0]])
+        comps = [
+            AffordanceComponent(
+                np.array([0.0, 0.0, 0.0]),
+                0.045,
+                approach_dir_obj_frame=np.array([0.0, 0.0, -1.0]),
+            ),
+            AffordanceComponent(
+                np.array([0.001, 0.0, 0.0]),
+                0.045,
+                approach_dir_obj_frame=np.array([0.0, 0.0, 1.0]),
+            ),
+        ]
+        self.assertEqual(
+            select_active_component(
+                np.array([0.0, 0.0, 0.0]),
+                anchors,
+                components=comps,
+                obj_pose_world=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+                tcp_pose_world=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+                tcp_axis_local=[0.0, 0.0, 1.0],
+            ),
+            1,
+        )
+
     def test_empty(self):
         self.assertIsNone(select_active_component(np.array([0, 0, 0]), None))
         self.assertIsNone(
@@ -353,6 +379,27 @@ class InteractiveEdgeTests(unittest.TestCase):
         graph = Graph(0, "env", "cam", nodes=[_ee(), node])
         ee_interactive_object_edges(graph, state, cfg)
         self.assertEqual(node.attributes.get("affordance_a_star"), 1)
+
+    def test_a_star_is_fixed_after_first_episode_selection(self):
+        cfg = _cfg(self._aff_set())
+
+        first = _interactive_obj_node()
+        first_graph = Graph(0, "env", "cam", nodes=[_ee(), first])
+        ee_interactive_object_edges(
+            first_graph,
+            _State([0.05, 0.0, 0.01], gripper_width=0.050),
+            cfg,
+        )
+        self.assertEqual(first.attributes.get("affordance_a_star"), 1)
+
+        later = _interactive_obj_node()
+        later_graph = Graph(1, "env", "cam", nodes=[_ee(), later])
+        ee_interactive_object_edges(
+            later_graph,
+            _State([0.0, 0.0, 0.02], gripper_width=0.045),
+            cfg,
+        )
+        self.assertEqual(later.attributes.get("affordance_a_star"), 1)
 
     def test_emits_anchor_based_spatial(self):
         cfg = _cfg(self._aff_set())

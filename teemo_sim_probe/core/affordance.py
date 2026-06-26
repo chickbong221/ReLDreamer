@@ -247,16 +247,51 @@ def transform_approach_dir(
 def select_active_component(
     tcp_xyz_world: np.ndarray,
     anchors_world: Optional[np.ndarray],
+    *,
+    components: Optional[List[AffordanceComponent]] = None,
+    obj_pose_world: Optional[List[float]] = None,
+    tcp_pose_world: Optional[List[float]] = None,
+    tcp_axis_local: Optional[List[float]] = None,
+    orientation_weight: float = 0.10,
 ) -> Optional[int]:
-    """argmin distance from TCP to each anchor. Returns None if no candidates."""
+    """Choose the live affordance candidate closest to the TCP.
+
+    Distance is always used. When the TCP pose and candidate approach
+    directions are available, the score also adds an orientation penalty in
+    metres: ``orientation_weight * angle/pi``. This keeps old callers distance-
+    only compatible while letting raw success samples compete on both position
+    and approach orientation.
+    """
     if anchors_world is None or len(anchors_world) == 0:
         return None
     tcp = np.asarray(tcp_xyz_world, dtype=float).reshape(-1)
     if tcp.shape[0] != 3 or not np.all(np.isfinite(tcp)):
         return None
     diffs = anchors_world - tcp[None, :]
-    d2 = np.einsum("ij,ij->i", diffs, diffs)
-    return int(np.argmin(d2))
+    scores = np.linalg.norm(diffs, axis=1)
+
+    if (
+        components is not None
+        and obj_pose_world is not None
+        and tcp_pose_world is not None
+        and tcp_axis_local is not None
+        and orientation_weight > 0.0
+    ):
+        tcp_R = _quat_wxyz_to_rotmat(np.asarray(tcp_pose_world[3:7], dtype=float))
+        if tcp_R is not None:
+            tcp_dir = _normalize(
+                tcp_R @ np.asarray(tcp_axis_local, dtype=float).reshape(3)
+            )
+            if tcp_dir is not None:
+                for idx, comp in enumerate(components[: len(scores)]):
+                    aff_dir = transform_approach_dir(obj_pose_world, comp)
+                    if aff_dir is None:
+                        continue
+                    cos = float(np.clip(np.dot(tcp_dir, aff_dir), -1.0, 1.0))
+                    angle = float(np.arccos(cos))
+                    scores[idx] += orientation_weight * (angle / np.pi)
+
+    return int(np.argmin(scores))
 
 
 def lookup_components(

@@ -19,9 +19,17 @@ from ..core.schema import Edge, Graph
 from .palette import ColorMap
 
 
-# Absolute physical predicates lead the absolute block so grasp/contact/support
-# read before the spatial bin labels.
-_PHYSICAL_ABSOLUTE = ("grasp", "support", "contact")
+# Absolute-block ordering: spatial first, then physical (planar-distance,
+# height-offset, orientation-alignment, then contact / grasp / support). The
+# eye lands on "where" before "what kind of contact".
+_ABSOLUTE_ORDER = (
+    "planar-distance",
+    "height-offset",
+    "orientation-alignment",
+    "contact",
+    "grasp",
+    "support",
+)
 
 
 def _radial_layout(
@@ -73,7 +81,7 @@ def _split_labels(elist: List[Edge]) -> Tuple[List[str], List[str]]:
 
     The label is just the discrete value (``far``, ``contact``,
     ``maintain-grasp`` ...) -- the relation name is omitted because the value
-    alone reads cleanly along the edge.
+    alone reads cleanly inside the small chip box.
     """
     absolute: List[Edge] = []
     temporal: List[Edge] = []
@@ -81,9 +89,10 @@ def _split_labels(elist: List[Edge]) -> Tuple[List[str], List[str]]:
         (temporal if e.temporal else absolute).append(e)
 
     def _abs_rank(e: Edge) -> Tuple[int, str]:
-        if e.relation in _PHYSICAL_ABSOLUTE:
-            return (0, str(_PHYSICAL_ABSOLUTE.index(e.relation)))
-        return (1, e.relation)
+        try:
+            return (_ABSOLUTE_ORDER.index(e.relation), "")
+        except ValueError:
+            return (len(_ABSOLUTE_ORDER), e.relation)
 
     absolute.sort(key=_abs_rank)
     temporal.sort(key=lambda e: e.relation)
@@ -186,48 +195,55 @@ def render_graph(
         if not absolute_labels and not temporal_labels:
             continue
 
-        # Label centre = midpoint of the trimmed edge. A small perpendicular
-        # offset keeps the text from sitting on top of the arrow shaft.
+        # Label anchor: midpoint of the trimmed edge, nudged perpendicular to
+        # the arrow shaft so the chip box doesn't sit on top of the line.
         mid = a0 + (a1 - a0) * 0.5
-        # Perpendicular unit vector (rotate u by 90 deg) for the text offset.
         perp = np.array([-u[1], u[0]])
-        text_offset = perp * 0.18
+        chip_offset = 0.32
 
-        absolute_color = edge_color if is_stale else "#222"
-        temporal_color = "#5a3d99"
+        # Distinct chip backgrounds so absolute and temporal blocks are
+        # immediately separable; stale edges override absolute with the blue
+        # language used elsewhere for frozen-pose pairs.
+        absolute_bg = "#d9ecff" if is_stale else "#fff3c4"   # warm cream
+        absolute_edge = "#2f75b5" if is_stale else "#c79a2f"
+        absolute_text = "#1c3d6e" if is_stale else "#3a2a05"
 
-        # Build the stacked label list. Plain italic, no bbox -- the reference
-        # style. Absolute lines first, then temporal lines below in a muted
-        # purple so the eye still separates them without a background chip.
-        text_lines = []
-        line_colors = []
-        for lab in absolute_labels:
-            text_lines.append(lab)
-            line_colors.append(absolute_color)
-        for lab in temporal_labels:
-            text_lines.append(lab)
-            line_colors.append(temporal_color)
+        temporal_bg = "#e4dcf5"                              # soft lavender
+        temporal_edge = "#6c5aa1"
+        temporal_text = "#2c1f5c"
 
-        # If all lines share one color we can render in a single text() call;
-        # otherwise render each line separately so we can color them
-        # independently while keeping them vertically stacked.
-        anchor = mid + text_offset
-        if len(set(line_colors)) == 1:
-            ax.text(
-                anchor[0], anchor[1], "\n".join(text_lines),
-                fontsize=10.5, ha="center", va="center", style="italic",
-                color=line_colors[0], zorder=4, linespacing=1.05,
-            )
+        if absolute_labels and temporal_labels:
+            abs_anchor = mid + perp * chip_offset
+            tmp_anchor = mid - perp * chip_offset
+        elif absolute_labels:
+            abs_anchor = mid + perp * (chip_offset * 0.6)
+            tmp_anchor = None
         else:
-            line_h = 0.16
-            total = (len(text_lines) - 1) * line_h
-            for i, (lab, col) in enumerate(zip(text_lines, line_colors)):
-                y = anchor[1] + total / 2.0 - i * line_h
-                ax.text(
-                    anchor[0], y, lab,
-                    fontsize=10.5, ha="center", va="center", style="italic",
-                    color=col, zorder=4,
-                )
+            abs_anchor = None
+            tmp_anchor = mid + perp * (chip_offset * 0.6)
+
+        if absolute_labels and abs_anchor is not None:
+            ax.text(
+                abs_anchor[0], abs_anchor[1], "\n".join(absolute_labels),
+                fontsize=9.5, ha="center", va="center", style="italic",
+                color=absolute_text, zorder=4, linespacing=1.05,
+                bbox=dict(
+                    facecolor=absolute_bg, edgecolor=absolute_edge,
+                    linewidth=0.7, pad=0.45, alpha=0.96,
+                    boxstyle="round,pad=0.35",
+                ),
+            )
+        if temporal_labels and tmp_anchor is not None:
+            ax.text(
+                tmp_anchor[0], tmp_anchor[1], "\n".join(temporal_labels),
+                fontsize=9.5, ha="center", va="center", style="italic",
+                color=temporal_text, zorder=4, linespacing=1.05,
+                bbox=dict(
+                    facecolor=temporal_bg, edgecolor=temporal_edge,
+                    linewidth=0.7, pad=0.45, alpha=0.96,
+                    boxstyle="round,pad=0.35",
+                ),
+            )
 
     # ----------------------------------------------------------------- nodes
     for node in graph.nodes:

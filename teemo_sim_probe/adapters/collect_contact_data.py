@@ -12,9 +12,8 @@ For each successful rollout it records:
 
 The active target is not injected as a whitelist member unless the robot
 actually contacts it. Robot links are evidence of interaction, never whitelist
-members.  The legacy ``robot_qpos`` and ``obj_pose_wrt_base`` arrays remain in
-the payload so the affordance miner continues to consume the same success
-samples.
+members. Pose arrays are stored for affordance mining, including schema-v4
+``tcp_pose_wrt_base`` to avoid rebuilding TCP poses with a separate FK chain.
 """
 
 from __future__ import annotations
@@ -45,7 +44,6 @@ if TYPE_CHECKING:
 
 _SCHEMA_VERSION = 4
 _EPS_FORCE_DEFAULT = 0.05
-_EPS_Z_DEFAULT = 0.01
 _MIN_VERTICAL_FORCE_RATIO_DEFAULT = 0.5
 
 
@@ -102,7 +100,6 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         env,
         *,
         eps_force: float = _EPS_FORCE_DEFAULT,
-        eps_z: float = _EPS_Z_DEFAULT,
         min_vertical_force_ratio: float = _MIN_VERTICAL_FORCE_RATIO_DEFAULT,
         out_root: Optional[str] = None,
     ) -> None:
@@ -130,7 +127,6 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         self.num_envs = int(getattr(base, "num_envs", 1))
 
         self.eps_force = float(eps_force)
-        self.eps_z = float(eps_z)
         self.min_vertical_force_ratio = float(min_vertical_force_ratio)
 
         self.success_robot_qpos: List[List[float]] = []
@@ -333,10 +329,9 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
                     max_robot_force=force, grasped=True,
                 )
 
-        # Support evidence may be visible before the robot touches the object.
-        # We buffer it for interacted entities plus the active target, but at
-        # commit time we keep only supports whose supported object was actually
-        # interacted with during the successful rollout.
+        # Support evidence may be visible before robot-object contact. Buffer
+        # interacted entities plus the active target; the whitelist miner later
+        # admits only supporters of interacted roots.
         roots = dict(self._episode_entities[env_idx])
         if physics_target_ent is not None:
             roots[target_key] = physics_target_ent
@@ -353,10 +348,10 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         candidates: Dict[str, Any],
     ) -> None:
         # Keep the best-ever observation per pair, ranked by
-        # (is_resting, peak_force). Non-resting near-misses are buffered so
-        # that the peak resting observation survives a later lift-off frame
-        # where the force vanishes; commit-time filtering then discards
-        # any pair that never reached a confirmed resting state.
+        # (vertical-load evidence, peak force).  Do not use pose-origin z as a
+        # support gate: large scene links often place their origin far from the
+        # actual support surface, so a real table/drawer/counter support can
+        # have a misleading origin height.
         supported_xyz = _entity_xyz(supported, env_idx)
         scene = self._base_env.scene
         for supporter_key, supporter in candidates.items():
@@ -370,11 +365,8 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
                 continue
             vertical_ratio = abs(float(vector[2])) / force if force > 0 else 0.0
             supporter_xyz = _entity_xyz(supporter, env_idx)
-            is_resting = bool(
+            vertical_support = bool(
                 vertical_ratio >= self.min_vertical_force_ratio
-                and supporter_xyz is not None
-                and supported_xyz is not None
-                and supporter_xyz[2] + self.eps_z < supported_xyz[2]
             )
             dz = (
                 float(supported_xyz[2] - supporter_xyz[2])
@@ -387,7 +379,7 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
                 "force": force,
                 "vertical_force_ratio": vertical_ratio,
                 "dz": dz,
-                "is_resting": is_resting,
+                "vertical_support": vertical_support,
             }
             pair = (supporter_key, supported_key)
             prior = self._episode_supports[env_idx].get(pair)
@@ -395,23 +387,33 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
                 self._episode_supports[env_idx][pair] = rec
                 continue
             prior_rank = (
-                bool(prior.get("is_resting", False)),
+                bool(prior.get("vertical_support", False)),
                 float(prior.get("force", 0.0)),
             )
-            if (is_resting, force) > prior_rank:
+            if (vertical_support, force) > prior_rank:
                 self._episode_supports[env_idx][pair] = rec
 
     def _commit_success(self, env_idx: int) -> None:
-        # Preserve the legacy affordance samples, but record only the success
-        # transition rather than every frame while success remains true.
+        # Record one pose sample at the first success transition.
         qpos = _to_np(self.agent.robot.qpos)[env_idx]
+        actual_state = get_privileged_state(
+            self, env_idx, mshab_object_name="actual"
+        )
         merged_state = get_privileged_state(
             self, env_idx, mshab_object_name="merged"
         )
+        # Mine affordances in the real target/link frame. The merged MS-HAB
+        # actor is useful for grasp/contact predicates, but its pose origin can
+        # be a task-level proxy rather than the visible object's local frame.
         pose_target = (
-            merged_state.active_obj if self.subtask_type == "pick"
-            else (merged_state.active_handle_link or merged_state.active_obj)
+            actual_state.active_obj if self.subtask_type == "pick"
+            else (actual_state.active_handle_link or actual_state.active_obj)
         )
+        if pose_target is None:
+            pose_target = (
+                merged_state.active_obj if self.subtask_type == "pick"
+                else (merged_state.active_handle_link or merged_state.active_obj)
+            )
         if pose_target is None or getattr(pose_target, "pose", None) is None:
             raise RuntimeError("successful rollout has no resolvable target pose")
         relative_pose = _to_np(
@@ -434,9 +436,8 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
 
         _target_ent, target_key = self._target(env_idx)
         interacted = list(self._episode_interacted[env_idx].values())
-        # Always seed the active target as a support root: clean picks may
-        # never cross the robot-interaction force floor on the target itself,
-        # but its supporter is still the relevant scene anchor.
+        # Keep active-target supports in the rollout for audit. Whitelist
+        # admission still requires the supported entity to be interacted.
         root_keys = {item["key"] for item in interacted}
         root_keys.add(target_key)
         supports = [
@@ -444,7 +445,6 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             in self._episode_supports[env_idx].items()
             if supported in root_keys
             and value.get("supporter") is not None
-            and bool(value.get("is_resting"))
         ]
         self.interaction_rollouts.append({
             "target_key": target_key,

@@ -1,12 +1,7 @@
 """Build the two-type node set (``ee`` + ``object``) for one frame.
 
-Implements the detection rules from the design doc:
-
-  R1  exclude segmentation id 0 (background)
-  R2  merge gripper / tcp / finger links into the single ``ee`` node
-  R3  every non-bg, non-robot Actor  -> object node
-  R4  every non-robot Link           -> object node (articulation parts/handles)
-  R5  every admitted object comes from current segmentation
+The builder excludes background, folds gripper links into the single ``ee``
+node, and creates object nodes for visible non-robot actors and links.
 
 Task relevance is decided later by the hard per-subtask whitelist.  This
 module deliberately avoids name-based scene filtering so a visible supporter
@@ -143,17 +138,17 @@ def build_nodes(
 
     nodes: Dict[str, Node] = {}
 
-    # 1. ee node always exists.
+    # The ee node always exists.
     nodes["ee"] = make_ee_node(state)
 
-    # 2. iterate visible seg ids (R1 excludes id 0).
+    # Iterate visible segmentation ids, excluding background.
     for seg_id in unique_seg_ids(seg, exclude_background=True):
         entity = state.seg_id_map.get(seg_id)
         if entity is None:
             continue
         m = mask_for_id(seg, seg_id)
 
-        # R2: robot links -> ee (if gripper) or excluded.
+        # Robot links are folded into ee when they are gripper links.
         if _is_robot_link(entity, state.robot_links):
             if _is_ee_link(entity, state.ee_links):
                 masks.add("ee", m)
@@ -168,7 +163,7 @@ def build_nodes(
         if area <= 0:
             continue
 
-        # R3 / R4: actor or non-robot link -> object node.
+        # Visible actors and non-robot links become object nodes.
         key = canonical_object_key(entity)
         if key not in nodes:
             nodes[key] = make_object_node(entity, state)

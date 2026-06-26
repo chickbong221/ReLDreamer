@@ -4,7 +4,7 @@
 #   * teemo_sim_probe/configs/subtask_whitelists/<subtask>_<target>.json
 #
 # Steps (in order):
-#   2) collect schema-v3 successful interaction rollouts
+#   2) collect schema-v4 successful interaction rollouts
 #   3) mine    teemo_sim_probe/configs/affordances.json
 #   4) mine    teemo_sim_probe/configs/subtask_whitelists/
 #
@@ -15,16 +15,16 @@
 #
 # Usage:
 #   export MS_ASSET_DIR=/root/.maniskill
-#   bash teemo_sim_probe/tools/setup_assets.sh [ckpt_root] [n_success] [n_components]
+#   bash teemo_sim_probe/tools/setup_assets.sh [ckpt_root] [n_success] [max_samples]
 #
 # Example:
-#   bash teemo_sim_probe/tools/setup_assets.sh mshab_checkpoints 30 4
+#   bash teemo_sim_probe/tools/setup_assets.sh mshab_checkpoints 30 2000
 
 set -euo pipefail
 
 CKPT_ROOT="${1:-mshab_checkpoints}"
 N_SUCCESS="${2:-30}"
-N_COMPONENTS="${3:-4}"
+MAX_SAMPLES="${3:-2000}"
 
 if [[ ! -d "${CKPT_ROOT}/rl" ]]; then
     echo "ERROR: ${CKPT_ROOT}/rl not found." >&2
@@ -60,14 +60,15 @@ python -m teemo_sim_probe.tools.collect_robot_success_states \
 
 echo ""
 echo "================================================================"
-echo " STEP 3 -- mine ${AFFORD_JSON} (R6)"
+echo " STEP 3 -- mine ${AFFORD_JSON}"
+echo "   max samples  = ${MAX_SAMPLES} affordance candidates per obj"
 echo "================================================================"
 python -m teemo_sim_probe.tools.build_affordances \
     --success-states-dir "${MS_ASSET_DIR}/data/robot_success_states" \
     --robot fetch \
     --subtask pick \
     --out "${AFFORD_JSON}" \
-    --n-components "${N_COMPONENTS}"
+    --max-samples "${MAX_SAMPLES}"
 
 echo ""
 echo "================================================================"

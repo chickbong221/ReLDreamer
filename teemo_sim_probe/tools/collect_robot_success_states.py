@@ -4,7 +4,7 @@ Discovers checkpoints under
 ``<ckpt-root>/<task>/<subtask>/<target>/policy.pt`` and rolls each policy out
 in a vectorised MS-HAB subtask environment wrapped in
 the local ``FetchCollectContactDataWrapper``. MS-HAB remains untouched. The
-wrapper commits one schema-v3 record per successful environment rollout:
+wrapper commits one schema-v4 record per successful environment rollout:
 success pose data, every robot-interacted entity, and direct supporters of the
 interacted entities. On ``close()`` it writes to::
 
@@ -78,8 +78,9 @@ def _already_done(
         with open(pkl, "rb") as f:
             d = pickle.load(f)
         return (
-            int(d.get("_schema_version", 0)) >= 3
+            int(d.get("_schema_version", 0)) >= 4
             and len(d.get("robot_qpos", [])) >= min_samples
+            and len(d.get("tcp_pose_wrt_base", [])) >= min_samples
             and len(d.get("interaction_rollouts", [])) >= min_samples
         )
     except Exception:
@@ -88,7 +89,7 @@ def _already_done(
 
 def _build_env(task: str, obj_id: str, args):
     """Recreate the wrapper stack the released SAC was trained on, plus the
-    ``FetchCollectRobotInitWrapper`` on the inside (so it sees raw success
+    local collector on the inside (so it sees raw success
     info before policy-side obs transforms)."""
     import gymnasium as gym
     from mani_skill import ASSET_DIR
@@ -100,9 +101,7 @@ def _build_env(task: str, obj_id: str, args):
         FetchDepthObservationWrapper,
         FrameStack,
     )
-    from teemo_sim_probe.adapters.collect_contact_data import (
-        FetchCollectContactDataWrapper as FetchCollectRobotInitWrapper,
-    )
+    from teemo_sim_probe.adapters.collect_contact_data import FetchCollectContactDataWrapper
 
     RD = ASSET_DIR / "scene_datasets/replica_cad_dataset/rearrange"
     plan_fp = RD / "task_plans" / task / args.subtask / "train" / f"{obj_id}.json"
@@ -141,7 +140,7 @@ def _build_env(task: str, obj_id: str, args):
     # Collect on the INSIDE (closest to base env) so it reads raw
     # ``info["success"]`` and raw ``agent.robot.qpos`` before any policy-side
     # wrapper has a chance to mutate them.
-    collect = FetchCollectRobotInitWrapper(env)
+    collect = FetchCollectContactDataWrapper(env)
     env = collect
     env = FetchDepthObservationWrapper(env, cat_state=True, cat_pixels=False)
     env = FrameStack(
@@ -208,7 +207,7 @@ def _collect_one(task: str, obj_id: str, ckpt_dir: Path, args) -> int:
             print(f"  [{obj_id}] step={step} successes={n_succ} "
                   f"({step / max(time.time() - t0, 1e-9):.1f} steps/s)")
 
-    # close() flushes the pickle to disk via FetchCollectRobotInitWrapper.
+    # close() flushes the pickle to disk via the collector wrapper.
     venv.close()
     n_final = len(collect.success_robot_qpos)
     print(f"[wrote] {collect.save_path}  ({n_final} samples)")
@@ -303,7 +302,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         if not args.no_skip_done and _already_done(
             asset_dir, args.subtask, obj_id, args.n_success,
         ):
-            print(f"[skip] {obj_id}: existing .pkl already has "
+            print(f"[skip] {obj_id}: existing schema-v4 .pkl already has "
                   f">= {args.n_success} samples (use --no-skip-done to redo)")
             ok += 1
             continue

@@ -1,9 +1,8 @@
-"""Whitelist admission, role-aware capacity, and short-term persistence.
+"""Whitelist admission, role-aware capacity, and optional persistence helpers.
 
 Pipeline per frame:
 
-    merge_persistent(visible)                 # k_persist identity-keyed retention
-    -> apply_whitelist(candidates, whitelist)  # hard eligibility gate
+    apply_whitelist(candidates, whitelist)     # hard eligibility gate
     -> overflow_truncate(eligible, n_slots)    # role-aware, then distance/id
 
 No scoring or secondary contact-based admission path exists. Distance is used
@@ -30,10 +29,8 @@ def _planar_dist(a: Node, b_xy: Optional[np.ndarray]) -> float:
 class NodeSelector:
     """Stateful selector. One instance per camera/episode.
 
-    Holds the active subtask's ``Whitelist`` (set by the GraphBuilder
-    at episode reset). Persistence state survives unselection within the
-    ``k_persist`` window -- ``evict_expired`` is the only path that drops
-    history entries.
+    Holds the active subtask's ``Whitelist``. GraphBuilder may update it when
+    MS-HAB advances to another subtask.
     """
 
     def __init__(self, cfg: dict):
@@ -42,7 +39,7 @@ class NodeSelector:
         self.n_slots = int(sel["n_slots"])
         self.k_persist = int(sel["k_persist"])
 
-        # Active whitelist; set by GraphBuilder.set_whitelist at reset. None
+        # Active whitelist; set by GraphBuilder before selection. None
         # means "no asset loaded yet" and triggers a fail-loud error in the
         # selection path -- the hard gate explicitly forbids a silent
         # "admit everything" fallback.
@@ -90,7 +87,7 @@ class NodeSelector:
 
     # ---------------------------------------------------------------- whitelist
     def set_whitelist(self, whitelist: Whitelist) -> None:
-        """Bind the active subtask's whitelist. Called once at episode reset."""
+        """Bind the active subtask's whitelist."""
         self._whitelist = whitelist
 
     @property
@@ -100,9 +97,18 @@ class NodeSelector:
     # ---------------------------------------------------------------- selection
     def apply_whitelist(
         self, nodes: Dict[str, Node],
+        *,
+        active_target_node_id: Optional[str] = None,
     ) -> Dict[str, Node]:
         """Hard gate: keep ``ee`` plus every node whose ``match_key`` is in the
         active whitelist. Everything else is dropped before slot assignment.
+
+        When ``active_target_node_id`` is provided, actor candidates whose role
+        contains ``interacted`` must additionally match that exact instance --
+        this filters out same-category siblings (e.g. ``actor:024_bowl-0`` when
+        the current rollout is interacting with ``actor:024_bowl-3``). The
+        whitelist itself is still keyed at the canonical category level so it
+        can serve every scene that uses the same task target.
 
         Raises if no whitelist is bound.
         """
@@ -118,10 +124,22 @@ class NodeSelector:
                 kept[nid] = n
                 continue
             key = match_key(n)
-            if wl.contains(key):
-                n.attributes["whitelist_key"] = key
-                n.attributes["whitelist_roles"] = sorted(wl.roles(key))
-                kept[nid] = n
+            if not wl.contains(key):
+                continue
+            roles = wl.roles(key)
+            # Instance-level filter for interacted actors: when an active
+            # target instance is known, drop other instances of the same
+            # category that would also pass the canonical match.
+            if (
+                "interacted" in roles
+                and active_target_node_id is not None
+                and n.attributes.get("is_actor")
+                and n.node_id != active_target_node_id
+            ):
+                continue
+            n.attributes["whitelist_key"] = key
+            n.attributes["whitelist_roles"] = sorted(roles)
+            kept[nid] = n
         return kept
 
     def overflow_truncate(
@@ -153,7 +171,7 @@ class NodeSelector:
 
     # ---------------------------------------------------------------- commit
     def commit(self, nodes: Dict[str, Node], frame: int) -> None:
-        """Snapshot every visible whitelisted object for short persistence."""
+        """Snapshot every visible whitelisted object for history bookkeeping."""
         for ent_id, n in nodes.items():
             if n is None or n.node_type != "object":
                 continue
@@ -169,10 +187,8 @@ class NodeSelector:
     def evict_expired(self, frame: int) -> List[str]:
         """Drop history entries whose age exceeds ``k_persist`` frames.
 
-        Bug P fix: age-based eviction. An unselected node is NOT dropped --
-        only one that has been unseen longer than the retention window. Used
-        by ``graph_builder.step`` instead of the old "evict everything not
-        selected this frame" sweep, which collapsed the horizon to ~1 frame.
+        An unselected node is not dropped immediately; only entries unseen
+        longer than the retention window expire.
         """
         if self.k_persist <= 0:
             return []

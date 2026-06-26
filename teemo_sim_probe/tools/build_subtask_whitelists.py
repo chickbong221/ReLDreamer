@@ -148,7 +148,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         rollouts = data.get("interaction_rollouts") or []
         if int(data.get("_schema_version", 0)) < 3 or not rollouts:
             log.warning(
-                "skip %s: schema-v3 interaction_rollouts required; recollect "
+                "skip %s: schema-v3+ interaction_rollouts required; recollect "
                 "with --no-skip-done",
                 path,
             )
@@ -156,7 +156,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         subtask = str(data.get("subtask_type") or path.parent.name)
         target = _target_key(data)
         if not target:
-            log.warning("skip %s: schema-v3 entity_key is required", path)
+            log.warning("skip %s: entity_key is required", path)
             continue
         builder = builders.setdefault(
             (subtask, target),
@@ -168,7 +168,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 n_rollouts += 1
 
     if not builders:
-        log.error("no schema-v3 successful interaction rollouts found under %s", root)
+        log.error("no successful interaction rollouts found under %s", root)
         return 2
 
     empty = [

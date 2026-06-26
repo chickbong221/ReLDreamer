@@ -6,7 +6,6 @@
 Pipeline:
 
     build_nodes (current visible segmentation, non-robot entities)
-    -> selector.merge_persistent    (k-frame identity-keyed retention)
     -> selector.apply_whitelist     (hard per-subtask eligibility gate)
     -> tau_i bookkeeping            (steps_since_seen)
     -> classify_pair_types          (whitelist-role / affordance vocabulary)
@@ -23,7 +22,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from .affordance import canonical_affordance_key
-from .entity_identity import stable_entity_key
+from .entity_identity import stable_entity_key, stable_node_id
 from .schema import Edge, Graph, Node, padding_node
 from .node_builder import build_nodes, classify_pair_types
 from .relation_rules import build_absolute_edges
@@ -53,6 +52,7 @@ class GraphBuilder:
         self.temporal = TemporalBuffer(K=cfg["temporal"]["K"])
         self.selector = NodeSelector(cfg)
         self.slots = SlotManager(n_slots=int(cfg["selection"]["n_slots"]))
+        self.cfg.setdefault("_affordance_selection_cache", {})
 
         # ``whitelist_dir`` may be absolute or relative to the config file.
         self._whitelist_dir: Optional[str] = cfg.get("whitelist_dir")
@@ -73,6 +73,7 @@ class GraphBuilder:
         self._last_seen.clear()
         self._first_unseen.clear()
         self._edge_history.clear()
+        self.cfg.setdefault("_affordance_selection_cache", {}).clear()
         # Force whitelist re-resolution next step.
         self._whitelist_key = None
 
@@ -106,6 +107,7 @@ class GraphBuilder:
         key = (subtask, target)
         if self._whitelist_key == key and self.selector.whitelist is not None:
             return
+        self.cfg.setdefault("_affordance_selection_cache", {}).clear()
         path = resolve_whitelist_path(self._whitelist_dir, subtask, target)
         if path is None:
             raise FileNotFoundError(
@@ -142,14 +144,24 @@ class GraphBuilder:
             camera_override=camera_override,
         )
 
-        # Identity-keyed persistence merge -- re-inject occluded entities
-        # whose last_seen age is within k_persist.
-        nodes = self.selector.merge_persistent(nodes, frame)
+        # Simplified relevance rule: include only what's currently visible in
+        # this frame. We deliberately do NOT call ``merge_persistent`` here --
+        # occluded / persisted nodes would otherwise float as ghost siblings
+        # of the live segmentation.
 
-        # Hard per-subtask whitelist gate. Everything failing the
-        # gate is dropped here; only the ee node and whitelisted entities
-        # survive into the slot assignment stage.
-        nodes = self.selector.apply_whitelist(nodes)
+        # Hard per-subtask whitelist gate, with an additional instance-level
+        # filter for interacted actors so siblings of the active target (e.g.
+        # another bowl in the same scene that was never touched) drop out
+        # rather than passing on the canonical category alone.
+        active_target_node_id: Optional[str] = None
+        if state.active_obj is not None:
+            try:
+                active_target_node_id = stable_node_id(state.active_obj)
+            except Exception:
+                active_target_node_id = None
+        nodes = self.selector.apply_whitelist(
+            nodes, active_target_node_id=active_target_node_id,
+        )
 
         # Visibility age is tracked only for eligible semantic entities.
         for nid, n in nodes.items():
@@ -175,11 +187,8 @@ class GraphBuilder:
         # Slot assignment (identity-keyed, reset_flag on identity change).
         assignments = self.slots.assign(selected_ids)
 
-        # Bug P fix: do NOT evict an entity from persistence history merely
-        # because it was unselected this frame. Persistence eviction is now
-        # age-based -- ``merge_persistent`` re-injects within k_persist, and
-        # ``selector.evict_expired`` drops entries past the window. Temporal
-        # history is purged only for those truly-expired entries.
+        # Keep selector history age-based. Unselected entities are not evicted
+        # immediately; expired entries also purge their temporal histories.
         expired = self.selector.evict_expired(frame)
         if expired:
             self.temporal.purge(expired)
@@ -222,9 +231,7 @@ class GraphBuilder:
             ),
         )
 
-        # R15: edges only for valid nodes (build_absolute_edges already iterates
-        # graph.nodes; the relation functions guard against padding via the
-        # valid_mask check added there).
+        # Edges only for valid nodes. Relation functions guard against padding.
         build_absolute_edges(graph, state, self.cfg)
         self._attach_stale_edges(graph, frame)
         self.temporal.update(graph)

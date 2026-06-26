@@ -168,8 +168,11 @@ def _resolve_active_anchor(node: Node, state: PrivilegedState, cfg: dict):
 
     Returns ``(None, None, None)`` when no usable affordance asset / pose
     exists, in which case callers fall back to the object center for spatial
-    relations. Also stamps ``node.attributes['affordance_a_star']`` so
-    ``temporal_buffer`` can detect ``a_star`` switches.
+    relations.
+
+    The first valid selection per episode is cached by node id. Subsequent
+    frames keep the same object-frame component index but transform it through
+    the node's current world pose, so a moved object gets moved anchors.
     """
     aff_set = cfg.get("affordance_set")
     if aff_set is None or getattr(aff_set, "is_empty", lambda: True)():
@@ -186,7 +189,28 @@ def _resolve_active_anchor(node: Node, state: PrivilegedState, cfg: dict):
     anchors_world = transform_anchors(node.pose_world, comps)
     if anchors_world is None:
         return None, None, None
-    a_star = select_active_component(tcp_world, anchors_world)
+    cache = cfg.setdefault("_affordance_selection_cache", {})
+    cached = cache.get(node.node_id)
+    if isinstance(cached, int) and 0 <= cached < len(comps):
+        a_star = cached
+    else:
+        tcp_axis_local = cfg["grasp"].get(
+            "tcp_approach_axis_local", [0.0, 0.0, 1.0]
+        )
+        orientation_weight = float(
+            cfg.get("affordances", {}).get("orientation_selection_weight", 0.10)
+        )
+        a_star = select_active_component(
+            tcp_world,
+            anchors_world,
+            components=comps,
+            obj_pose_world=node.pose_world,
+            tcp_pose_world=state.tcp_pose_world,
+            tcp_axis_local=tcp_axis_local,
+            orientation_weight=orientation_weight,
+        )
+        if a_star is not None:
+            cache[node.node_id] = int(a_star)
     if a_star is None:
         return None, None, None
 

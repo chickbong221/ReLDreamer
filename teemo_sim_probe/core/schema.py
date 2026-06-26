@@ -33,8 +33,8 @@ class Node:
     source: str = "segmentation"
     frozen_pose: bool = False
 
-    # R12 slot bookkeeping. slot_id == None for the ee node and for bare
-    # candidates that did not earn a slot this frame.
+    # Slot bookkeeping. slot_id is None for ee and for candidates that did not
+    # earn a slot this frame.
     slot_id: Optional[int] = None
     entity_id: Optional[str] = None
     valid_mask: bool = True           # False == padding slot
@@ -47,7 +47,7 @@ class Node:
 
 
 def padding_node(slot_id: int) -> "Node":
-    """R11 padding for unused object slots."""
+    """Padding node for an unused object slot."""
     return Node(
         node_id=f"<pad:{slot_id}>",
         node_type="object",

@@ -123,8 +123,9 @@ class TemporalBuffer:
 
         # Edges flagged by relation_rules as "suppressed by grasp" must be
         # treated as not-observed rather than False. We collect their keys here
-        # so the absent-as-False fallback also leaves them alone, avoiding the
-        # phantom ``lose-contact`` that would fire at grasp onset.
+        # so the absent-as-False fallback also leaves them alone, and we drop
+        # any existing bool history for them so a stale transition does not
+        # keep firing while grasp owns the interaction.
         suppressed_keys: set = set()
 
         for e in graph.edges:
@@ -133,6 +134,7 @@ class TemporalBuffer:
             key = _edge_key(e.src, e.dst, e.relation)
             if e.attributes.get("suppressed_by_grasp"):
                 suppressed_keys.add(key)
+                self._bools.pop(key, None)
                 continue
             if e.relation in _CONTINUOUS and e.raw_value is not None:
                 self._values.setdefault(key, deque(maxlen=self.K + 1)).append(

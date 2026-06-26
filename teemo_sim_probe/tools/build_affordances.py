@@ -1,11 +1,12 @@
 """Offline miner: successful manipulation rollouts -> ``affordances.json``.
 
-Walks ``ASSET_DIR/robot_success_states/<robot_uid>/pick/<obj_id>.pkl`` (saved
-by ``mshab.envs.wrappers.collect_data.FetchCollectRobotInitWrapper``) and
-produces a sparse set of affordance components per object:
+Walks ``ASSET_DIR/robot_success_states/<robot_uid>/<subtask>/<obj_id>.pkl``
+(saved by ``adapters.collect_contact_data.FetchCollectContactDataWrapper``) and
+produces an affordance candidate per successful grasp pose:
 
     component_k = {
         anchor_obj_frame: 3D point in OBJECT frame (pose-invariant),
+        approach_dir_obj_frame: TCP approach axis in OBJECT frame,
         preferred_width: gripper qpos-sum at success (matches runtime),
     }
 
@@ -16,16 +17,18 @@ Per success sample:
                   # or FK(Fetch, robot_qpos)   # legacy v3 fallback (SAPIEN)
     anchor_obj  = inv(obj_pose_wrt_base) * tcp_in_base   (position only)
 
-N samples per object -> K components via farthest-point + k-means on anchors;
-preferred_width = cluster median.
+N samples per object -> N affordance candidates. Runtime picks the candidate
+whose live object-frame pose is closest to the current TCP in both position and
+approach orientation, then keeps that candidate after contact / grasp.
 
-PICK ONLY. Place success is invalid for affordance mining: the place check
+PLACE is excluded. Place success is invalid for affordance mining: the place check
 requires ``~is_grasped`` with TCP at ``ee_rest_world_pose``
 (mshab/envs/sequential_task.py:1138), so ``inv(obj) * tcp`` would learn the
 robot's rest pose rather than an object affordance.
 
-If FK is unavailable (no SAPIEN / no Fetch URDF), the object is skipped with
-a clear error -- we deliberately do NOT write placeholder anchors, because
+Schema-v4 pickles contain simulator TCP poses and do not need FK. Legacy
+pickles without ``tcp_pose_wrt_base`` need FK; if FK is unavailable the object
+is skipped with a clear error. We deliberately do NOT write placeholder anchors:
 ``[0,0,0]`` would produce valid-looking but false runtime relations.
 
 Usage::
@@ -34,7 +37,7 @@ Usage::
         --success-states-dir $MS_ASSET_DIR/data/robot_success_states \\
         --out teemo_sim_probe/configs/affordances.json \\
         --robot fetch \\
-        --n-components 4
+        --max-samples 2000
 """
 
 from __future__ import annotations
@@ -46,7 +49,7 @@ import os
 import pickle
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -254,54 +257,6 @@ def _default_fetch_urdf() -> Optional[str]:
 
 
 # --------------------------------------------------------------------------- #
-# Clustering
-# --------------------------------------------------------------------------- #
-def _farthest_point_init(points: np.ndarray, k: int, rng: np.random.Generator) -> np.ndarray:
-    n = len(points)
-    if n <= k:
-        return points.copy()
-    idx0 = int(rng.integers(0, n))
-    centers = [points[idx0]]
-    dists = np.linalg.norm(points - points[idx0], axis=1)
-    for _ in range(k - 1):
-        next_idx = int(np.argmax(dists))
-        centers.append(points[next_idx])
-        new_dists = np.linalg.norm(points - points[next_idx], axis=1)
-        dists = np.minimum(dists, new_dists)
-    return np.stack(centers, axis=0)
-
-
-def _kmeans(points: np.ndarray, k: int, max_iter: int = 50, seed: int = 0) -> Tuple[np.ndarray, np.ndarray]:
-    """Lloyd's algorithm with farthest-point init. Returns (centers, labels)."""
-    rng = np.random.default_rng(seed)
-    n = len(points)
-    if n <= k:
-        labels = np.arange(n)
-        return points.copy(), labels
-
-    centers = _farthest_point_init(points, k, rng)
-    labels = np.full(n, -1, dtype=int)
-    for _ in range(max_iter):
-        diffs = points[:, None, :] - centers[None, :, :]
-        d2 = np.einsum("ijk,ijk->ij", diffs, diffs)
-        new_labels = np.argmin(d2, axis=1)
-        if np.all(new_labels == labels):
-            break
-        labels = new_labels
-        for j in range(k):
-            mask = labels == j
-            if mask.any():
-                centers[j] = points[mask].mean(axis=0)
-            else:
-                # Reseed empty cluster with the farthest point from any center.
-                diffs = points[:, None, :] - centers[None, :, :]
-                d2 = np.einsum("ijk,ijk->ij", diffs, diffs)
-                far_idx = int(np.argmax(d2.min(axis=1)))
-                centers[j] = points[far_idx]
-    return centers, labels
-
-
-# --------------------------------------------------------------------------- #
 # Per-object mining
 # --------------------------------------------------------------------------- #
 def _load_pkl(path: Path) -> Optional[Dict]:
@@ -319,13 +274,13 @@ def _load_pkl(path: Path) -> Optional[Dict]:
         log.error("missing keys in %s: have=%s, need=%s",
                   path, sorted(data), required)
         return None
-    # tcp_pose_wrt_base is optional (added in schema v4). When present we
-    # prefer it over URDF FK; FK is the legacy fallback.
+    # Prefer schema-v4 simulator TCP poses. FK is only a legacy fallback for
+    # older pickles that do not carry tcp_pose_wrt_base.
     return data
 
 
 def _mine_object(
-    pkl_path: Path, fk: Optional[_FetchFK], n_components: int, max_samples: int,
+    pkl_path: Path, fk: Optional[_FetchFK], max_samples: int,
     approach_axis_local: np.ndarray,
 ) -> Optional[Dict]:
     data = _load_pkl(pkl_path)
@@ -425,47 +380,33 @@ def _mine_object(
         log.warning("%s: FK failed on %d/%d samples", pkl_path, fk_failures, n_samples)
 
     if not anchors_obj:
-        log.error("%s: no usable samples after FK -- skipping", pkl_path)
+        log.error("%s: no usable success samples -- skipping", pkl_path)
         return None
 
-    anchors_arr = np.stack(anchors_obj, axis=0)        # (N, 3)
-    widths_arr = np.asarray(widths, dtype=float)        # (N,)
-    k = min(n_components, len(anchors_arr))
-    centers, labels = _kmeans(anchors_arr, k=k, seed=0)
-
     components: List[Dict] = []
-    for j in range(k):
-        mask = labels == j
-        if not mask.any():
-            continue
-        # Use cluster MEDIAN for both anchor and width to be robust to outliers.
-        anchor_med = np.median(anchors_arr[mask], axis=0).tolist()
-        width_med = float(np.median(widths_arr[mask]))
-        # Median approach direction over the cluster's valid samples (then
-        # renormalize). If no sample in the cluster had a direction, omit it.
-        comp_dirs = [approaches_obj[idx] for idx in np.where(mask)[0]
-                     if approaches_obj[idx] is not None]
+    for idx, (anchor, width, approach_obj) in enumerate(
+        zip(anchors_obj, widths, approaches_obj)
+    ):
         approach_field: Dict[str, List[float]] = {}
-        if comp_dirs:
-            d_med = np.median(np.stack(comp_dirs, axis=0), axis=0)
-            n = float(np.linalg.norm(d_med))
+        if approach_obj is not None:
+            n = float(np.linalg.norm(approach_obj))
             if n > 1e-9:
                 approach_field = {
-                    "approach_dir": [round(float(x), 6) for x in (d_med / n)]
+                    "approach_dir": [round(float(x), 6) for x in (approach_obj / n)]
                 }
         components.append({
-            "anchor": [round(float(x), 6) for x in anchor_med],
+            "anchor": [round(float(x), 6) for x in anchor],
             **approach_field,
-            "width": round(width_med, 6),
-            "n_support": int(mask.sum()),
+            "width": round(float(width), 6),
+            "sample_index": int(idx),
         })
 
-    log.info("%s -> %s : %d components from %d samples",
-             pkl_path.name, canonical, len(components), len(anchors_arr))
+    log.info("%s -> %s : %d raw affordance candidates",
+             pkl_path.name, canonical, len(components))
     return {
         "canonical_key": canonical,
         "raw_obj_id": str(raw_obj_id),
-        "n_samples": int(len(anchors_arr)),
+        "n_samples": int(len(components)),
         "components": components,
     }
 
@@ -516,7 +457,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument(
         "--n-components", type=int, default=4,
-        help="K components per object (default 4).",
+        help="Deprecated compatibility flag. Raw success samples are emitted; "
+             "use --max-samples to cap candidate count.",
     )
     parser.add_argument(
         "--max-samples", type=int, default=2000,
@@ -580,7 +522,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     for pkl_path in pkls:
         rec = _mine_object(
             pkl_path, fk=fk,
-            n_components=args.n_components,
             max_samples=args.max_samples,
             approach_axis_local=approach_axis_local,
         )
@@ -621,8 +562,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             "anchor=[x,y,z] OBJECT frame (m); approach_dir=[x,y,z] OBJECT-frame "
             "unit approach axis (optional); width=preferred gripper qpos-sum "
             "(m). Mined by tools/build_affordances.py from "
-            "robot_success_states/<robot>/pick/<obj_id>.pkl. Keyed by canonical "
-            "MS-HAB obj_id (no 'env-N_' prefix, no '-N' instance suffix)."
+            "robot_success_states/<robot>/<subtask>/<obj_id>.pkl. One component is "
+            "stored per usable success grasp pose, keyed by canonical MS-HAB "
+            "obj_id (no 'env-N_' prefix, no '-N' instance suffix)."
         ),
         "_schema_version": 2,
         "objects": by_object,
