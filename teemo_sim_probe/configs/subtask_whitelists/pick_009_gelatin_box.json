@@ -9,8 +9,8 @@
       ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 31
+      "interaction_rollouts": 32
     }
   },
-  "_n_successful_rollouts": 31
+  "_n_successful_rollouts": 32
 }

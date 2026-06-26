@@ -110,18 +110,6 @@ python -m teemo_sim_probe.tools.build_affordances \
     --out teemo_sim_probe/configs/affordances.json
 ```
 
-If released/local `open` or `close` checkpoints are available, collect them
-with `--subtask open` or `--subtask close`, then add their qualified link
-affordances without replacing the actor entries:
-
-```bash
-python -m teemo_sim_probe.tools.build_affordances \
-    --success-states-dir "$MS_ASSET_DIR/data/robot_success_states" \
-    --robot fetch --subtask open \
-    --out teemo_sim_probe/configs/affordances.json \
-    --merge-existing
-```
-
 Mine whitelists:
 
 ```bash
