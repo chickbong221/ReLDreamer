@@ -1,17 +1,7 @@
-"""Per-frame segmentation, whitelist selection, and relation orchestration.
+"""Per-frame node selection and relation orchestration.
 
-    GraphBuilder(env, cfg).step(obs, frame, episode_boundary=False)
-        -> (Graph, masks, camera, rgb)
-
-Pipeline:
-
-    build_nodes (current visible segmentation, non-robot entities)
-    -> selector.apply_whitelist     (hard per-subtask eligibility gate)
-    -> tau_i bookkeeping            (steps_since_seen)
-    -> classify_pair_types          (whitelist-role / affordance vocabulary)
-    -> selector.overflow_truncate   (role, distance, node_id)
-    -> slot_manager.assign          (identity-keyed, reset_flag)
-    -> build_absolute_edges + temporal edges (valid nodes only)
+Pipeline: build_nodes -> apply_whitelist -> classify_pair_types
+-> overflow_truncate -> slot assign -> absolute + temporal edges.
 """
 
 from __future__ import annotations
@@ -54,18 +44,14 @@ class GraphBuilder:
         self.slots = SlotManager(n_slots=int(cfg["selection"]["n_slots"]))
         self.cfg.setdefault("_affordance_selection_cache", {})
 
-        # ``whitelist_dir`` may be absolute or relative to the config file.
         self._whitelist_dir: Optional[str] = cfg.get("whitelist_dir")
         self._whitelist_key: Optional[Tuple[str, str]] = None
 
         self._last_seen: Dict[str, int] = {}
         self._first_unseen: Dict[str, int] = {}
-        # Last fresh absolute relation per key. Frozen nodes reuse these edges
-        # with explicit stale metadata instead of mixing current ee state with
-        # an old object pose.
+        # Last fresh absolute edge per (src,dst,relation) -- replayed for frozen nodes.
         self._edge_history: Dict[Tuple[str, str, str], Edge] = {}
 
-    # ---------------------------------------------------------------- reset
     def reset_episode(self) -> None:
         self.selector.reset_episode()
         self.slots.reset_episode()
@@ -74,19 +60,10 @@ class GraphBuilder:
         self._first_unseen.clear()
         self._edge_history.clear()
         self.cfg.setdefault("_affordance_selection_cache", {}).clear()
-        # Force whitelist re-resolution next step.
         self._whitelist_key = None
 
-    # ---------------------------------------------------------------- whitelist
     def _resolve_and_bind_whitelist(self, state) -> None:
-        """Load the JSON for (active_subtask, canonical(active_obj_id)) and
-        bind it on the selector. Fail loud if no matching file exists.
-
-        Cached on ``self._whitelist_key`` so we don't re-read the file every
-        frame; the cache is invalidated whenever the cached key differs from
-        the live (subtask, target) tuple, which covers MS-HAB sub-task
-        advancement within a single episode as well as fresh episodes.
-        """
+        """Bind the whitelist for (subtask, target). Cached; rebinds on key change."""
         subtask = state.active_subtask_type
         if state.active_handle_link is not None:
             target = stable_entity_key(state.active_handle_link)
@@ -119,7 +96,6 @@ class GraphBuilder:
         self.selector.set_whitelist(wl)
         self._whitelist_key = key
 
-    # ---------------------------------------------------------------- step
     def step(
         self, obs: dict, frame: int,
         *,
@@ -131,9 +107,7 @@ class GraphBuilder:
 
         state = get_privileged_state(self.env, self.env_idx)
 
-        # Done every step so MS-HAB subtask advancement within
-        # an episode swaps the gate cleanly (idempotent when (subtask, target)
-        # is unchanged).
+        # Re-bind every step: MS-HAB advances subtasks mid-episode.
         self._resolve_and_bind_whitelist(state)
 
         nodes, masks, cam, rgb = build_nodes(
@@ -144,15 +118,9 @@ class GraphBuilder:
             camera_override=camera_override,
         )
 
-        # Simplified relevance rule: include only what's currently visible in
-        # this frame. We deliberately do NOT call ``merge_persistent`` here --
-        # occluded / persisted nodes would otherwise float as ghost siblings
-        # of the live segmentation.
-
-        # Hard per-subtask whitelist gate, with an additional instance-level
-        # filter for interacted actors so siblings of the active target (e.g.
-        # another bowl in the same scene that was never touched) drop out
-        # rather than passing on the canonical category alone.
+        # Only currently visible nodes; no persistence merge here.
+        # Instance-level filter on interacted actors drops sibling instances
+        # (e.g. another bowl) that share the canonical category but were never touched.
         active_target_node_id: Optional[str] = None
         if state.active_obj is not None:
             try:
@@ -163,7 +131,6 @@ class GraphBuilder:
             nodes, active_target_node_id=active_target_node_id,
         )
 
-        # Visibility age is tracked only for eligible semantic entities.
         for nid, n in nodes.items():
             if n.node_type == "ee":
                 continue
@@ -176,19 +143,11 @@ class GraphBuilder:
             else:
                 n.steps_since_seen = frame - self._last_seen[nid]
 
-        # Relation vocabulary now uses affordances plus whitelist roles. A
-        # handle is an ordinary object and is interactive only when its role or
-        # affordance says so.
         classify_pair_types(nodes, self.cfg)
 
-        # Deterministic role-aware capacity; distance and node id break ties.
         selected_ids = self.selector.overflow_truncate(nodes)
-
-        # Slot assignment (identity-keyed, reset_flag on identity change).
         assignments = self.slots.assign(selected_ids)
 
-        # Keep selector history age-based. Unselected entities are not evicted
-        # immediately; expired entries also purge their temporal histories.
         expired = self.selector.evict_expired(frame)
         if expired:
             self.temporal.purge(expired)
@@ -198,7 +157,7 @@ class GraphBuilder:
             for key in [k for k in self._edge_history if nid in k[:2]]:
                 del self._edge_history[key]
 
-        # Build final node list: ee + slots (ordered by slot_id) + padding.
+        # Final order: ee, then slots (by slot_id), padded.
         ee_node = nodes.get("ee")
         slot_to_node: Dict[int, Node] = {}
         for ent_id in selected_ids:
@@ -231,24 +190,21 @@ class GraphBuilder:
             ),
         )
 
-        # Edges only for valid nodes. Relation functions guard against padding.
         build_absolute_edges(graph, state, self.cfg)
         self._attach_stale_edges(graph, frame)
         self.temporal.update(graph)
         graph.edges.extend(self.temporal.temporal_edges(graph, self.cfg))
 
-        # Commit selection state for next frame.
         self.selector.commit(nodes, frame)
         return graph, masks, cam, rgb
 
     def _attach_stale_edges(self, graph: Graph, frame: int) -> None:
-        """Cache fresh relations and restore last observations for stale nodes."""
+        """Cache fresh edges; replay last observed edge (tagged stale) for frozen nodes."""
         by_id = {n.node_id: n for n in graph.nodes if n.valid_mask}
         fresh_ids = {nid for nid, n in by_id.items() if not n.frozen_pose}
         stale_ids = set(by_id) - fresh_ids
 
-        # Replace cached relations only for pairs whose endpoints are both
-        # fresh. Pairs touching stale nodes keep their last fully observed edge.
+        # Only refresh cache for edges between two fresh nodes.
         for key in list(self._edge_history):
             if key[0] in fresh_ids and key[1] in fresh_ids:
                 del self._edge_history[key]

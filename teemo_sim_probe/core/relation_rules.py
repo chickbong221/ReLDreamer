@@ -1,19 +1,12 @@
 """Absolute relation labels from privileged state.
 
-Vocabulary follows ``node.attributes['pair_type']``:
+Vocabulary by ``pair_type``:
+  ee/static_object       center  : planar-distance, height-offset, contact
+  ee/interactive_object  anchor* : planar-distance, height-offset, orientation-alignment, contact, grasp
+  object/object                  : contact OR support (mutually exclusive)
 
-  ee--static_object       (CENTER-based):
-      planar-distance, height-offset, contact
-  ee--interactive_object  (ANCHOR-based when an asset exists, else CENTER):
-      planar-distance, height-offset, orientation-alignment, contact, grasp
-  object--object          (mutually exclusive support / contact):
-      contact, support
-
-Interactive spatial reference is annotated on the node as
-``attributes['spatial_ref'] in {"anchor", "center"}`` so audits can tell
-anchor-grounded edges from center fallbacks per frame. ``orientation-
-alignment`` is emitted only when both a mined affordance asset AND an
-approach_dir exist.
+*Falls back to center when no affordance asset; recorded as ``spatial_ref``.
+``orientation-alignment`` requires a mined ``approach_dir``.
 """
 
 from __future__ import annotations
@@ -32,19 +25,14 @@ from .schema import Edge, Graph, Node
 from ..adapters.privileged_state import PrivilegedState
 
 
-# --------------------------------------------------------------------------- #
-# Discretization
-# --------------------------------------------------------------------------- #
 def bin_label(value: float, edges: List[float], labels: List[str]) -> str:
-    """Upper-exclusive ascending bins. len(labels) == len(edges) + 1."""
+    """Upper-exclusive ascending bins. ``len(labels) == len(edges) + 1``."""
     idx = int(np.searchsorted(edges, value, side="right"))
     idx = min(idx, len(labels) - 1)
     return labels[idx]
 
 
-# --------------------------------------------------------------------------- #
-# Geometry helpers (operate on world pose arrays [x,y,z,qw,qx,qy,qz])
-# --------------------------------------------------------------------------- #
+# Pose arrays are ``[x, y, z, qw, qx, qy, qz]`` (SAPIEN).
 def _xyz(node: Node) -> Optional[np.ndarray]:
     if node.pose_world is None:
         return None
@@ -95,11 +83,7 @@ def _quat_wxyz_to_rotmat(q: np.ndarray) -> Optional[np.ndarray]:
 def tcp_approach_dir_world(
     tcp_pose_world: Optional[np.ndarray], axis_local: List[float]
 ) -> Optional[np.ndarray]:
-    """World-frame unit approach axis of the TCP.
-
-    ``axis_local`` is the gripper-link local axis that points "out" of the
-    gripper. Fetch / Panda default is +Z. Rotated by the TCP world quaternion.
-    """
+    """World unit axis of ``axis_local`` (gripper-out, +Z for Fetch/Panda) rotated by TCP."""
     if tcp_pose_world is None or len(tcp_pose_world) < 7:
         return None
     R = _quat_wxyz_to_rotmat(np.asarray(tcp_pose_world[3:7], dtype=float))
@@ -112,16 +96,12 @@ def tcp_approach_dir_world(
 def orientation_alignment_angle(
     tcp_dir_world: np.ndarray, aff_dir_world: np.ndarray
 ) -> float:
-    """Angle (radians, [0, pi]) between TCP and affordance approach axes."""
+    """Angle in radians, ``[0, pi]``."""
     c = float(np.clip(np.dot(tcp_dir_world, aff_dir_world), -1.0, 1.0))
     return float(np.arccos(c))
 
 
-# --------------------------------------------------------------------------- #
-# Predicates
-# --------------------------------------------------------------------------- #
-# Static-actor hints: things named like "table"/"wall" are scene structure and
-# cannot be grasped, regardless of pair-type classification.
+# Static actors by name are scene structure regardless of pair_type.
 _STATIC_HINTS = (
     "table", "wall", "floor", "ground", "counter_body", "cabinet_body",
     "fridge_body", "kitchen_counter", "sink", "shelf",
@@ -142,7 +122,7 @@ def _is_interactive(node: Node) -> bool:
 
 
 def _resolve_entity(node: Node, state: PrivilegedState):
-    """Map a node back to its live simulator entity for force queries."""
+    """Node -> live simulator entity (for force queries)."""
     name = node.name
     for seg_id in node.segmentation_ids:
         ent = state.seg_id_map.get(seg_id)
@@ -160,19 +140,11 @@ def _resolve_entity(node: Node, state: PrivilegedState):
     return best_ent
 
 
-# --------------------------------------------------------------------------- #
-# Affordance anchor resolution (shared by interactive spatial + orientation)
-# --------------------------------------------------------------------------- #
 def _resolve_active_anchor(node: Node, state: PrivilegedState, cfg: dict):
-    """Return ``(anchor_world (3,), component, a_star)`` for an interactive node.
+    """``(anchor_world (3,), component, a_star)`` or ``(None, None, None)``.
 
-    Returns ``(None, None, None)`` when no usable affordance asset / pose
-    exists, in which case callers fall back to the object center for spatial
-    relations.
-
-    The first valid selection per episode is cached by node id. Subsequent
-    frames keep the same object-frame component index but transform it through
-    the node's current world pose, so a moved object gets moved anchors.
+    Component index is cached per node and reused across frames; the world
+    anchor is re-derived each frame from the node's current pose.
     """
     aff_set = cfg.get("affordance_set")
     if aff_set is None or getattr(aff_set, "is_empty", lambda: True)():
@@ -218,13 +190,10 @@ def _resolve_active_anchor(node: Node, state: PrivilegedState, cfg: dict):
     return anchors_world[a_star], comps[a_star], a_star
 
 
-# --------------------------------------------------------------------------- #
-# Edge builders
-# --------------------------------------------------------------------------- #
 def ee_static_object_edges(
     graph: Graph, state: PrivilegedState, cfg: dict
 ) -> List[Edge]:
-    """ee--static_object: center-based planar-distance, height-offset, contact."""
+    """Center-based planar-distance, height-offset, contact."""
     ee = graph.get_node("ee")
     if ee is None or ee.pose_world is None:
         return []
@@ -267,13 +236,7 @@ def ee_static_object_edges(
 def ee_interactive_object_edges(
     graph: Graph, state: PrivilegedState, cfg: dict
 ) -> List[Edge]:
-    """ee--interactive_object: anchor-based spatial + orientation + grasp.
-
-    planar-distance / height-offset use the selected affordance anchor when an
-    asset is available, else fall back to the object center (annotated as
-    ``node.attributes['spatial_ref']``). orientation-alignment requires a mined
-    approach direction. contact + grasp are physical predicates.
-    """
+    """Anchor-based spatial (center fallback) + orientation + contact + grasp."""
     ee = graph.get_node("ee")
     if ee is None or ee.pose_world is None:
         return []
@@ -295,7 +258,6 @@ def ee_interactive_object_edges(
         ent = _resolve_entity(node, state)
 
         anchor_world, comp, _ = _resolve_active_anchor(node, state, cfg)
-        # Spatial reference: anchor if available, else object center.
         ref_xyz = anchor_world if anchor_world is not None else _xyz(node)
         node.attributes["spatial_ref"] = (
             "anchor" if anchor_world is not None else "center"
@@ -315,7 +277,6 @@ def ee_interactive_object_edges(
                           prof["height_offset"]["labels"]), dz,
             ))
 
-        # orientation-alignment: angle between TCP and affordance approach axes.
         if comp is not None and tcp_dir is not None and align_spec is not None:
             aff_dir = transform_approach_dir(node.pose_world, comp)
             if aff_dir is not None:
@@ -326,11 +287,8 @@ def ee_interactive_object_edges(
                     ang,
                 ))
 
-        # Compute grasp first; while grasped the contact edge is suppressed
-        # (grasp owns the interaction). The contact edge is still emitted so
-        # downstream consumers can audit force, but it is masked from the
-        # render and tagged so the temporal buffer treats it as not observed
-        # (rather than emitting a phantom lose-contact at grasp onset).
+        # While grasped, the contact edge is still emitted (force audit) but
+        # masked, so the temporal buffer doesn't see a phantom lose-contact.
         grasped = False
         if _graspable(node):
             grasped = state.is_grasping(ent, max_angle=grasp_angle)
@@ -344,7 +302,6 @@ def ee_interactive_object_edges(
             attributes=contact_attrs,
         ))
 
-        # grasp predicate (graspable interactive objects only).
         if _graspable(node):
             edges.append(Edge(
                 "ee", node.node_id, "grasp",
@@ -357,13 +314,8 @@ def ee_interactive_object_edges(
 def object_object_edges(
     graph: Graph, state: PrivilegedState, cfg: dict
 ) -> List[Edge]:
-    """Pairwise object--object: at most one physical edge per pair.
-
-    Emits exactly one of ``support`` (directed supporter -> supported),
-    ``contact``, or nothing. Current physics is evaluated only for fresh
-    segmented nodes; frozen nodes receive their explicitly marked
-    last-observed edges from ``GraphBuilder``.
-    """
+    """One of ``support`` (supporter -> supported), ``contact``, or nothing per pair.
+    Evaluated only on fresh nodes; frozen nodes get cached edges in ``GraphBuilder``."""
     eps_contact = cfg["contact"]["eps_force"]
     eps_z = cfg["support"]["eps_z"]
     min_vertical_ratio = cfg["support"].get("min_vertical_force_ratio", 0.5)
@@ -388,8 +340,7 @@ def object_object_edges(
             if not in_contact:
                 continue
 
-            # Support = load-bearing contact: vertical-dominated force AND
-            # supporter centre below supported centre.
+            # Support = vertical-dominated force AND supporter below supported.
             support_pair = None
             if force > 0.0:
                 vertical_ratio = abs(float(force_vector[2])) / force
@@ -418,11 +369,7 @@ def object_object_edges(
 def build_absolute_edges(
     graph: Graph, state: PrivilegedState, cfg: dict
 ) -> None:
-    """Populate ``graph.edges`` in place with absolute relations.
-
-    Eligibility split: static objects get center-based scene-context edges,
-    interactive objects get affordance-grounded manipulation edges.
-    """
+    """Append absolute edges to ``graph.edges`` in place."""
     graph.edges.extend(ee_static_object_edges(graph, state, cfg))
     graph.edges.extend(ee_interactive_object_edges(graph, state, cfg))
     graph.edges.extend(object_object_edges(graph, state, cfg))

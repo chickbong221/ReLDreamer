@@ -1,28 +1,8 @@
 """Affordance components mined from manipulation-success rollouts.
 
-This module owns the static, pose-invariant grip information that the runtime
-needs to emit affordance-grounded relations. It is intentionally framework-
-agnostic (numpy only, no SAPIEN / ManiSkill imports) so the asset can be reused
-across benchmarks -- MS-HAB today, vanilla ManiSkill / BEHAVIOR-1K next -- as
-long as the offline miner produces the JSON shape below.
-
-Per stable actor or articulation-link key, the asset stores components. Each is
-``(anchor_obj_frame, approach_dir_obj_frame, preferred_width)``:
-
-  * ``anchor_obj_frame`` -- 3D point in the OBJECT frame, in metres.
-    "where on the object the gripper should grip". Pose-invariant: the same
-    value is reused every frame regardless of where the object currently sits.
-  * ``approach_dir_obj_frame`` -- 3D UNIT vector in the OBJECT frame giving the
-    gripper approach axis at success. Optional; required only for
-    ``orientation-alignment``. Assets mined before orientation support
-    (schema_version 1) load fine -- that component just yields no
-    orientation-alignment edge.
-  * ``preferred_width`` -- scalar gripper width (qpos-sum convention, identical
-    to what ``adapters/privileged_state.compute_gripper_width`` produces at
-    runtime) at the moment of success.
-
-To extend to a new benchmark / robot, add a miner that produces the same JSON
-shape with canonical object keys; nothing in this file is MS-HAB-specific.
+Per stable object key the asset stores a list of components, each holding
+``anchor_obj_frame`` (point), optional ``approach_dir_obj_frame`` (unit), and
+``preferred_width`` (qpos-sum). Frames are OBJECT-local, metres.
 """
 
 from __future__ import annotations
@@ -39,15 +19,11 @@ import numpy as np
 from .schema import Node
 
 
-# --------------------------------------------------------------------------- #
-# Data structures
-# --------------------------------------------------------------------------- #
 @dataclass
 class AffordanceComponent:
-    anchor_obj_frame: np.ndarray            # shape (3,), OBJECT frame, metres
-    preferred_width: float                  # qpos[-2] + qpos[-1] convention
-    # Unit approach direction in OBJECT frame, or None if not mined.
-    approach_dir_obj_frame: Optional[np.ndarray] = None
+    anchor_obj_frame: np.ndarray            # (3,) OBJECT frame, metres
+    preferred_width: float                  # qpos[-2] + qpos[-1]
+    approach_dir_obj_frame: Optional[np.ndarray] = None  # unit, OBJECT frame
 
 
 @dataclass
@@ -58,9 +34,6 @@ class AffordanceSet:
         return not self.by_object
 
 
-# --------------------------------------------------------------------------- #
-# Geometry helpers (self-contained -- relation_rules imports this module)
-# --------------------------------------------------------------------------- #
 def _normalize(v: np.ndarray) -> Optional[np.ndarray]:
     n = float(np.linalg.norm(v))
     if n < 1e-9:
@@ -69,7 +42,7 @@ def _normalize(v: np.ndarray) -> Optional[np.ndarray]:
 
 
 def _quat_wxyz_to_rotmat(q: np.ndarray) -> Optional[np.ndarray]:
-    """SAPIEN quaternion (qw, qx, qy, qz) -> 3x3 rotation matrix, or None."""
+    """SAPIEN (qw, qx, qy, qz) -> 3x3 rotation matrix."""
     qn = _normalize(np.asarray(q, dtype=float))
     if qn is None:
         return None
@@ -81,26 +54,13 @@ def _quat_wxyz_to_rotmat(q: np.ndarray) -> Optional[np.ndarray]:
     ])
 
 
-# --------------------------------------------------------------------------- #
-# Key canonicalization
-# --------------------------------------------------------------------------- #
-# MS-HAB exposes per-env-prefixed and per-instance-suffixed actor names
-# (env-0_024_bowl-3). Actor fallbacks canonicalize them to the benchmark key.
-# Articulation links use their exact qualified stable key.
+# MS-HAB actor names look like ``env-0_024_bowl-3``; canonical form is ``024_bowl``.
 _ENV_PREFIX_RE = re.compile(r"^env-\d+_")
 _INSTANCE_SUFFIX_RE = re.compile(r"-\d+$")
 
 
 def canonical_affordance_key(name: Optional[str]) -> Optional[str]:
-    """Strip env-N_ prefix and -N instance suffix.
-
-    Examples::
-
-        env-0_024_bowl-3  -> 024_bowl
-        024_bowl-3        -> 024_bowl
-        024_bowl          -> 024_bowl
-        None / ""         -> None
-    """
+    """Strip ``env-N_`` prefix and ``-N`` instance suffix (``env-0_024_bowl-3`` -> ``024_bowl``)."""
     if not name:
         return None
     key = _ENV_PREFIX_RE.sub("", str(name))
@@ -108,30 +68,12 @@ def canonical_affordance_key(name: Optional[str]) -> Optional[str]:
     return key or None
 
 
-# --------------------------------------------------------------------------- #
-# Asset I/O
-# --------------------------------------------------------------------------- #
 def load_affordance_set(path: Optional[str]) -> AffordanceSet:
-    """Load JSON asset. Missing / unreadable file => empty set (warn, no raise).
+    """Load JSON asset; missing/unreadable file -> empty set (warn).
 
-    JSON shape (schema_version 2)::
-
-        { "_README": "...",
-          "_schema_version": 2,
-          "objects": {
-            "actor:024_bowl": { "components": [
-                {"anchor": [x, y, z],
-                 "approach_dir": [ax, ay, az],   # optional, OBJECT frame unit
-                 "width": 0.045},
-                ...
-            ]}
-          }
-        }
-
-    ``approach_dir`` is optional. Schema-v1 assets (no approach_dir) still load;
-    those components simply have ``approach_dir_obj_frame is None`` and yield
-    no orientation-alignment edge. Keys starting with ``_`` are reserved for
-    metadata and skipped.
+    Shape: ``{"objects": {key: {"components": [{"anchor": [x,y,z],
+    "approach_dir": [..]?, "width": w}, ...]}}}``. Keys starting with ``_`` are
+    metadata. ``approach_dir`` is optional (no orientation-alignment edge without it).
     """
     if not path or not os.path.isfile(path):
         warnings.warn(
@@ -168,8 +110,6 @@ def load_affordance_set(path: Optional[str]) -> AffordanceSet:
             if not np.isfinite(w):
                 continue
 
-            # Optional approach direction (object frame, unit). Reject
-            # degenerate / non-finite vectors -> None (skip orientation only).
             approach = c.get("approach_dir")
             approach_arr: Optional[np.ndarray] = None
             if approach is not None:
@@ -191,9 +131,6 @@ def load_affordance_set(path: Optional[str]) -> AffordanceSet:
     return AffordanceSet(by_object=by_object)
 
 
-# --------------------------------------------------------------------------- #
-# Runtime helpers
-# --------------------------------------------------------------------------- #
 def _obj_rotmat(obj_pose_world: Optional[List[float]]) -> Optional[np.ndarray]:
     if obj_pose_world is None or len(obj_pose_world) < 7:
         return None
@@ -205,11 +142,7 @@ def transform_anchors(
     obj_pose_world: Optional[List[float]],
     components: List[AffordanceComponent],
 ) -> Optional[np.ndarray]:
-    """World-frame positions of each component anchor.
-
-    ``obj_pose_world`` is ``[x, y, z, qw, qx, qy, qz]`` (SAPIEN convention).
-    Returns ``(N, 3)`` ndarray or ``None`` for degenerate / missing inputs.
-    """
+    """(N,3) world anchors. ``obj_pose_world`` is ``[xyz, qw, qx, qy, qz]``."""
     if obj_pose_world is None or len(obj_pose_world) < 7 or not components:
         return None
     p = np.asarray(obj_pose_world[:3], dtype=float)
@@ -222,19 +155,14 @@ def transform_anchors(
         [np.asarray(c.anchor_obj_frame, dtype=float).reshape(3) for c in components],
         axis=0,
     )
-    return p[None, :] + anchors_obj @ R.T  # (N, 3)
+    return p[None, :] + anchors_obj @ R.T
 
 
 def transform_approach_dir(
     obj_pose_world: Optional[List[float]],
     component: AffordanceComponent,
 ) -> Optional[np.ndarray]:
-    """World-frame unit approach direction for one component, or None.
-
-    Rotates the stored OBJECT-frame approach direction by the object's current
-    world rotation. Returns None if the component has no mined direction or the
-    pose is degenerate.
-    """
+    """World-frame unit approach direction, or None if not mined / degenerate."""
     if component.approach_dir_obj_frame is None:
         return None
     R = _obj_rotmat(obj_pose_world)
@@ -254,14 +182,8 @@ def select_active_component(
     tcp_axis_local: Optional[List[float]] = None,
     orientation_weight: float = 0.10,
 ) -> Optional[int]:
-    """Choose the live affordance candidate closest to the TCP.
-
-    Distance is always used. When the TCP pose and candidate approach
-    directions are available, the score also adds an orientation penalty in
-    metres: ``orientation_weight * angle/pi``. This keeps old callers distance-
-    only compatible while letting raw success samples compete on both position
-    and approach orientation.
-    """
+    """Index of the candidate closest to the TCP. Adds ``orientation_weight * angle/pi``
+    (metres) when TCP/component orientations are available."""
     if anchors_world is None or len(anchors_world) == 0:
         return None
     tcp = np.asarray(tcp_xyz_world, dtype=float).reshape(-1)
@@ -297,14 +219,9 @@ def select_active_component(
 def lookup_components(
     aff_set: AffordanceSet, node: Node,
 ) -> Optional[List[AffordanceComponent]]:
-    """Resolve component list for an object node.
+    """Component list for a node, or None.
 
-    Lookup order:
-      1. exact stable ``entity_key`` (supports actors and articulation links);
-      2. legacy actor key without the ``actor:`` prefix;
-      3. legacy MS-HAB object id;
-      4. canonicalized display name.
-    Returns ``None`` if the set is empty or no match.
+    Lookup: entity_key -> actor_key (legacy, strip ``actor:``) -> mshab_obj_id -> name.
     """
     if aff_set is None or aff_set.is_empty():
         return None
@@ -331,10 +248,5 @@ def lookup_components(
 
 
 def has_affordance(aff_set: AffordanceSet, node: Node) -> bool:
-    """True iff this object node has any mined affordance components.
-
-    Primary eligibility test for node classification: an object that has an
-    affordance set is treated as ``interactive_object``.
-    """
-    comps = lookup_components(aff_set, node)
-    return bool(comps)
+    """True if the node has any mined components (eligibility for ``interactive_object``)."""
+    return bool(lookup_components(aff_set, node))

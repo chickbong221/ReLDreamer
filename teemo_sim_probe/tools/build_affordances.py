@@ -1,43 +1,16 @@
-"""Offline miner: successful manipulation rollouts -> ``affordances.json``.
+"""Offline miner: success rollouts -> ``affordances.json``.
 
-Walks ``ASSET_DIR/robot_success_states/<robot_uid>/<subtask>/<obj_id>.pkl``
-(saved by ``adapters.collect_contact_data.FetchCollectContactDataWrapper``) and
-produces an affordance candidate per successful grasp pose:
-
-    component_k = {
-        anchor_obj_frame: 3D point in OBJECT frame (pose-invariant),
-        approach_dir_obj_frame: TCP approach axis in OBJECT frame,
-        preferred_width: gripper qpos-sum at success (matches runtime),
-    }
-
-Per success sample:
-
-    width = robot_qpos[-2] + robot_qpos[-1]    # qpos-sum convention
-    tcp_in_base = data["tcp_pose_wrt_base"][i] # schema v4 from collector
-                  # or FK(Fetch, robot_qpos)   # legacy v3 fallback (SAPIEN)
-    anchor_obj  = inv(obj_pose_wrt_base) * tcp_in_base   (position only)
-
-N samples per object -> N affordance candidates. Runtime picks the candidate
-whose live object-frame pose is closest to the current TCP in both position and
-approach orientation, then keeps that candidate after contact / grasp.
-
-PLACE is excluded. Place success is invalid for affordance mining: the place check
-requires ``~is_grasped`` with TCP at ``ee_rest_world_pose``
-(mshab/envs/sequential_task.py:1138), so ``inv(obj) * tcp`` would learn the
-robot's rest pose rather than an object affordance.
-
-Schema-v4 pickles contain simulator TCP poses and do not need FK. Legacy
-pickles without ``tcp_pose_wrt_base`` need FK; if FK is unavailable the object
-is skipped with a clear error. We deliberately do NOT write placeholder anchors:
-``[0,0,0]`` would produce valid-looking but false runtime relations.
+Per sample: ``anchor_obj = inv(obj_pose_wrt_base) * tcp_in_base``,
+``width = qpos[-2] + qpos[-1]``, ``approach_dir_obj = inv_rot(obj) * R_tcp @ axis_local``.
+Reads schema-v4 ``tcp_pose_wrt_base`` directly; falls back to SAPIEN FK on Fetch
+for older pickles. PLACE is excluded: its success requires the TCP at the rest
+pose (mshab/envs/sequential_task.py:1138), so the anchor would learn the rest pose.
 
 Usage::
 
     python -m teemo_sim_probe.tools.build_affordances \\
         --success-states-dir $MS_ASSET_DIR/data/robot_success_states \\
-        --out teemo_sim_probe/configs/affordances.json \\
-        --robot fetch \\
-        --max-samples 2000
+        --out teemo_sim_probe/configs/affordances.json --robot fetch
 """
 
 from __future__ import annotations
@@ -54,9 +27,6 @@ from typing import Dict, List, Optional
 import numpy as np
 
 
-# --------------------------------------------------------------------------- #
-# Logging
-# --------------------------------------------------------------------------- #
 log = logging.getLogger("build_affordances")
 
 
@@ -68,16 +38,8 @@ def _setup_logging(verbose: bool) -> None:
     )
 
 
-# --------------------------------------------------------------------------- #
-# Canonical key (must match runtime exactly)
-# --------------------------------------------------------------------------- #
 def _canonical_key(name: Optional[str]) -> Optional[str]:
-    """Mirror of teemo_sim_probe.core.affordance.canonical_affordance_key.
-
-    Kept inlined so the miner has no runtime-package dependency beyond what
-    the importer provides. We deliberately import the runtime helper here so
-    the two implementations cannot drift.
-    """
+    """Delegates to ``canonical_affordance_key`` so the two cannot drift."""
     if not name:
         return None
     value = str(name)
@@ -88,9 +50,6 @@ def _canonical_key(name: Optional[str]) -> Optional[str]:
     return f"actor:{canonical}" if canonical else None
 
 
-# --------------------------------------------------------------------------- #
-# Pose math (positions only -- we don't need orientation for the anchor)
-# --------------------------------------------------------------------------- #
 def _normalize(v: np.ndarray) -> Optional[np.ndarray]:
     n = float(np.linalg.norm(v))
     if n < 1e-9:
@@ -113,7 +72,7 @@ def _quat_wxyz_to_rotmat(q: np.ndarray) -> Optional[np.ndarray]:
 def _inv_transform_point(
     pose_wxyz: np.ndarray, point: np.ndarray
 ) -> Optional[np.ndarray]:
-    """Apply ``inv(pose) * point`` where pose = [x,y,z,qw,qx,qy,qz]."""
+    """``inv(pose) * point`` for pose ``[xyz, qw, qx, qy, qz]``."""
     if pose_wxyz is None or len(pose_wxyz) < 7:
         return None
     p = np.asarray(pose_wxyz[:3], dtype=float)
@@ -127,7 +86,7 @@ def _inv_transform_point(
 def _inv_rotate_dir(
     pose_wxyz: np.ndarray, dir_world: np.ndarray
 ) -> Optional[np.ndarray]:
-    """Rotate a world-frame direction into the OBJECT frame: ``R_obj.T @ d``."""
+    """World direction -> OBJECT frame unit (``R_obj.T @ d``)."""
     if pose_wxyz is None or len(pose_wxyz) < 7:
         return None
     R = _quat_wxyz_to_rotmat(np.asarray(pose_wxyz[3:7], dtype=float))
@@ -140,18 +99,13 @@ def _inv_rotate_dir(
     return d / n
 
 
-# --------------------------------------------------------------------------- #
-# FK (SAPIEN-based, Fetch only)
-# --------------------------------------------------------------------------- #
+# SAPIEN-based FK, Fetch only.
 class _FetchFK:
-    """Stateful FK helper. Loads the Fetch URDF once, then per-sample sets
-    qpos and reads the gripper_link world pose (== base frame because the
-    root is fixed at identity).
-    """
+    """Loads the Fetch URDF once; ``set_qpos`` + ``gripper_link.pose`` per sample.
+    Root is fixed at identity so world == base frame."""
 
     def __init__(self, urdf_path: str, tcp_link_name: str = "gripper_link"):
-        # Imports are local so the miner can fail clearly with --help even
-        # when SAPIEN / ManiSkill aren't installed.
+        # Local imports so ``--help`` works without SAPIEN installed.
         try:
             import sapien                                       # noqa: F401
             from sapien import physx                            # noqa: F401
@@ -170,13 +124,8 @@ class _FetchFK:
             raise FileNotFoundError(f"Fetch URDF not found at {urdf_path}")
 
         self._sys = physx.PhysxCpuSystem()
-        # SAPIEN's URDF loader attaches visual shapes; without a render
-        # system in the scene, loader.load() raises
-        # "no system with name [render] is added to scene" and the scene's
-        # __del__ then aborts with the same error (see
-        # ManiSkill/mani_skill/envs/sapien_env.py:1213-1217 -- ManiSkill
-        # always adds a RenderSystem alongside PhysX for the same reason).
-        # We never actually render here; the system just needs to exist.
+        # URDF loader requires a render system even in headless FK
+        # (see ManiSkill/mani_skill/envs/sapien_env.py:1213-1217).
         try:
             render_sys = sapien.render.RenderSystem()
         except Exception as exc:
@@ -193,11 +142,8 @@ class _FetchFK:
         try:
             self._robot.set_root_pose(sapien.Pose())
         except Exception:
-            # Some SAPIEN versions don't expose set_root_pose on articulations;
-            # fix_root_link=True already pins it at identity by default.
-            pass
+            pass  # Some SAPIEN versions lack set_root_pose; fix_root_link suffices.
 
-        # Resolve the gripper link.
         self._tcp_link = None
         for link in self._robot.get_links():
             if getattr(link, "name", None) == tcp_link_name:
@@ -209,15 +155,14 @@ class _FetchFK:
                 + ", ".join(getattr(l, "name", "?") for l in self._robot.get_links())
             )
 
-        # SAPIEN articulation qpos length may differ from MS-HAB's saved qpos
-        # if some joints are fixed/mimic in the load. Warn loudly.
+        # qpos length may differ from MS-HAB's if joints are fixed/mimic.
         try:
             self._qpos_dim = int(self._robot.dof)
         except Exception:
             self._qpos_dim = -1
 
     def tcp_in_base(self, qpos: np.ndarray) -> Optional[np.ndarray]:
-        """Return TCP pose [x,y,z,qw,qx,qy,qz] in base (== world) frame."""
+        """TCP pose ``[xyz, qw, qx, qy, qz]`` in base (= world) frame."""
         try:
             q = np.asarray(qpos, dtype=float).reshape(-1)
             if self._qpos_dim > 0 and q.shape[0] != self._qpos_dim:
@@ -248,7 +193,7 @@ class _FetchFK:
 
 
 def _default_fetch_urdf() -> Optional[str]:
-    """Find ``fetch.urdf`` via ManiSkill's PACKAGE_ASSET_DIR (best effort)."""
+    """``fetch.urdf`` via ManiSkill's PACKAGE_ASSET_DIR, or None."""
     try:
         from mani_skill import PACKAGE_ASSET_DIR
     except Exception:
