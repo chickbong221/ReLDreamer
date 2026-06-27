@@ -66,6 +66,57 @@ class OneHopWhitelistTests(unittest.TestCase):
         })
         self.assertNotIn("link:cabinet/drawer", builder.payload()["members"])
 
+    def test_interaction_types_track_contact_and_grasp(self):
+        builder = _WhitelistBuilder("pick", "actor:024_bowl")
+        builder.absorb({
+            "interacted": [
+                {"key": "actor:024_bowl", "kind": "actor", "name": "bowl",
+                 "grasped": True},
+                {"key": "link:cabinet/handle", "kind": "link", "name": "handle"},
+            ],
+            "supports": [{
+                "supporter": {"key": "link:cabinet/drawer", "kind": "link",
+                              "name": "drawer"},
+                "supported_key": "actor:024_bowl",
+            }],
+        })
+        members = builder.payload()["members"]
+        self.assertEqual(
+            members["actor:024_bowl"]["interaction_types"], ["contact", "grasp"],
+        )
+        self.assertEqual(
+            members["link:cabinet/handle"]["interaction_types"], ["contact"],
+        )
+        # Supporters never carry an ee interaction.
+        self.assertEqual(
+            members["link:cabinet/drawer"]["interaction_types"], [],
+        )
+
+    def test_bin_edges_emitted_from_bin_stats(self):
+        builder = _WhitelistBuilder("pick", "actor:024_bowl")
+        builder.absorb({
+            "interacted": [
+                {"key": "actor:024_bowl", "kind": "actor", "name": "bowl"},
+            ],
+            "supports": [],
+            "bin_stats": {
+                "planar_distance": 0.60,
+                "height_offset": 0.30,
+                "planar_distance_change": 0.10,
+            },
+        })
+        payload = builder.payload()
+        bins = payload["bin_edges"]
+        # Equal-width on [0, 0.60] -> [0.20, 0.40].
+        self.assertAlmostEqual(bins["planar-distance"][0], 0.20, places=6)
+        self.assertAlmostEqual(bins["planar-distance"][1], 0.40, places=6)
+        # Signed 3-bin on |max|=0.30 -> [-0.10, 0.10].
+        self.assertAlmostEqual(bins["height-offset"][0], -0.10, places=6)
+        self.assertAlmostEqual(bins["height-offset"][1], 0.10, places=6)
+        # Compatibility absolute bins are always [1/3, 2/3].
+        self.assertAlmostEqual(bins["grasp-compatibility"][0], 1.0 / 3.0, places=6)
+        self.assertAlmostEqual(bins["contact-compatibility"][1], 2.0 / 3.0, places=6)
+
 
 class StaleEdgeTests(unittest.TestCase):
     def test_last_observed_edge_is_restored_as_stale(self):

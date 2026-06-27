@@ -1,8 +1,14 @@
-# TEEMO sim-probe thresholds. Two scale profiles:
+# TEEMO sim-probe thresholds.
+#
+# Bin edges for spatial, affordance, and change relations are mined per
+# (subtask, target) into the whitelist asset. The ``profiles`` block below is
+# the runtime FALLBACK used only when the active whitelist asset omits edges
+# for a particular relation. Two scale profiles:
 #   tabletop   -> ManiSkill PickCube-v1 (small workspace)
 #   room_scale -> MS-HAB (Fetch navigates room-scale scenes)
 #
-# All distances in metres. Bin edges are upper-exclusive ascending.
+# All distances in metres. Bin edges are upper-exclusive ascending. Labels and
+# edges must satisfy ``len(labels) == len(edges) + 1``.
 
 temporal:
   K: 5
@@ -21,6 +27,14 @@ support:
 affordances:
   asset_path: affordances.json
 
+# Compatibility normalization. Each per-component mismatch (metres for pos /
+# width, radians for orient) is clipped to its norm before averaging into the
+# [0, 1] compatibility score. The whitelist asset may override these.
+compat_norm:
+  pos: 0.10
+  orient: 1.5707963267948966
+  width: 0.04
+
 # The probe loads one per-(subtask,target) whitelist from this directory and
 # fails loud if no file matches. Mine these via
 # tools/build_subtask_whitelists.py.
@@ -35,52 +49,62 @@ profiles:
 
   tabletop:
     planar_distance:
-      edges:  [0.03, 0.08, 0.20, 0.50]
-      labels: [very-near, near, medium, far, very-far]
+      edges:  [0.08, 0.20]
+      labels: [near, medium, far]
     height_offset:
-      edges:  [-0.10, -0.03, 0.03, 0.10]
-      labels: [far-below, below, level, above, far-above]
-    orientation_alignment:
-      edges:  [0.17, 0.52, 1.05, 1.57]
-      labels: [aligned, near-aligned, partial, misaligned, very-misaligned]
+      edges:  [-0.05, 0.05]
+      labels: [below, level, above]
+    grasp_compatibility:
+      edges:  [0.3333333333333333, 0.6666666666666666]
+      labels: [match, partial-match, poor-match]
+    contact_compatibility:
+      edges:  [0.3333333333333333, 0.6666666666666666]
+      labels: [match, partial-match, poor-match]
     planar_distance_change:
-      edges:  [-0.10, -0.04, -0.01, 0.01, 0.04, 0.10]
-      labels: [approach-fast, approach-medium, approach-slow,
-               stable-distance,
-               recede-slow, recede-medium, recede-fast]
+      edges:  [-0.06, -0.02, 0.02, 0.06]
+      labels: [approaching-fast, approaching-slow, stable-distance,
+               receding-slow, receding-fast]
     height_offset_change:
-      edges:  [-0.10, -0.04, -0.01, 0.01, 0.04, 0.10]
-      labels: [move-down-fast, move-down-medium, move-down-slow,
-               stable-height,
-               move-up-slow, move-up-medium, move-up-fast]
-    orientation_alignment_change:
-      edges:  [-0.35, -0.12, -0.03, 0.03, 0.12, 0.35]
-      labels: [improve-alignment-fast, improve-alignment-medium, improve-alignment-slow,
-               stable-alignment,
-               worsen-alignment-slow, worsen-alignment-medium, worsen-alignment-fast]
+      edges:  [-0.06, -0.02, 0.02, 0.06]
+      labels: [lowering-fast, lowering-slow, stable-height,
+               rising-slow, rising-fast]
+    grasp_compatibility_change:
+      edges:  [-0.30, -0.10, 0.10, 0.30]
+      labels: [grasp-fit-better-fast, grasp-fit-better-slow, stable-grasp-fit,
+               grasp-fit-worse-slow, grasp-fit-worse-fast]
+    contact_compatibility_change:
+      edges:  [-0.30, -0.10, 0.10, 0.30]
+      labels: [contact-fit-better-fast, contact-fit-better-slow,
+               stable-contact-fit,
+               contact-fit-worse-slow, contact-fit-worse-fast]
 
   room_scale:
     planar_distance:
-      edges:  [0.05, 0.20, 0.75, 2.00]
-      labels: [very-near, near, medium, far, very-far]
+      edges:  [0.30, 1.00]
+      labels: [near, medium, far]
     height_offset:
-      edges:  [-0.10, -0.03, 0.03, 0.10]
-      labels: [far-below, below, level, above, far-above]
-    orientation_alignment:
-      edges:  [0.17, 0.52, 1.05, 1.57]
-      labels: [aligned, near-aligned, partial, misaligned, very-misaligned]
+      edges:  [-0.05, 0.05]
+      labels: [below, level, above]
+    grasp_compatibility:
+      edges:  [0.3333333333333333, 0.6666666666666666]
+      labels: [match, partial-match, poor-match]
+    contact_compatibility:
+      edges:  [0.3333333333333333, 0.6666666666666666]
+      labels: [match, partial-match, poor-match]
     planar_distance_change:
-      edges:  [-0.30, -0.12, -0.03, 0.03, 0.12, 0.30]
-      labels: [approach-fast, approach-medium, approach-slow,
-               stable-distance,
-               recede-slow, recede-medium, recede-fast]
+      edges:  [-0.18, -0.06, 0.06, 0.18]
+      labels: [approaching-fast, approaching-slow, stable-distance,
+               receding-slow, receding-fast]
     height_offset_change:
-      edges:  [-0.10, -0.04, -0.01, 0.01, 0.04, 0.10]
-      labels: [move-down-fast, move-down-medium, move-down-slow,
-               stable-height,
-               move-up-slow, move-up-medium, move-up-fast]
-    orientation_alignment_change:
-      edges:  [-0.35, -0.12, -0.03, 0.03, 0.12, 0.35]
-      labels: [improve-alignment-fast, improve-alignment-medium, improve-alignment-slow,
-               stable-alignment,
-               worsen-alignment-slow, worsen-alignment-medium, worsen-alignment-fast]
+      edges:  [-0.06, -0.02, 0.02, 0.06]
+      labels: [lowering-fast, lowering-slow, stable-height,
+               rising-slow, rising-fast]
+    grasp_compatibility_change:
+      edges:  [-0.30, -0.10, 0.10, 0.30]
+      labels: [grasp-fit-better-fast, grasp-fit-better-slow, stable-grasp-fit,
+               grasp-fit-worse-slow, grasp-fit-worse-fast]
+    contact_compatibility_change:
+      edges:  [-0.30, -0.10, 0.10, 0.30]
+      labels: [contact-fit-better-fast, contact-fit-better-slow,
+               stable-contact-fit,
+               contact-fit-worse-slow, contact-fit-worse-fast]

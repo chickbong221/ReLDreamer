@@ -1,11 +1,12 @@
-"""Render the semantic graph as a node-link diagram in the reference style:
-large filled circles for nodes (ee centred, objects on a ring), bold colored
-name below each circle, and plain italic relation labels stacked along each
-edge -- no chrome / no chip boxes. Absolute and temporal relations remain
-distinguishable by text color (dark vs. muted purple) but share the page.
+"""Render the semantic graph as a node-link diagram in the reference style.
 
-Layout is deterministic and scales the ring radius + canvas with the number of
-objects so dense graphs spread out, with a per-node de-collision nudge so
+Large filled circles for nodes (ee centred, objects on a ring) with bold
+colored labels; plain italic relation values stacked along each edge in
+family-colored chips. Relations in the same family share one chip background,
+so the viewer reads ``event`` vs ``spatial`` vs ``affordance`` at a glance.
+
+Layout is deterministic and scales the ring radius + canvas with the number
+of objects so dense graphs spread out, with a per-node de-collision nudge so
 distinct same-category instances do not stack on top of one another.
 """
 
@@ -19,17 +20,58 @@ from ..core.schema import Edge, Graph
 from .palette import ColorMap
 
 
-# Absolute-block ordering: spatial first, then physical (planar-distance,
-# height-offset, orientation-alignment, then contact / grasp / support). The
-# eye lands on "where" before "what kind of contact".
-_ABSOLUTE_ORDER = (
-    "planar-distance",
-    "height-offset",
-    "orientation-alignment",
-    "contact",
-    "grasp",
-    "support",
-)
+# --------------------------------------------------------------------------- #
+# Relation -> family classification
+# --------------------------------------------------------------------------- #
+_FAMILY_EVENT = "event"
+_FAMILY_SPATIAL = "spatial"
+_FAMILY_AFFORDANCE = "affordance"
+
+_RELATION_FAMILY: Dict[str, str] = {
+    # Event (absolute + transition)
+    "contact": _FAMILY_EVENT,
+    "grasp": _FAMILY_EVENT,
+    "support": _FAMILY_EVENT,
+    "contact-transition": _FAMILY_EVENT,
+    "grasp-transition": _FAMILY_EVENT,
+    "support-transition": _FAMILY_EVENT,
+    # Spatial
+    "planar-distance": _FAMILY_SPATIAL,
+    "height-offset": _FAMILY_SPATIAL,
+    "planar-distance-change": _FAMILY_SPATIAL,
+    "height-offset-change": _FAMILY_SPATIAL,
+    # Affordance compatibility
+    "grasp-compatibility": _FAMILY_AFFORDANCE,
+    "contact-compatibility": _FAMILY_AFFORDANCE,
+    "grasp-compatibility-change": _FAMILY_AFFORDANCE,
+    "contact-compatibility-change": _FAMILY_AFFORDANCE,
+}
+
+# Family ordering used both for chip-row ordering and (within a chip) the
+# absolute-then-temporal stacking.
+_FAMILY_ORDER = (_FAMILY_EVENT, _FAMILY_SPATIAL, _FAMILY_AFFORDANCE)
+
+# Within a family, sort absolute relations by this order then temporal ones.
+_INTRA_FAMILY_ORDER = {
+    _FAMILY_EVENT: ("contact", "grasp", "support",
+                    "contact-transition", "grasp-transition", "support-transition"),
+    _FAMILY_SPATIAL: ("planar-distance", "height-offset",
+                      "planar-distance-change", "height-offset-change"),
+    _FAMILY_AFFORDANCE: ("grasp-compatibility", "contact-compatibility",
+                         "grasp-compatibility-change",
+                         "contact-compatibility-change"),
+}
+
+# Per-family chip styling.
+_FAMILY_STYLE: Dict[str, Dict[str, str]] = {
+    _FAMILY_EVENT:      {"bg": "#ffe0c2", "edge": "#c25a00", "text": "#5a2900"},
+    _FAMILY_SPATIAL:    {"bg": "#d4e7ff", "edge": "#2f6ec2", "text": "#13396b"},
+    _FAMILY_AFFORDANCE: {"bg": "#e4dcf5", "edge": "#6c5aa1", "text": "#2c1f5c"},
+}
+
+# Stale edges override every family chip with the same blue palette used for
+# frozen-pose nodes -- a single visual signal that the data is not fresh.
+_STALE_STYLE = {"bg": "#d9ecff", "edge": "#2f75b5", "text": "#1c3d6e"}
 
 
 def _radial_layout(
@@ -42,8 +84,6 @@ def _radial_layout(
     if has_ee:
         pos["ee"] = np.array([0.0, 0.0])
     if has_ee and len(objects) == 1:
-        # One-object case: a long left -> right horizontal so the edge has
-        # room to carry several stacked relation lines.
         pos["ee"] = np.array([-radius * 0.55, 0.0])
         pos[objects[0]] = np.array([radius * 0.55, 0.0])
         return pos
@@ -52,9 +92,6 @@ def _radial_layout(
         ang = np.pi / 2 - 2 * np.pi * i / n
         pos[nid] = np.array([radius * np.cos(ang), radius * np.sin(ang)])
 
-    # De-collision: any two object nodes that landed within ``min_sep`` get
-    # nudged outward along their own angle until separated. Distinct same-
-    # category instances (e.g. two ``024_bowl``s) must remain visible.
     min_sep = 2.0 * node_r + 0.35
     nudge_step = max(node_r * 0.5, 0.18)
     max_iters = 80
@@ -76,30 +113,35 @@ def _radial_layout(
     return pos
 
 
-def _split_labels(elist: List[Edge]) -> Tuple[List[str], List[str]]:
-    """Return (absolute_labels, temporal_labels) for an edge group, value-only.
+def _family_of(relation: str) -> Optional[str]:
+    return _RELATION_FAMILY.get(relation)
 
-    The label is just the discrete value (``far``, ``contact``,
-    ``maintain-grasp`` ...) -- the relation name is omitted because the value
-    alone reads cleanly inside the small chip box.
+
+def _group_by_family(elist: List[Edge]) -> Dict[str, List[str]]:
+    """Bucket an edge group's labels by family in canonical intra-family order.
+
+    Absolute relations come before temporal ones within a family, both follow
+    ``_INTRA_FAMILY_ORDER``. Unknown relations are skipped silently.
     """
-    absolute: List[Edge] = []
-    temporal: List[Edge] = []
+    grouped: Dict[str, List[Tuple[int, int, str]]] = {f: [] for f in _FAMILY_ORDER}
     for e in elist:
-        (temporal if e.temporal else absolute).append(e)
-
-    def _abs_rank(e: Edge) -> Tuple[int, str]:
+        family = _family_of(e.relation)
+        if family is None:
+            continue
+        order = _INTRA_FAMILY_ORDER.get(family, ())
         try:
-            return (_ABSOLUTE_ORDER.index(e.relation), "")
+            rank = order.index(e.relation)
         except ValueError:
-            return (len(_ABSOLUTE_ORDER), e.relation)
+            rank = len(order)
+        temporal_rank = 1 if e.temporal else 0
+        grouped[family].append((temporal_rank, rank, str(e.label)))
 
-    absolute.sort(key=_abs_rank)
-    temporal.sort(key=lambda e: e.relation)
-    return (
-        [str(e.label) for e in absolute],
-        [str(e.label) for e in temporal],
-    )
+    out: Dict[str, List[str]] = {}
+    for family in _FAMILY_ORDER:
+        items = sorted(grouped[family])
+        if items:
+            out[family] = [label for _t, _r, label in items]
+    return out
 
 
 def render_graph(
@@ -119,8 +161,6 @@ def render_graph(
     n_obj = sum(1 for n in graph.nodes
                 if n.node_type == "object" and n.valid_mask)
 
-    # Big canvas. Even the 1-object panel is rendered large so the labels
-    # along the single edge have room to breathe.
     if n_obj <= 1:
         figsize = (11.0, 8.0)
         radius = 3.0
@@ -134,7 +174,7 @@ def render_graph(
         )
         radius = 3.2 + 0.45 * (n_obj - 3)
 
-    node_r = 0.32   # data-unit radius for both the Circle patch and arrow trim
+    node_r = 0.32
 
     pos = _radial_layout(graph, radius, node_r)
     fig, ax = plt.subplots(figsize=figsize, dpi=130)
@@ -191,55 +231,33 @@ def render_graph(
             zorder=2,
         )
 
-        absolute_labels, temporal_labels = _split_labels(elist)
-        if not absolute_labels and not temporal_labels:
+        grouped = _group_by_family(elist)
+        if not grouped:
             continue
 
-        # Label anchor: midpoint of the trimmed edge, nudged perpendicular to
-        # the arrow shaft so the chip box doesn't sit on top of the line.
+        # Place one chip per family, distributed perpendicular to the edge
+        # midpoint. Offsets are symmetric around the line: 1 chip -> 0,
+        # 2 chips -> +/-spacing, 3 chips -> -spacing, 0, +spacing.
         mid = a0 + (a1 - a0) * 0.5
         perp = np.array([-u[1], u[0]])
-        chip_offset = 0.32
-
-        # Distinct chip backgrounds so absolute and temporal blocks are
-        # immediately separable; stale edges override absolute with the blue
-        # language used elsewhere for frozen-pose pairs.
-        absolute_bg = "#d9ecff" if is_stale else "#fff3c4"   # warm cream
-        absolute_edge = "#2f75b5" if is_stale else "#c79a2f"
-        absolute_text = "#1c3d6e" if is_stale else "#3a2a05"
-
-        temporal_bg = "#e4dcf5"                              # soft lavender
-        temporal_edge = "#6c5aa1"
-        temporal_text = "#2c1f5c"
-
-        if absolute_labels and temporal_labels:
-            abs_anchor = mid + perp * chip_offset
-            tmp_anchor = mid - perp * chip_offset
-        elif absolute_labels:
-            abs_anchor = mid + perp * (chip_offset * 0.6)
-            tmp_anchor = None
+        spacing = 0.42
+        families_present = [f for f in _FAMILY_ORDER if f in grouped]
+        n = len(families_present)
+        if n == 1:
+            offsets = [0.0]
+        elif n == 2:
+            offsets = [-spacing * 0.5, spacing * 0.5]
         else:
-            abs_anchor = None
-            tmp_anchor = mid + perp * (chip_offset * 0.6)
-
-        if absolute_labels and abs_anchor is not None:
+            offsets = [-spacing, 0.0, spacing]
+        for offset, family in zip(offsets, families_present):
+            anchor = mid + perp * offset
+            style = _STALE_STYLE if is_stale else _FAMILY_STYLE[family]
             ax.text(
-                abs_anchor[0], abs_anchor[1], "\n".join(absolute_labels),
+                anchor[0], anchor[1], "\n".join(grouped[family]),
                 fontsize=9.5, ha="center", va="center", style="italic",
-                color=absolute_text, zorder=4, linespacing=1.05,
+                color=style["text"], zorder=4, linespacing=1.05,
                 bbox=dict(
-                    facecolor=absolute_bg, edgecolor=absolute_edge,
-                    linewidth=0.7, pad=0.45, alpha=0.96,
-                    boxstyle="round,pad=0.35",
-                ),
-            )
-        if temporal_labels and tmp_anchor is not None:
-            ax.text(
-                tmp_anchor[0], tmp_anchor[1], "\n".join(temporal_labels),
-                fontsize=9.5, ha="center", va="center", style="italic",
-                color=temporal_text, zorder=4, linespacing=1.05,
-                bbox=dict(
-                    facecolor=temporal_bg, edgecolor=temporal_edge,
+                    facecolor=style["bg"], edgecolor=style["edge"],
                     linewidth=0.7, pad=0.45, alpha=0.96,
                     boxstyle="round,pad=0.35",
                 ),
@@ -284,8 +302,6 @@ def render_graph(
         title += f"  |  subtask={sub}"
     ax.set_title(title, fontsize=14)
 
-    # Lock view to the actual extents (with padding) so node circles render at
-    # their true data-unit size regardless of the axes' auto-scaling.
     xs = [p[0] for p in pos.values()]
     ys = [p[1] for p in pos.values()]
     if xs and ys:

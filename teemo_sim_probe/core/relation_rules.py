@@ -1,28 +1,73 @@
 """Absolute relation labels from privileged state.
 
-Vocabulary by ``pair_type``:
-  ee/static_object       center  : planar-distance, height-offset, contact
-  ee/interactive_object  anchor* : planar-distance, height-offset, orientation-alignment, contact, grasp
-  object/object                  : contact OR support (mutually exclusive)
+Vocabulary (independent of pair_type):
 
-*Falls back to center when no affordance asset; recorded as ``spatial_ref``.
-``orientation-alignment`` requires a mined ``approach_dir``.
+* Event:     ``contact``, ``grasp``, ``support``
+* Spatial:   ``planar-distance`` (object-center), ``height-offset`` (object-center)
+* Affordance: ``grasp-compatibility``, ``contact-compatibility``
+  Emitted only when (a) the object has affordance components, (b) the
+  current ``planar-distance`` is the closest bin (``near``), and (c) the
+  whitelist asset records that interaction type for the object.
+  ``contact-compatibility`` is masked while the object is grasped, mirroring
+  the contact-edge mask.
+
+Bin edges come from the active per-(subtask, target) whitelist
+(``cfg["bin_edges"]``); ``cfg["profile"]`` is used as a fallback for any
+relation the asset omits. The per-object interaction-type map lives in
+``cfg["interaction_types"]`` (also wired from the whitelist by the builder).
 """
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
 from .affordance import (
+    AffordanceComponent,
+    CompatibilityMeasurement,
+    compatibility_components,
     lookup_components,
     select_active_component,
     transform_anchors,
-    transform_approach_dir,
 )
 from .schema import Edge, Graph, Node
 from ..adapters.privileged_state import PrivilegedState
+
+
+# --------------------------------------------------------------------------- #
+# Canonical label vocabulary (relation -> labels, in ascending bin order)
+# --------------------------------------------------------------------------- #
+SPATIAL_LABELS: Dict[str, List[str]] = {
+    "planar-distance": ["near", "medium", "far"],
+    "height-offset": ["below", "level", "above"],
+}
+COMPAT_LABELS: Dict[str, List[str]] = {
+    "grasp-compatibility": ["match", "partial-match", "poor-match"],
+    "contact-compatibility": ["match", "partial-match", "poor-match"],
+}
+CHANGE_LABELS: Dict[str, List[str]] = {
+    "planar-distance-change": [
+        "approaching-fast", "approaching-slow", "stable-distance",
+        "receding-slow", "receding-fast",
+    ],
+    "height-offset-change": [
+        "lowering-fast", "lowering-slow", "stable-height",
+        "rising-slow", "rising-fast",
+    ],
+    "grasp-compatibility-change": [
+        "grasp-fit-better-fast", "grasp-fit-better-slow", "stable-grasp-fit",
+        "grasp-fit-worse-slow", "grasp-fit-worse-fast",
+    ],
+    "contact-compatibility-change": [
+        "contact-fit-better-fast", "contact-fit-better-slow",
+        "stable-contact-fit",
+        "contact-fit-worse-slow", "contact-fit-worse-fast",
+    ],
+}
+ALL_LABELS: Dict[str, List[str]] = {
+    **SPATIAL_LABELS, **COMPAT_LABELS, **CHANGE_LABELS,
+}
 
 
 def bin_label(value: float, edges: List[float], labels: List[str]) -> str:
@@ -30,6 +75,49 @@ def bin_label(value: float, edges: List[float], labels: List[str]) -> str:
     idx = int(np.searchsorted(edges, value, side="right"))
     idx = min(idx, len(labels) - 1)
     return labels[idx]
+
+
+def _get_bin_spec(cfg: dict, relation: str) -> Optional[Tuple[List[float], List[str]]]:
+    """Resolve ``(edges, labels)`` for ``relation`` from cfg.
+
+    Whitelist-derived ``cfg["bin_edges"]`` wins; ``cfg["profile"]`` is the
+    fallback (legacy snake_case keys). Returns None when no source provides
+    edges for this relation.
+    """
+    edges_map = cfg.get("bin_edges") or {}
+    edges = edges_map.get(relation)
+    if edges is None:
+        profile = cfg.get("profile") or {}
+        spec = profile.get(relation.replace("-", "_"))
+        if not isinstance(spec, dict):
+            return None
+        edges = spec.get("edges")
+    if not edges:
+        return None
+    labels = ALL_LABELS.get(relation)
+    if labels is None or len(labels) != len(edges) + 1:
+        return None
+    return list(edges), list(labels)
+
+
+def _compat_norm(cfg: dict) -> Dict[str, float]:
+    norm = cfg.get("compat_norm") or {}
+    out = {
+        "pos": float(norm.get("pos", 0.10)),
+        "orient": float(norm.get("orient", np.pi / 2.0)),
+        "width": float(norm.get("width", 0.04)),
+    }
+    for k, v in out.items():
+        if not np.isfinite(v) or v <= 0:
+            out[k] = 1.0
+    return out
+
+
+def _interaction_types(cfg: dict, key: Optional[str]) -> Set[str]:
+    if key is None:
+        return set()
+    table: Dict[str, Set[str]] = cfg.get("interaction_types") or {}
+    return set(table.get(key, set()))
 
 
 # Pose arrays are ``[x, y, z, qw, qx, qy, qz]`` (SAPIEN).
@@ -61,46 +149,6 @@ def height_offset(a: Node, b: Node) -> Optional[float]:
     return height_offset_xyz(pa, pb)
 
 
-def _normalize(v: np.ndarray) -> Optional[np.ndarray]:
-    n = float(np.linalg.norm(v))
-    if n < 1e-9:
-        return None
-    return v / n
-
-
-def _quat_wxyz_to_rotmat(q: np.ndarray) -> Optional[np.ndarray]:
-    qn = _normalize(np.asarray(q, dtype=float))
-    if qn is None:
-        return None
-    w, x, y, z = qn
-    return np.array([
-        [1 - 2 * (y * y + z * z), 2 * (x * y - w * z),     2 * (x * z + w * y)],
-        [2 * (x * y + w * z),     1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
-        [2 * (x * z - w * y),     2 * (y * z + w * x),     1 - 2 * (x * x + y * y)],
-    ])
-
-
-def tcp_approach_dir_world(
-    tcp_pose_world: Optional[np.ndarray], axis_local: List[float]
-) -> Optional[np.ndarray]:
-    """World unit axis of ``axis_local`` (gripper-out, +Z for Fetch/Panda) rotated by TCP."""
-    if tcp_pose_world is None or len(tcp_pose_world) < 7:
-        return None
-    R = _quat_wxyz_to_rotmat(np.asarray(tcp_pose_world[3:7], dtype=float))
-    if R is None:
-        return None
-    d = R @ np.asarray(axis_local, dtype=float).reshape(3)
-    return _normalize(d)
-
-
-def orientation_alignment_angle(
-    tcp_dir_world: np.ndarray, aff_dir_world: np.ndarray
-) -> float:
-    """Angle in radians, ``[0, pi]``."""
-    c = float(np.clip(np.dot(tcp_dir_world, aff_dir_world), -1.0, 1.0))
-    return float(np.arccos(c))
-
-
 # Static actors by name are scene structure regardless of pair_type.
 _STATIC_HINTS = (
     "table", "wall", "floor", "ground", "counter_body", "cabinet_body",
@@ -115,10 +163,6 @@ def _graspable(node: Node) -> bool:
     if any(h in name for h in _STATIC_HINTS):
         return False
     return True
-
-
-def _is_interactive(node: Node) -> bool:
-    return node.attributes.get("pair_type") == "interactive_object"
 
 
 def _resolve_entity(node: Node, state: PrivilegedState):
@@ -143,8 +187,9 @@ def _resolve_entity(node: Node, state: PrivilegedState):
 def _resolve_active_anchor(node: Node, state: PrivilegedState, cfg: dict):
     """``(anchor_world (3,), component, a_star)`` or ``(None, None, None)``.
 
-    Component index is cached per node and reused across frames; the world
-    anchor is re-derived each frame from the node's current pose.
+    Component index is cached per node and reused across frames so the
+    compatibility reference does not jump mid-rollout. The world anchor is
+    re-derived each frame from the node's current pose.
     """
     aff_set = cfg.get("affordance_set")
     if aff_set is None or getattr(aff_set, "is_empty", lambda: True)():
@@ -190,105 +235,65 @@ def _resolve_active_anchor(node: Node, state: PrivilegedState, cfg: dict):
     return anchors_world[a_star], comps[a_star], a_star
 
 
-def ee_static_object_edges(
+def _compatibility_score(
+    meas: CompatibilityMeasurement, norm: Dict[str, float], *, include_width: bool,
+) -> float:
+    """Unweighted mean of per-component [0,1] mismatches.
+
+    Missing components (orientation without ``approach_dir``, width without
+    gripper qpos) are skipped from the average rather than treated as 1.
+    """
+    parts: List[float] = []
+    parts.append(min(meas.pos_mismatch / norm["pos"], 1.0))
+    if meas.orient_mismatch is not None:
+        parts.append(min(meas.orient_mismatch / norm["orient"], 1.0))
+    if include_width and meas.width_mismatch is not None:
+        parts.append(min(meas.width_mismatch / norm["width"], 1.0))
+    if not parts:
+        return 1.0
+    return float(np.mean(parts))
+
+
+# --------------------------------------------------------------------------- #
+# Edge builders
+# --------------------------------------------------------------------------- #
+def ee_object_spatial_event_edges(
     graph: Graph, state: PrivilegedState, cfg: dict
 ) -> List[Edge]:
-    """Center-based planar-distance, height-offset, contact."""
+    """Object-center spatial relations plus contact / grasp events for every
+    object node. Spatial is always ee->object-center regardless of pair_type."""
     ee = graph.get_node("ee")
     if ee is None or ee.pose_world is None:
         return []
     ee_xyz = np.asarray(ee.pose_world[:3], dtype=float)
-    prof = cfg["profile"]
     eps_contact = cfg["contact"]["eps_force"]
+    grasp_angle = cfg["grasp"]["max_angle"]
+
+    pd_spec = _get_bin_spec(cfg, "planar-distance")
+    ho_spec = _get_bin_spec(cfg, "height-offset")
 
     edges: List[Edge] = []
     for node in graph.nodes:
-        if node.node_type != "object" or _is_interactive(node):
+        if node.node_type != "object":
             continue
         if not node.valid_mask or node.frozen_pose:
             continue
         ent = _resolve_entity(node, state)
         obj_xyz = _xyz(node)
 
-        if obj_xyz is not None:
+        if obj_xyz is not None and pd_spec is not None:
             d = planar_distance_xyz(ee_xyz, obj_xyz)
             edges.append(Edge(
                 "ee", node.node_id, "planar-distance",
-                bin_label(d, prof["planar_distance"]["edges"],
-                          prof["planar_distance"]["labels"]), d,
+                bin_label(d, pd_spec[0], pd_spec[1]), d,
             ))
+        if obj_xyz is not None and ho_spec is not None:
             dz = height_offset_xyz(ee_xyz, obj_xyz)
             edges.append(Edge(
                 "ee", node.node_id, "height-offset",
-                bin_label(dz, prof["height_offset"]["edges"],
-                          prof["height_offset"]["labels"]), dz,
+                bin_label(dz, ho_spec[0], ho_spec[1]), dz,
             ))
 
-        force = state.ee_object_contact_force(ent)
-        edges.append(Edge(
-            "ee", node.node_id, "contact",
-            "contact" if force > eps_contact else "no-contact",
-            force, masked=(force <= eps_contact),
-        ))
-    return edges
-
-
-def ee_interactive_object_edges(
-    graph: Graph, state: PrivilegedState, cfg: dict
-) -> List[Edge]:
-    """Anchor-based spatial (center fallback) + orientation + contact + grasp."""
-    ee = graph.get_node("ee")
-    if ee is None or ee.pose_world is None:
-        return []
-    ee_xyz = np.asarray(ee.pose_world[:3], dtype=float)
-    prof = cfg["profile"]
-    eps_contact = cfg["contact"]["eps_force"]
-    grasp_angle = cfg["grasp"]["max_angle"]
-    tcp_axis_local = cfg["grasp"].get("tcp_approach_axis_local", [0.0, 0.0, 1.0])
-    align_spec = prof.get("orientation_alignment")
-
-    tcp_dir = tcp_approach_dir_world(state.tcp_pose_world, tcp_axis_local)
-
-    edges: List[Edge] = []
-    for node in graph.nodes:
-        if node.node_type != "object" or not _is_interactive(node):
-            continue
-        if not node.valid_mask or node.frozen_pose:
-            continue
-        ent = _resolve_entity(node, state)
-
-        anchor_world, comp, _ = _resolve_active_anchor(node, state, cfg)
-        ref_xyz = anchor_world if anchor_world is not None else _xyz(node)
-        node.attributes["spatial_ref"] = (
-            "anchor" if anchor_world is not None else "center"
-        )
-
-        if ref_xyz is not None:
-            d = planar_distance_xyz(ee_xyz, ref_xyz)
-            edges.append(Edge(
-                "ee", node.node_id, "planar-distance",
-                bin_label(d, prof["planar_distance"]["edges"],
-                          prof["planar_distance"]["labels"]), d,
-            ))
-            dz = height_offset_xyz(ee_xyz, ref_xyz)
-            edges.append(Edge(
-                "ee", node.node_id, "height-offset",
-                bin_label(dz, prof["height_offset"]["edges"],
-                          prof["height_offset"]["labels"]), dz,
-            ))
-
-        if comp is not None and tcp_dir is not None and align_spec is not None:
-            aff_dir = transform_approach_dir(node.pose_world, comp)
-            if aff_dir is not None:
-                ang = orientation_alignment_angle(tcp_dir, aff_dir)
-                edges.append(Edge(
-                    "ee", node.node_id, "orientation-alignment",
-                    bin_label(ang, align_spec["edges"], align_spec["labels"]),
-                    ang,
-                ))
-
-        # While grasped, the contact edge is still emitted (force audit) but
-        # masked, so the temporal buffer doesn't see a phantom lose-contact.
         grasped = False
         if _graspable(node):
             grasped = state.is_grasping(ent, max_angle=grasp_angle)
@@ -307,6 +312,92 @@ def ee_interactive_object_edges(
                 "ee", node.node_id, "grasp",
                 "grasp" if grasped else "no-grasp",
                 1.0 if grasped else 0.0, masked=(not grasped),
+            ))
+    return edges
+
+
+def ee_object_compatibility_edges(
+    graph: Graph, state: PrivilegedState, cfg: dict
+) -> List[Edge]:
+    """Affordance compatibility edges, gated by near + whitelist + grasp.
+
+    Per object:
+      * Skip unless the object has mined affordance components.
+      * Compute planar-distance; skip unless the label resolves to the closest
+        bin (the first label of ``SPATIAL_LABELS['planar-distance']``).
+      * Score against the active affordance component.
+      * Emit ``grasp-compatibility`` only when the whitelist says this object
+        was grasped during demonstrations.
+      * Emit ``contact-compatibility`` only when the whitelist says this
+        object was contacted by an ee link; masked while currently grasped.
+    """
+    ee = graph.get_node("ee")
+    if ee is None or ee.pose_world is None:
+        return []
+    if state.tcp_pose_world is None:
+        return []
+    ee_xyz = np.asarray(ee.pose_world[:3], dtype=float)
+    pd_spec = _get_bin_spec(cfg, "planar-distance")
+    if pd_spec is None:
+        return []
+    grasp_spec = _get_bin_spec(cfg, "grasp-compatibility")
+    contact_spec = _get_bin_spec(cfg, "contact-compatibility")
+    if grasp_spec is None and contact_spec is None:
+        return []
+    near_label = SPATIAL_LABELS["planar-distance"][0]
+    norm = _compat_norm(cfg)
+    tcp_axis_local = cfg["grasp"].get("tcp_approach_axis_local", [0.0, 0.0, 1.0])
+    grasp_angle = cfg["grasp"]["max_angle"]
+    gripper_width = getattr(state, "gripper_width", None)
+
+    edges: List[Edge] = []
+    for node in graph.nodes:
+        if node.node_type != "object" or not node.valid_mask or node.frozen_pose:
+            continue
+        obj_xyz = _xyz(node)
+        if obj_xyz is None:
+            continue
+        d = planar_distance_xyz(ee_xyz, obj_xyz)
+        if bin_label(d, pd_spec[0], pd_spec[1]) != near_label:
+            continue
+
+        anchor_world, comp, a_star = _resolve_active_anchor(node, state, cfg)
+        if anchor_world is None or comp is None or a_star is None:
+            continue
+
+        wl_key = node.attributes.get("whitelist_key")
+        wl_types = _interaction_types(cfg, wl_key)
+        emit_grasp = grasp_spec is not None and "grasp" in wl_types
+        emit_contact = contact_spec is not None and "contact" in wl_types
+        if not emit_grasp and not emit_contact:
+            continue
+
+        meas = compatibility_components(
+            comp, a_star, anchor_world,
+            obj_pose_world=node.pose_world,
+            tcp_pose_world=state.tcp_pose_world,
+            tcp_axis_local=tcp_axis_local,
+            gripper_width=gripper_width,
+        )
+
+        currently_grasped = False
+        if emit_contact and _graspable(node):
+            ent = _resolve_entity(node, state)
+            currently_grasped = state.is_grasping(ent, max_angle=grasp_angle)
+
+        if emit_grasp:
+            score = _compatibility_score(meas, norm, include_width=True)
+            edges.append(Edge(
+                "ee", node.node_id, "grasp-compatibility",
+                bin_label(score, grasp_spec[0], grasp_spec[1]), score,
+            ))
+        if emit_contact:
+            score = _compatibility_score(meas, norm, include_width=False)
+            attrs: dict = {"suppressed_by_grasp": True} if currently_grasped else {}
+            edges.append(Edge(
+                "ee", node.node_id, "contact-compatibility",
+                bin_label(score, contact_spec[0], contact_spec[1]),
+                score, masked=currently_grasped, attributes=attrs,
             ))
     return edges
 
@@ -370,6 +461,6 @@ def build_absolute_edges(
     graph: Graph, state: PrivilegedState, cfg: dict
 ) -> None:
     """Append absolute edges to ``graph.edges`` in place."""
-    graph.edges.extend(ee_static_object_edges(graph, state, cfg))
-    graph.edges.extend(ee_interactive_object_edges(graph, state, cfg))
+    graph.edges.extend(ee_object_spatial_event_edges(graph, state, cfg))
+    graph.edges.extend(ee_object_compatibility_edges(graph, state, cfg))
     graph.edges.extend(object_object_edges(graph, state, cfg))

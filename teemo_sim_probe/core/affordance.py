@@ -73,7 +73,8 @@ def load_affordance_set(path: Optional[str]) -> AffordanceSet:
 
     Shape: ``{"objects": {key: {"components": [{"anchor": [x,y,z],
     "approach_dir": [..]?, "width": w}, ...]}}}``. Keys starting with ``_`` are
-    metadata. ``approach_dir`` is optional (no orientation-alignment edge without it).
+    metadata. ``approach_dir`` is optional (the orientation component of the
+    compatibility score is skipped without it).
     """
     if not path or not os.path.isfile(path):
         warnings.warn(
@@ -250,3 +251,63 @@ def lookup_components(
 def has_affordance(aff_set: AffordanceSet, node: Node) -> bool:
     """True if the node has any mined components (eligibility for ``interactive_object``)."""
     return bool(lookup_components(aff_set, node))
+
+
+# --------------------------------------------------------------------------- #
+# Compatibility components
+# --------------------------------------------------------------------------- #
+@dataclass
+class CompatibilityMeasurement:
+    """Raw per-component mismatches against the active affordance component.
+
+    ``pos_mismatch`` is metres, ``orient_mismatch`` is radians in ``[0, pi]``,
+    ``width_mismatch`` is metres (or None when the gripper width is unknown).
+    ``a_star`` is the index of the component the TCP scored against.
+    """
+
+    a_star: int
+    pos_mismatch: float
+    orient_mismatch: Optional[float]
+    width_mismatch: Optional[float]
+
+
+def compatibility_components(
+    component: AffordanceComponent,
+    a_star: int,
+    anchor_world: np.ndarray,
+    obj_pose_world: List[float],
+    tcp_pose_world: np.ndarray,
+    tcp_axis_local: List[float],
+    gripper_width: Optional[float],
+) -> CompatibilityMeasurement:
+    """Mismatches between current gripper config and ``component`` in world frame.
+
+    Each mismatch is signed-magnitude: orientation mismatch is unsigned (an
+    angle), gripper-width mismatch is the absolute delta. All three are fed
+    through the demo-derived normalizers downstream.
+    """
+    tcp_xyz = np.asarray(tcp_pose_world[:3], dtype=float).reshape(3)
+    pos = float(np.linalg.norm(tcp_xyz - np.asarray(anchor_world, dtype=float).reshape(3)))
+
+    orient: Optional[float] = None
+    aff_dir = transform_approach_dir(obj_pose_world, component)
+    if aff_dir is not None and len(tcp_pose_world) >= 7:
+        R = _quat_wxyz_to_rotmat(np.asarray(tcp_pose_world[3:7], dtype=float))
+        if R is not None:
+            tcp_dir = _normalize(
+                R @ np.asarray(tcp_axis_local, dtype=float).reshape(3)
+            )
+            if tcp_dir is not None:
+                cos = float(np.clip(np.dot(tcp_dir, aff_dir), -1.0, 1.0))
+                orient = float(np.arccos(cos))
+
+    width: Optional[float] = None
+    if gripper_width is not None and np.isfinite(gripper_width):
+        width = float(abs(float(gripper_width) - float(component.preferred_width)))
+
+    return CompatibilityMeasurement(
+        a_star=int(a_star),
+        pos_mismatch=pos,
+        orient_mismatch=orient,
+        width_mismatch=width,
+    )

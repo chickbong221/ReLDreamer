@@ -6,16 +6,37 @@ the hard eligibility gate used by the runtime selector: every non-ee node in a
 frame must have a ``match_key`` listed in the active subtask's whitelist or it
 is dropped before slot assignment.
 
-Asset shape (``_schema_version: 2``)::
+The asset also carries:
+
+* ``interaction_types`` per member -- the set of ee-driven interactions that
+  actually happened in the demos (``contact`` and/or ``grasp``). This gates
+  which affordance compatibility edges runtime emits for that object.
+* ``bin_edges`` -- per-(subtask, target) bin edges for spatial, affordance,
+  and change relations derived from per-rollout running maxes (equal-width on
+  ``[0, max]`` for unsigned, ``[-max, max]`` for signed).
+* ``compat_norm`` -- per-component [0,1] normalization scales for position,
+  orientation, and gripper-width mismatches used by compatibility scoring.
+
+Asset shape (``_schema_version: 3``)::
 
     {
-      "_schema_version": 2,
+      "_schema_version": 3,
       "subtask": "pick",
       "target": "actor:024_bowl",
       "members": {
-        "actor:024_bowl":       {"roles": ["interacted"], "kind": "actor"},
-        "link:cabinet/drawer3": {"roles": ["support"],    "kind": "link"}
-      }
+        "actor:024_bowl": {
+            "roles": ["interacted"],
+            "interaction_types": ["contact", "grasp"],
+            "kind": "actor"
+        },
+        "link:cabinet/drawer3": {
+            "roles": ["support"],
+            "interaction_types": [],
+            "kind": "link"
+        }
+      },
+      "bin_edges": { "<relation>": [edges...], ... },
+      "compat_norm": {"pos": float, "orient": float, "width": float}
     }
 
 Match-key conventions:
@@ -30,9 +51,10 @@ Match-key conventions:
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Set
+from typing import Dict, List, Optional, Set
 
 from .affordance import canonical_affordance_key
 from .entity_identity import normalize_asset_key
@@ -65,11 +87,20 @@ def match_key(node: Node) -> Optional[str]:
 # --------------------------------------------------------------------------- #
 # Asset
 # --------------------------------------------------------------------------- #
+# Canonical interaction-type tokens that runtime understands.
+INTERACTION_CONTACT = "contact"
+INTERACTION_GRASP = "grasp"
+_VALID_INTERACTION_TYPES = frozenset({INTERACTION_CONTACT, INTERACTION_GRASP})
+
+
 @dataclass
 class Whitelist:
     subtask: str = ""
     target: str = ""
     by_key: Dict[str, Set[str]] = field(default_factory=dict)
+    interaction_types: Dict[str, Set[str]] = field(default_factory=dict)
+    bin_edges: Dict[str, List[float]] = field(default_factory=dict)
+    compat_norm: Dict[str, float] = field(default_factory=dict)
     source_path: Optional[str] = None
 
     @property
@@ -86,11 +117,18 @@ class Whitelist:
             return set()
         return set(self.by_key.get(key, set()))
 
+    def types(self, key: Optional[str]) -> Set[str]:
+        if key is None:
+            return set()
+        return set(self.interaction_types.get(key, set()))
+
 
 def load_whitelist(path: str) -> Whitelist:
     """Load a per-subtask whitelist. Raises FileNotFoundError if missing.
 
     A missing whitelist must not silently fall back to "admit everything".
+    Older (v2) assets without ``interaction_types`` / ``bin_edges`` still load;
+    the missing fields fall back to runtime defaults at edge-build time.
     """
     if not path or not os.path.isfile(path):
         raise FileNotFoundError(
@@ -103,6 +141,7 @@ def load_whitelist(path: str) -> Whitelist:
         raise ValueError(f"whitelist {path!r}: expected JSON object at root")
 
     by_key: Dict[str, Set[str]] = {}
+    interaction_types: Dict[str, Set[str]] = {}
     members = raw.get("members", {})
     if not isinstance(members, dict):
         raise ValueError(f"whitelist {path!r}: 'members' must be an object")
@@ -110,26 +149,141 @@ def load_whitelist(path: str) -> Whitelist:
         if not isinstance(k, str) or k.startswith("_"):
             continue
         roles_set: Set[str] = set()
+        itypes_set: Set[str] = set()
+        kind = None
         if isinstance(entry, dict):
             roles = entry.get("roles")
             if isinstance(roles, (list, tuple)):
                 for r in roles:
                     if isinstance(r, str):
                         roles_set.add(r)
-        kind = entry.get("kind") if isinstance(entry, dict) else None
+            itypes = entry.get("interaction_types")
+            if isinstance(itypes, (list, tuple)):
+                for t in itypes:
+                    if isinstance(t, str) and t in _VALID_INTERACTION_TYPES:
+                        itypes_set.add(t)
+            kind = entry.get("kind")
         normalized = normalize_asset_key(k, kind)
         if normalized:
             by_key[normalized] = roles_set
+            interaction_types[normalized] = itypes_set
 
     if not by_key:
         raise ValueError(f"whitelist {path!r}: 'members' is empty")
+
+    bin_edges: Dict[str, List[float]] = {}
+    raw_edges = raw.get("bin_edges", {})
+    if isinstance(raw_edges, dict):
+        for rel, edges in raw_edges.items():
+            if not isinstance(rel, str) or not isinstance(edges, (list, tuple)):
+                continue
+            parsed: List[float] = []
+            ok = True
+            for x in edges:
+                try:
+                    v = float(x)
+                except (TypeError, ValueError):
+                    ok = False
+                    break
+                if not math.isfinite(v):
+                    ok = False
+                    break
+                parsed.append(v)
+            if ok and parsed:
+                bin_edges[rel] = parsed
+
+    compat_norm: Dict[str, float] = {}
+    raw_norm = raw.get("compat_norm", {})
+    if isinstance(raw_norm, dict):
+        for k, v in raw_norm.items():
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(fv) and fv > 0:
+                compat_norm[str(k)] = fv
 
     return Whitelist(
         subtask=str(raw.get("subtask", "") or ""),
         target=str(raw.get("target", "") or ""),
         by_key=by_key,
+        interaction_types=interaction_types,
+        bin_edges=bin_edges,
+        compat_norm=compat_norm,
         source_path=path,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Bin-edge derivation
+# --------------------------------------------------------------------------- #
+# Equal-width splits of [0, max] (unsigned) and [-max, max] (signed).
+# 3-label unsigned: 2 edges at max/3 and 2*max/3.
+# 3-label signed:   2 edges at -max/3 and  max/3.
+# 5-label signed:   4 edges at -3*max/5, -max/5, max/5, 3*max/5.
+# Compatibility absolute edges are fixed because the score is already in [0,1].
+
+
+def _equal_width_3_unsigned(max_v: float) -> Optional[List[float]]:
+    if max_v <= 0 or not math.isfinite(max_v):
+        return None
+    return [max_v / 3.0, 2.0 * max_v / 3.0]
+
+
+def _equal_width_3_signed(max_v: float) -> Optional[List[float]]:
+    if max_v <= 0 or not math.isfinite(max_v):
+        return None
+    return [-max_v / 3.0, max_v / 3.0]
+
+
+def _equal_width_5_signed(max_v: float) -> Optional[List[float]]:
+    if max_v <= 0 or not math.isfinite(max_v):
+        return None
+    return [-3.0 * max_v / 5.0, -max_v / 5.0, max_v / 5.0, 3.0 * max_v / 5.0]
+
+
+# Relations and the kind of bin-derivation they use.
+_BIN_DERIVATION = {
+    "planar-distance": ("unsigned3", "planar_distance"),
+    "height-offset": ("signed3", "height_offset"),
+    "planar-distance-change": ("signed5", "planar_distance_change"),
+    "height-offset-change": ("signed5", "height_offset_change"),
+    "grasp-compatibility-change": ("signed5", "grasp_compatibility_change"),
+    "contact-compatibility-change": ("signed5", "contact_compatibility_change"),
+}
+
+
+def derive_bin_edges(max_values: Dict[str, float]) -> Dict[str, List[float]]:
+    """Derive runtime bin edges from per-relation demo maxes.
+
+    ``max_values`` keys are the *snake_case* names emitted by the collector:
+    ``planar_distance``, ``height_offset`` (abs), ``planar_distance_change``,
+    ``height_offset_change``, ``grasp_compatibility_change``,
+    ``contact_compatibility_change``. The returned dict is keyed by the
+    *dashed* relation name used by the schema.
+
+    Compatibility absolute edges are always ``[1/3, 2/3]`` because the score
+    is normalized to ``[0, 1]`` before binning.
+    """
+    out: Dict[str, List[float]] = {
+        "grasp-compatibility": [1.0 / 3.0, 2.0 / 3.0],
+        "contact-compatibility": [1.0 / 3.0, 2.0 / 3.0],
+    }
+    for relation, (kind, src) in _BIN_DERIVATION.items():
+        try:
+            v = float(max_values.get(src, 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        edges: Optional[List[float]] = None
+        if kind == "unsigned3":
+            edges = _equal_width_3_unsigned(v)
+        elif kind == "signed3":
+            edges = _equal_width_3_signed(v)
+        elif kind == "signed5":
+            edges = _equal_width_5_signed(v)
+        if edges is not None:
+            out[relation] = edges
+    return out
 
 
 # --------------------------------------------------------------------------- #

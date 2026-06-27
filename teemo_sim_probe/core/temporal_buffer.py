@@ -1,19 +1,19 @@
 """Temporal relations over a horizon K.
 
-For continuous relations (planar-distance, height-offset, orientation-
-alignment): store the raw value at each frame, compare ``value[t]`` vs
-``value[t-K]``, discretize the signed change.
+For continuous relations (planar-distance, height-offset, grasp- and
+contact-compatibility): store the raw value at each frame, compare
+``value[t]`` vs ``value[t-K]``, discretize the signed change.
 
 For binary predicates (contact, grasp, support): compare ``predicate[t-K]``
 vs ``predicate[t]`` -> gain / lose / maintain / maintain-no. ``maintain-no-*``
 is a background class and is not exported as a semantic graph edge.
 
-Anchor-bound histories (those whose dst carries an ``affordance_a_star``) have
-stricter clearing than the center-based variants: they are reset whenever
-``a_star`` switches between frames -- otherwise the affordance reference jumps
-without the gripper moving, producing nonsense signed-change labels. They are
-also cleared when the corresponding affordance edge disappears (target lost /
-asset removed).
+Compatibility relations are anchor-bound: their history must be cleared
+whenever ``a_star`` switches between frames (otherwise the reference jumps
+without the gripper moving, producing nonsense signed-change labels) and when
+the corresponding affordance edge disappears (target lost / not near anymore).
+Planar-distance and height-offset are object-center based and therefore
+exempt from this stricter reset.
 """
 
 from __future__ import annotations
@@ -24,27 +24,32 @@ from typing import Deque, Dict, List, Optional, Tuple
 import numpy as np
 
 from .schema import Edge, Graph
-from .relation_rules import bin_label
+from .relation_rules import bin_label, _get_bin_spec
 
 
 # Relations handled as continuous (value -> signed change).
 _CONTINUOUS = {
-    "planar-distance": "planar_distance_change",
-    "height-offset": "height_offset_change",
-    "orientation-alignment": "orientation_alignment_change",
+    "planar-distance": "planar-distance-change",
+    "height-offset": "height-offset-change",
+    "grasp-compatibility": "grasp-compatibility-change",
+    "contact-compatibility": "contact-compatibility-change",
 }
 # Relations handled as binary predicates.
 _BINARY = {"contact", "grasp", "support", "containment"}
 
-# Anchor-bound relations whose history must be cleared on a_star switch or
-# affordance-edge disappearance. orientation-alignment is always anchor-bound;
-# planar-distance / height-offset are anchor-bound ONLY for interactive
-# objects with an asset (dst node carries ``affordance_a_star``); the static
-# / asset-less interactive variants are center-based and exempt.
+# Anchor-bound relations whose history is reset on a_star switch or
+# affordance-edge disappearance. Planar-distance / height-offset are
+# center-based and not in this set.
 _AFFORDANCE_RELATIONS = {
-    "orientation-alignment",
-    "planar-distance",
-    "height-offset",
+    "grasp-compatibility",
+    "contact-compatibility",
+}
+
+# Binary relations whose ``suppressed_by_grasp`` attribute should also wipe
+# the parallel compatibility history so a stale grasp transition is not
+# emitted while grasp owns the interaction.
+_GRASP_SUPPRESSED_PARTNERS = {
+    "contact": ("contact-compatibility",),
 }
 
 
@@ -73,8 +78,6 @@ class TemporalBuffer:
         if stale_ids:
             self.purge(stale_ids)
         # ---- Affordance pre-pass: detect a_star switches / edge absence -- #
-        # Read the current a_star for each affordance edge from its dst node
-        # attributes (set by relation_rules._resolve_active_anchor).
         present_affordance: Dict[Tuple[str, str, str], int] = {}
         for e in graph.edges:
             if e.temporal or e.stale:
@@ -89,13 +92,9 @@ class TemporalBuffer:
                 if a_star is not None:
                     present_affordance[_edge_key(e.src, e.dst, e.relation)] = int(a_star)
 
-        # (1) Drop history for ANCHOR-BOUND keys whose edge disappeared or
-        #     whose dst no longer carries an a_star this frame. A key is
-        #     anchor-bound only if it was tracked WITH an a_star previously;
-        #     center-based planar-distance / height-offset (no a_star) is
-        #     exempt so static + asset-less interactive histories survive.
+        # (1) Drop history for affordance keys whose edge disappeared.
         for key in list(self._values.keys()):
-            src, dst, relation = key
+            _src, _dst, relation = key
             if relation not in _AFFORDANCE_RELATIONS:
                 continue
             was_anchor_bound = key in self._last_a_star
@@ -112,20 +111,7 @@ class TemporalBuffer:
 
         # ---- Standard continuous / binary ingest -------------------------- #
         current_bools: Dict[Tuple[str, str, str], bool] = {}
-
-        # Bug 3b fix: edge-driven support seeding. Track which (src, dst)
-        # pairs actually produced a contact or support edge this frame. Only
-        # those pairs get their support history seeded False -- the previous
-        # implementation seeded every ordered pair in the visible object set,
-        # which is what let a transient phantom support (against a maskless
-        # node) emit ``lose-support`` to every other object the next frame.
         seen_pairs: set = set()
-
-        # Edges flagged by relation_rules as "suppressed by grasp" must be
-        # treated as not-observed rather than False. We collect their keys here
-        # so the absent-as-False fallback also leaves them alone, and we drop
-        # any existing bool history for them so a stale transition does not
-        # keep firing while grasp owns the interaction.
         suppressed_keys: set = set()
 
         for e in graph.edges:
@@ -135,6 +121,14 @@ class TemporalBuffer:
             if e.attributes.get("suppressed_by_grasp"):
                 suppressed_keys.add(key)
                 self._bools.pop(key, None)
+                self._values.pop(key, None)
+                # Also drop any partner compatibility history (e.g. drop
+                # contact-compatibility when contact is grasp-suppressed).
+                for partner in _GRASP_SUPPRESSED_PARTNERS.get(e.relation, ()):
+                    partner_key = _edge_key(e.src, e.dst, partner)
+                    self._values.pop(partner_key, None)
+                    self._last_a_star.pop(partner_key, None)
+                    suppressed_keys.add(partner_key)
                 continue
             if e.relation in _CONTINUOUS and e.raw_value is not None:
                 self._values.setdefault(key, deque(maxlen=self.K + 1)).append(
@@ -189,7 +183,6 @@ class TemporalBuffer:
 
     # ---- emit temporal edges for current frame -------------------------- #
     def temporal_edges(self, graph: Graph, cfg: dict) -> List[Edge]:
-        prof = cfg["profile"]
         out: List[Edge] = []
         node_ids = {
             n.node_id for n in graph.nodes
@@ -205,10 +198,10 @@ class TemporalBuffer:
                 continue
             change = hist[-1] - hist[0]          # value[t] - value[t-K]
             change_rel = _CONTINUOUS[relation]
-            spec = prof.get(change_rel)
+            spec = _get_bin_spec(cfg, change_rel)
             if spec is None:
                 continue
-            label = bin_label(change, spec["edges"], spec["labels"])
+            label = bin_label(change, spec[0], spec[1])
             out.append(
                 Edge(src, dst, change_rel, label, change, temporal=True)
             )

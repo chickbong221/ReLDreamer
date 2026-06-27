@@ -86,4 +86,6 @@ def load_config(
         "profile": raw["profiles"][profile],
         "profile_name": profile,
     }
+    if "compat_norm" in raw and isinstance(raw["compat_norm"], dict):
+        cfg["compat_norm"] = dict(raw["compat_norm"])
     return cfg

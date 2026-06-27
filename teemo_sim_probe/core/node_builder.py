@@ -214,7 +214,7 @@ def classify_pair_types(nodes: Dict[str, Node], cfg: dict) -> None:
         # (4) default by entity kind: links are usually structure, free actors
         #     are usually manipulable. Interactive default lets a not-yet-mined
         #     manipulation object still receive center-based interactive
-        #     relations (orientation-alignment is simply skipped without an
+        #     relations (compatibility edges are simply skipped without an
         #     asset).
         attrs["pair_type"] = (
             "interactive_object" if attrs.get("is_actor") else "static_object"

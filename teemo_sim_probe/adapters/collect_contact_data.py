@@ -1,4 +1,4 @@
-"""Local successful-rollout interaction collector (schema version 4).
+"""Local successful-rollout interaction collector (schema version 5).
 
 MS-HAB is treated as read-only.  This wrapper observes the simulator through
 public environment state, buffers each vector environment independently, and
@@ -6,22 +6,29 @@ commits a rollout only when that environment succeeds.
 
 For each successful rollout it records:
 
-* every non-robot entity contacted by any robot link;
+* every non-robot entity contacted by an **ee link** (tcp, finger1, finger2);
+  contact by any other robot link does not count as evidence -- the runtime
+  graph only cares about ee-driven interactions.
 * the task target key, used to name/select offline assets;
 * direct supporters of contacted entities (one hop only).
+* a per-rollout ``bin_stats`` block: running maxes of ee->object planar
+  distance, |height offset|, and their K-window absolute changes, used by the
+  whitelist miner to derive per-(subtask, target) bin edges.
 
-The active target is not injected as a whitelist member unless the robot
-actually contacts it. Robot links are evidence of interaction, never whitelist
-members. Pose arrays are stored for affordance mining, including schema-v4
-``tcp_pose_wrt_base`` to avoid rebuilding TCP poses with a separate FK chain.
+The active target is not injected as a whitelist member unless an ee link
+actually contacts it. Robot links other than tcp/finger1/finger2 are evidence
+of nothing.  Pose arrays are stored for affordance mining, including
+schema-v4 ``tcp_pose_wrt_base`` to avoid rebuilding TCP poses with a separate
+FK chain.
 """
 
 from __future__ import annotations
 
 import os
 import pickle
+from collections import defaultdict, deque
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Deque, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import gymnasium as gym
 import numpy as np
@@ -42,9 +49,11 @@ if TYPE_CHECKING:
     from mshab.envs.sequential_task import SequentialTaskEnv
 
 
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 _EPS_FORCE_DEFAULT = 0.05
 _MIN_VERTICAL_FORCE_RATIO_DEFAULT = 0.5
+_OBSERVE_STRIDE_DEFAULT = 5
+_DEFAULT_TEMPORAL_K = 5
 
 
 def _to_np(x) -> np.ndarray:
@@ -69,18 +78,6 @@ def _entity_xyz(ent, env_idx: int) -> Optional[np.ndarray]:
     return p[:3] if p.size >= 3 and np.all(np.isfinite(p[:3])) else None
 
 
-def _pairwise_force(scene, a, b, env_idx: int) -> Optional[np.ndarray]:
-    try:
-        force = _to_np(scene.get_pairwise_contact_forces(a, b))
-    except Exception:
-        return None
-    if force.ndim == 1:
-        return np.asarray(force, dtype=float)
-    if env_idx >= force.shape[0]:
-        return None
-    return np.asarray(force[env_idx], dtype=float)
-
-
 def _record(ent, *, key: Optional[str] = None) -> Optional[Dict[str, str]]:
     stable = key or stable_entity_key(ent)
     if not stable:
@@ -101,6 +98,8 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         *,
         eps_force: float = _EPS_FORCE_DEFAULT,
         min_vertical_force_ratio: float = _MIN_VERTICAL_FORCE_RATIO_DEFAULT,
+        observe_stride: int = _OBSERVE_STRIDE_DEFAULT,
+        temporal_k: int = _DEFAULT_TEMPORAL_K,
         out_root: Optional[str] = None,
     ) -> None:
         super().__init__(env)
@@ -128,15 +127,29 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
 
         self.eps_force = float(eps_force)
         self.min_vertical_force_ratio = float(min_vertical_force_ratio)
+        self.observe_stride = max(1, int(observe_stride))
+        self.temporal_k = max(1, int(temporal_k))
+        self._step_count = 0
+        self._last_observed_step = -1
+        self._force_cache: Dict[Tuple[int, int], Optional[np.ndarray]] = {}
 
         self.success_robot_qpos: List[List[float]] = []
         self.success_obj_pose_wrt_base: List[List[float]] = []
-        # Simulator TCP pose in the robot base frame, recorded at success.
-        # The affordance miner consumes this directly so it does not need to
-        # run URDF FK and risk re-introducing the base joints into the chain.
         self.success_tcp_pose_wrt_base: List[List[float]] = []
         self.interaction_rollouts: List[Dict[str, Any]] = []
+
+        # Per-env transient buffers.
+        self._episode_interacted: List[Dict[str, Dict[str, Any]]] = []
+        self._episode_entities: List[Dict[str, Any]] = []
+        self._episode_supports: List[Dict[Tuple[str, str], Dict[str, Any]]] = []
+        self._episode_bin_max: List[Dict[str, float]] = []
+        # (entity_key, relation_name) -> deque of last K+1 values
+        self._episode_history: List[Dict[Tuple[str, str], Deque[float]]] = []
         self._reset_buffers()
+
+        # Aggregated across every committed success, used as a quick top-level
+        # summary in the pickle. The miner still re-aggregates per rollout.
+        self.aggregated_bin_max: Dict[str, float] = defaultdict(float)
 
         root = Path(out_root) if out_root else Path(ASSET_DIR) / "robot_success_states"
         save_dir = root / self.agent.uid / self.subtask_type
@@ -144,15 +157,20 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         self.save_path = save_dir / f"{self.obj_id}.pkl"
 
     def _reset_buffers(self, env_indices=None) -> None:
-        if not hasattr(self, "_episode_interacted"):
+        if not self._episode_interacted:
             self._episode_interacted = [dict() for _ in range(self.num_envs)]
             self._episode_entities = [dict() for _ in range(self.num_envs)]
             self._episode_supports = [dict() for _ in range(self.num_envs)]
+            self._episode_bin_max = [defaultdict(float) for _ in range(self.num_envs)]
+            self._episode_history = [dict() for _ in range(self.num_envs)]
         indices = range(self.num_envs) if env_indices is None else env_indices
         for idx in indices:
-            self._episode_interacted[int(idx)].clear()
-            self._episode_entities[int(idx)].clear()
-            self._episode_supports[int(idx)].clear()
+            i = int(idx)
+            self._episode_interacted[i].clear()
+            self._episode_entities[i].clear()
+            self._episode_supports[i].clear()
+            self._episode_bin_max[i].clear()
+            self._episode_history[i].clear()
 
     def reset(self, *args, **kwargs):
         result = super().reset(*args, **kwargs)
@@ -166,14 +184,13 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
                 f"{self.__class__.__name__} does not support CPU simulation"
             )
 
-        # Per-step interaction observation runs here; success commits are
-        # driven by the script loop (collect_robot_success_states) reading
-        # state AFTER the full venv.step chain has returned, because reading
-        # pose / forces from inside the wrapper sees state mutated by MS-HAB's
-        # subtask transition (active actor gets stowed at ~[-1e4, -1e4, -1e4]
-        # before this wrapper is reached on the success step).
-        for env_idx in range(self.num_envs):
-            self._observe_step(env_idx)
+        # Forces are valid only for the just-stepped tick. Drop the cache
+        # before any observation so we never read stale GPU contact data.
+        self._force_cache.clear()
+        self._step_count += 1
+        if self._step_count % self.observe_stride == 0:
+            self._observe_all_envs()
+            self._last_observed_step = self._step_count
 
         done = np.logical_or(
             _to_np(term).astype(bool).reshape(-1),
@@ -181,6 +198,28 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         )
         self._reset_buffers(np.where(done[:self.num_envs])[0].tolist())
         return obs, rew, term, trunc, info
+
+    def _observe_all_envs(self) -> None:
+        for env_idx in range(self.num_envs):
+            self._observe_step(env_idx)
+
+    def _pairwise_force(self, scene, a, b, env_idx: int) -> Optional[np.ndarray]:
+        key = (id(a), id(b))
+        if key not in self._force_cache:
+            try:
+                self._force_cache[key] = _to_np(
+                    scene.get_pairwise_contact_forces(a, b)
+                )
+            except Exception:
+                self._force_cache[key] = None
+        force = self._force_cache[key]
+        if force is None:
+            return None
+        if force.ndim == 1:
+            return np.asarray(force, dtype=float)
+        if env_idx >= force.shape[0]:
+            return None
+        return np.asarray(force[env_idx], dtype=float)
 
     def _robot_links(self) -> Tuple[List[Any], set]:
         try:
@@ -231,36 +270,84 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         key: str,
         ent: Any,
         *,
-        max_robot_force: float = 0.0,
+        max_ee_force: float = 0.0,
         grasped: bool = False,
     ) -> None:
         rec = _record(ent, key=key)
         if rec is None:
             return
-        rec["max_robot_force"] = float(max_robot_force)
+        rec["max_ee_force"] = float(max_ee_force)
         if grasped:
             rec["grasped"] = True
 
         interacted = self._episode_interacted[env_idx]
         prior = interacted.get(key)
         prior_force = 0.0 if prior is None else float(
-            prior.get("max_robot_force", 0.0)
+            prior.get("max_ee_force", 0.0)
         )
         if prior is not None and prior.get("grasped"):
             rec["grasped"] = True
-        if prior is None or grasped or max_robot_force > prior_force:
+        if prior is None or grasped or max_ee_force > prior_force:
             interacted[key] = rec
         self._episode_entities[env_idx][key] = ent
+
+    def _update_bin_stats(
+        self,
+        env_idx: int,
+        entity_by_key: Dict[str, Any],
+        ee_xyz: Optional[np.ndarray],
+    ) -> None:
+        """Accumulate per-rollout running maxes for ee<->object spatial values
+        and their K-window absolute changes. Compatibility metrics are not
+        sampled here (they require the affordance asset) -- defaults are
+        applied in the miner."""
+        if ee_xyz is None:
+            return
+        maxes = self._episode_bin_max[env_idx]
+        history = self._episode_history[env_idx]
+        ee_xy = ee_xyz[:2]
+        ee_z = float(ee_xyz[2])
+        for key, ent in entity_by_key.items():
+            obj_xyz = _entity_xyz(ent, env_idx)
+            if obj_xyz is None:
+                continue
+            pd = float(np.linalg.norm(ee_xy - obj_xyz[:2]))
+            ho_signed = ee_z - float(obj_xyz[2])
+            if pd > maxes["planar_distance"]:
+                maxes["planar_distance"] = pd
+            ho_abs = abs(ho_signed)
+            if ho_abs > maxes["height_offset"]:
+                maxes["height_offset"] = ho_abs
+            for relation, value in (
+                ("planar_distance", pd),
+                ("height_offset", ho_signed),
+            ):
+                hk = (key, relation)
+                buf = history.get(hk)
+                if buf is None:
+                    buf = deque(maxlen=self.temporal_k + 1)
+                    history[hk] = buf
+                buf.append(value)
+                if len(buf) > self.temporal_k:
+                    change = abs(buf[-1] - buf[0])
+                    change_key = f"{relation}_change"
+                    if change > maxes[change_key]:
+                        maxes[change_key] = change
 
     def _observe_step(self, env_idx: int) -> None:
         scene = self._base_env.scene
         entities = self._scene_entities()
-        robot_links, _ = self._robot_links()
         actual_state = get_privileged_state(
             self, env_idx, mshab_object_name="actual"
         )
         target_ent, target_key = self._target(env_idx, actual_state)
         physics_target_ent = target_ent
+        ee_links = list(actual_state.ee_links)
+        ee_xyz = (
+            np.asarray(actual_state.tcp_pose_world[:3], dtype=float)
+            if actual_state.tcp_pose_world is not None
+            else None
+        )
 
         # For pick, MS-HAB's grasp predicate and contact forces are most
         # reliable on the merged runtime actor.  We still record the canonical
@@ -279,9 +366,6 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             if key:
                 entity_by_key[key] = ent
         if target_ent is not None:
-            # Alias the actual target to the task key when appropriate.  For
-            # pick tasks this removes the generic ``actor:obj_0`` key so one
-            # physical object is not recorded twice.
             raw_key = stable_entity_key(target_ent)
             if raw_key and raw_key != target_key:
                 entity_by_key.pop(raw_key, None)
@@ -291,16 +375,23 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
                 entity_by_key.pop(raw_key, None)
             entity_by_key[target_key] = physics_target_ent
 
+        # Spatial running-max sampling spans every candidate, not just those
+        # the ee currently touches: bin edges learn the range the ee operates
+        # over during the rollout.
+        self._update_bin_stats(env_idx, entity_by_key, ee_xyz)
+
+        # Contact evidence is restricted to the ee link set so the whitelist
+        # ignores incidental robot-body bumps.
         for key, ent in entity_by_key.items():
             total_force = 0.0
-            for robot_link in robot_links:
-                vector = _pairwise_force(scene, robot_link, ent, env_idx)
+            for ee_link in ee_links:
+                vector = self._pairwise_force(scene, ee_link, ent, env_idx)
                 if vector is not None:
                     total_force += float(np.linalg.norm(vector))
             if total_force <= self.eps_force:
                 continue
             self._mark_interacted(
-                env_idx, key, ent, max_robot_force=total_force
+                env_idx, key, ent, max_ee_force=total_force
             )
 
         if self.subtask_type == "pick" and physics_target_ent is not None:
@@ -318,7 +409,7 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
                     )
                 self._mark_interacted(
                     env_idx, target_key, physics_target_ent,
-                    max_robot_force=force, grasped=True,
+                    max_ee_force=force, grasped=True,
                 )
 
         # Support evidence may be visible before robot-object contact. Buffer
@@ -339,17 +430,12 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         supported: Any,
         candidates: Dict[str, Any],
     ) -> None:
-        # Keep the best-ever observation per pair, ranked by
-        # (vertical-load evidence, peak force).  Do not use pose-origin z as a
-        # support gate: large scene links often place their origin far from the
-        # actual support surface, so a real table/drawer/counter support can
-        # have a misleading origin height.
         supported_xyz = _entity_xyz(supported, env_idx)
         scene = self._base_env.scene
         for supporter_key, supporter in candidates.items():
             if supporter_key == supported_key:
                 continue
-            vector = _pairwise_force(scene, supporter, supported, env_idx)
+            vector = self._pairwise_force(scene, supporter, supported, env_idx)
             if vector is None:
                 continue
             force = float(np.linalg.norm(vector))
@@ -394,15 +480,12 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
     ) -> None:
         """Append one success sample. Called by the collection script after
         venv.step returns, with state read at the script level.
-
-        The pose pair must be expressed in the per-env robot base frame:
-        ``inv(agent.base_link.pose[env_idx]) * target.pose[env_idx]``. The
-        wrapper itself does not perform that read because, from inside the
-        wrapper's step, MS-HAB's subtask transition has already stowed the
-        active actor at ~[-1e4, -1e4, -1e4]. The script also owns the
-        per-episode dedup (a simple boolean array), keeping the wrapper
-        responsible only for buffering and persisting samples.
         """
+        # Guarantee the grasp moment is captured: if stride skipped this tick,
+        # observe this single env now while sim forces are still valid.
+        if self._last_observed_step != self._step_count:
+            self._observe_step(env_idx)
+
         self.success_robot_qpos.append(np.asarray(qpos, dtype=float).tolist())
         self.success_obj_pose_wrt_base.append(
             np.asarray(obj_pose_wrt_base, dtype=float).tolist()
@@ -421,10 +504,15 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             if supported in root_keys
             and value.get("supporter") is not None
         ]
+        rollout_bin_stats = dict(self._episode_bin_max[env_idx])
+        for k, v in rollout_bin_stats.items():
+            if v > self.aggregated_bin_max[k]:
+                self.aggregated_bin_max[k] = v
         self.interaction_rollouts.append({
             "target_key": target_key,
             "interacted": interacted,
             "supports": supports,
+            "bin_stats": rollout_bin_stats,
         })
 
     def close(self):
@@ -437,10 +525,12 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             "obj_id": self.obj_id,
             "entity_key": entity_key,
             "subtask_type": self.subtask_type,
+            "temporal_k": self.temporal_k,
             "robot_qpos": self.success_robot_qpos,
             "obj_pose_wrt_base": self.success_obj_pose_wrt_base,
             "tcp_pose_wrt_base": self.success_tcp_pose_wrt_base,
             "interaction_rollouts": self.interaction_rollouts,
+            "bin_stats": dict(self.aggregated_bin_max),
         }
         with open(self.save_path, "wb") as stream:
             pickle.dump(payload, stream)

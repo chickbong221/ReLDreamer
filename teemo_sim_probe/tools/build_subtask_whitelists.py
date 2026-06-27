@@ -2,11 +2,14 @@
 
 For each ``(subtask, target)`` the output contains exactly the union of:
 
-* every non-robot entity contacted during a successful rollout;
+* every non-robot entity contacted by an ee link during a successful rollout;
 * direct supporters of those contacted entities.
 
 Support is never expanded recursively. Frequency counts are emitted for audit
-but do not filter membership.
+but do not filter membership. In addition the asset records, per member, the
+set of ee-driven interaction types (``contact`` and/or ``grasp``) seen across
+rollouts and, at the asset level, the per-relation bin edges derived from the
+collector's per-rollout running maxes.
 """
 
 from __future__ import annotations
@@ -21,10 +24,27 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from teemo_sim_probe.core.entity_identity import normalize_asset_key
-from teemo_sim_probe.core.whitelist import whitelist_target_slug
+from teemo_sim_probe.core.whitelist import (
+    INTERACTION_CONTACT,
+    INTERACTION_GRASP,
+    derive_bin_edges,
+    whitelist_target_slug,
+)
 
 
 log = logging.getLogger("build_subtask_whitelists")
+
+
+# Compatibility-norm defaults used when no per-asset value has been collected.
+# These match what runtime applies when the whitelist asset omits the block:
+#   * 0.10 m  -- typical close-approach ee->anchor offset
+#   * pi/2    -- 90deg orientation half-cone
+#   * 0.04 m  -- typical gripper-width spread
+_DEFAULT_COMPAT_NORM = {
+    "pos": 0.10,
+    "orient": 1.5707963267948966,
+    "width": 0.04,
+}
 
 
 def _iter_pickles(root: Path):
@@ -46,10 +66,12 @@ class _WhitelistBuilder:
         self.roles: Dict[str, Set[str]] = defaultdict(set)
         self.kinds: Dict[str, str] = {}
         self.names: Dict[str, str] = {}
+        self.interaction_types: Dict[str, Set[str]] = defaultdict(set)
         self.rollout_count = 0
         self.interaction_count: Dict[str, int] = defaultdict(int)
         self.support_count: Dict[str, int] = defaultdict(int)
         self.supports: Dict[str, Set[str]] = defaultdict(set)
+        self.bin_max: Dict[str, float] = defaultdict(float)
 
     def absorb(self, rollout: Dict[str, Any]) -> None:
         self.rollout_count += 1
@@ -63,6 +85,11 @@ class _WhitelistBuilder:
             self.roles[key].add("interacted")
             self.kinds.setdefault(key, str(item.get("kind") or "other"))
             self.names.setdefault(key, str(item.get("name") or key))
+            # Every interacted record means an ee link touched the object;
+            # grasped=True additionally implies the grasp predicate fired.
+            self.interaction_types[key].add(INTERACTION_CONTACT)
+            if bool(item.get("grasped")):
+                self.interaction_types[key].add(INTERACTION_GRASP)
             interacted_this_rollout.add(key)
         for key in interacted_this_rollout:
             self.interaction_count[key] += 1
@@ -92,15 +119,27 @@ class _WhitelistBuilder:
                 supporter_key, str(supporter.get("name") or supporter_key)
             )
             self.supports[supporter_key].add(supported)
+            self.interaction_types.setdefault(supporter_key, set())
             supported_pairs_this_rollout.add((supporter_key, supported))
         for supporter_key, _supported in supported_pairs_this_rollout:
             self.support_count[supporter_key] += 1
+
+        stats = rollout.get("bin_stats") or {}
+        if isinstance(stats, dict):
+            for k, v in stats.items():
+                try:
+                    fv = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if fv > self.bin_max[str(k)]:
+                    self.bin_max[str(k)] = fv
 
     def payload(self) -> Dict[str, Any]:
         members: Dict[str, Dict[str, Any]] = {}
         for key in sorted(self.roles):
             entry: Dict[str, Any] = {
                 "roles": sorted(self.roles[key]),
+                "interaction_types": sorted(self.interaction_types.get(key, set())),
                 "kind": self.kinds.get(key, "other"),
             }
             if key in self.names:
@@ -111,11 +150,15 @@ class _WhitelistBuilder:
                 entry["support_rollouts"] = self.support_count[key]
                 entry["supports"] = sorted(self.supports[key])
             members[key] = entry
+        bin_edges = derive_bin_edges(dict(self.bin_max))
         return {
-            "_schema_version": 2,
+            "_schema_version": 3,
             "subtask": self.subtask,
             "target": self.target,
             "members": members,
+            "bin_edges": bin_edges,
+            "bin_stats_observed": dict(self.bin_max),
+            "compat_norm": dict(_DEFAULT_COMPAT_NORM),
             "_n_successful_rollouts": self.rollout_count,
         }
 

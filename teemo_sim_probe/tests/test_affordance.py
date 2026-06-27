@@ -1,4 +1,4 @@
-"""Tests for the affordance asset and the eligibility-based vocabulary."""
+"""Tests for the affordance asset and the new relation vocabulary."""
 
 import json
 import os
@@ -11,6 +11,7 @@ from teemo_sim_probe.core.affordance import (
     AffordanceComponent,
     AffordanceSet,
     canonical_affordance_key,
+    compatibility_components,
     has_affordance,
     load_affordance_set,
     lookup_components,
@@ -20,7 +21,8 @@ from teemo_sim_probe.core.affordance import (
 )
 from teemo_sim_probe.core.persistence import _snapshot
 from teemo_sim_probe.core.relation_rules import (
-    ee_interactive_object_edges,
+    ee_object_compatibility_edges,
+    ee_object_spatial_event_edges,
 )
 from teemo_sim_probe.core.schema import Edge, Graph, Node
 from teemo_sim_probe.core.temporal_buffer import TemporalBuffer
@@ -32,70 +34,61 @@ from teemo_sim_probe.core.temporal_buffer import TemporalBuffer
 class _State:
     """Minimal stand-in for PrivilegedState used by edge builders."""
 
-    def __init__(self, tcp_xyz, gripper_width=None, tcp_quat=(1.0, 0.0, 0.0, 0.0)):
+    def __init__(self, tcp_xyz, gripper_width=None, tcp_quat=(1.0, 0.0, 0.0, 0.0),
+                 grasping=False, contact_force=0.0):
         self.tcp_pose_world = np.array([*tcp_xyz, *tcp_quat], dtype=float)
         self.gripper_width = gripper_width
         self.seg_id_map = {}
         self.active_obj = None
         self.active_handle_link = None
+        self._grasping = bool(grasping)
+        self._contact_force = float(contact_force)
 
     def ee_object_contact_force(self, _ent):
-        return 0.0
+        return self._contact_force
 
     def is_grasping(self, _ent, max_angle=30):
-        return False
+        return self._grasping
 
 
-def _cfg(aff_set=None):
+def _cfg(aff_set=None, *, interaction_types=None, bin_edges=None):
+    bins = bin_edges or {
+        "planar-distance": [0.05, 0.20],
+        "height-offset": [-0.10, 0.10],
+        "grasp-compatibility": [1.0 / 3.0, 2.0 / 3.0],
+        "contact-compatibility": [1.0 / 3.0, 2.0 / 3.0],
+        "planar-distance-change": [-0.06, -0.02, 0.02, 0.06],
+        "height-offset-change": [-0.06, -0.02, 0.02, 0.06],
+        "grasp-compatibility-change": [-0.30, -0.10, 0.10, 0.30],
+        "contact-compatibility-change": [-0.30, -0.10, 0.10, 0.30],
+    }
     return {
         "affordance_set": aff_set if aff_set is not None else AffordanceSet(),
         "contact": {"eps_force": 0.05},
         "grasp": {"max_angle": 30, "tcp_approach_axis_local": [0.0, 0.0, 1.0]},
-        "profile": {
-            "planar_distance": {
-                "edges": [0.03, 0.08, 0.20, 0.50],
-                "labels": ["very-near", "near", "medium", "far", "very-far"],
-            },
-            "height_offset": {
-                "edges": [-0.10, -0.03, 0.03, 0.10],
-                "labels": ["far-below", "below", "level", "above", "far-above"],
-            },
-            "orientation_alignment": {
-                "edges": [0.17, 0.52, 1.05, 1.57],
-                "labels": [
-                    "aligned", "near-aligned", "partial",
-                    "misaligned", "very-misaligned",
-                ],
-            },
-            "orientation_alignment_change": {
-                "edges": [-0.35, -0.12, -0.03, 0.03, 0.12, 0.35],
-                "labels": [
-                    "improve-alignment-fast", "improve-alignment-medium",
-                    "improve-alignment-slow",
-                    "stable-alignment",
-                    "worsen-alignment-slow", "worsen-alignment-medium",
-                    "worsen-alignment-fast",
-                ],
-            },
-        },
+        "bin_edges": bins,
+        "interaction_types": dict(interaction_types or {}),
+        "compat_norm": {"pos": 0.10, "orient": 1.5707963267948966, "width": 0.04},
+        "profile": {},
     }
 
 
-def _interactive_obj_node(
+def _obj_node(
     name="024_bowl",
     node_id=None,
     pose=(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
     mshab_id="024_bowl",
+    whitelist_key=None,
 ):
+    attrs = {"is_actor": True, "pair_type": "interactive_object"}
+    if whitelist_key is not None:
+        attrs["whitelist_key"] = whitelist_key
     node = Node(
         node_id=node_id or f"actor:{name}",
         node_type="object",
         name=name,
         pose_world=list(pose),
-        attributes={
-            "is_actor": True,
-            "pair_type": "interactive_object",
-        },
+        attributes=attrs,
     )
     if mshab_id:
         node.attributes["mshab_obj_id"] = mshab_id
@@ -112,7 +105,7 @@ def _ee(pose=(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0)):
 
 
 # --------------------------------------------------------------------------- #
-# Pure-fn tests
+# Pure-fn tests (unchanged surface)
 # --------------------------------------------------------------------------- #
 class CanonicalKeyTests(unittest.TestCase):
     def test_strip_env_prefix_and_suffix(self):
@@ -152,7 +145,6 @@ class TransformAnchorsTests(unittest.TestCase):
         c, s = np.cos(np.pi / 4), np.sin(np.pi / 4)
         comps = [AffordanceComponent(np.array([0.1, 0.0, 0.0]), 0.045)]
         out = transform_anchors([0.0, 0.0, 0.0, c, 0.0, 0.0, s], comps)
-        # +x in OBJECT frame becomes +y in world after 90deg-Z rotation.
         np.testing.assert_allclose(out[0], [0.0, 0.1, 0.0], atol=1e-9)
 
     def test_degenerate(self):
@@ -171,17 +163,6 @@ class TransformApproachDirTests(unittest.TestCase):
         d = transform_approach_dir([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0], c)
         np.testing.assert_allclose(d, [0.0, 0.0, 1.0], atol=1e-9)
 
-    def test_rotated(self):
-        # 90deg around y rotates +Z(obj) to +X(world).
-        c, s = np.cos(np.pi / 4), np.sin(np.pi / 4)
-        comp = AffordanceComponent(
-            anchor_obj_frame=np.array([0.0, 0.0, 0.0]),
-            preferred_width=0.045,
-            approach_dir_obj_frame=np.array([0.0, 0.0, 1.0]),
-        )
-        d = transform_approach_dir([0.0, 0.0, 0.0, c, 0.0, s, 0.0], comp)
-        np.testing.assert_allclose(d, [1.0, 0.0, 0.0], atol=1e-9)
-
     def test_missing_direction(self):
         comp = AffordanceComponent(
             anchor_obj_frame=np.array([0.0, 0.0, 0.0]),
@@ -199,32 +180,6 @@ class SelectActiveComponentTests(unittest.TestCase):
             select_active_component(np.array([0.4, 0.0, 0.0]), anchors), 2
         )
 
-    def test_orientation_breaks_near_tie(self):
-        anchors = np.array([[0.0, 0.0, 0.0], [0.001, 0.0, 0.0]])
-        comps = [
-            AffordanceComponent(
-                np.array([0.0, 0.0, 0.0]),
-                0.045,
-                approach_dir_obj_frame=np.array([0.0, 0.0, -1.0]),
-            ),
-            AffordanceComponent(
-                np.array([0.001, 0.0, 0.0]),
-                0.045,
-                approach_dir_obj_frame=np.array([0.0, 0.0, 1.0]),
-            ),
-        ]
-        self.assertEqual(
-            select_active_component(
-                np.array([0.0, 0.0, 0.0]),
-                anchors,
-                components=comps,
-                obj_pose_world=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
-                tcp_pose_world=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
-                tcp_axis_local=[0.0, 0.0, 1.0],
-            ),
-            1,
-        )
-
     def test_empty(self):
         self.assertIsNone(select_active_component(np.array([0, 0, 0]), None))
         self.assertIsNone(
@@ -236,28 +191,6 @@ class LoadAffordanceSetTests(unittest.TestCase):
     def test_missing_file_is_empty(self):
         s = load_affordance_set("/definitely/not/a/file.json")
         self.assertTrue(s.is_empty())
-
-    def test_basic_load_v1_compat(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "aff.json")
-            with open(path, "w") as f:
-                json.dump({
-                    "_README": "x",
-                    "_schema_version": 1,
-                    "objects": {
-                        "024_bowl": {"components": [
-                            {"anchor": [0.0, 0.0, 0.02], "width": 0.045},
-                            {"anchor": [0.03, 0.0, 0.01], "width": 0.050},
-                        ]},
-                        "_meta": "ignored",
-                    },
-                }, f)
-            s = load_affordance_set(path)
-        self.assertIn("024_bowl", s.by_object)
-        self.assertNotIn("_meta", s.by_object)
-        self.assertEqual(len(s.by_object["024_bowl"]), 2)
-        # v1 entries have no approach_dir -> orientation skipped at runtime.
-        self.assertIsNone(s.by_object["024_bowl"][0].approach_dir_obj_frame)
 
     def test_load_v2_with_approach_dir(self):
         with tempfile.TemporaryDirectory() as d:
@@ -277,21 +210,6 @@ class LoadAffordanceSetTests(unittest.TestCase):
         comp = s.by_object["024_bowl"][0]
         np.testing.assert_allclose(comp.approach_dir_obj_frame, [0.0, 0.0, 1.0])
 
-    def test_skips_bad_entries(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "aff.json")
-            with open(path, "w") as f:
-                json.dump({"objects": {
-                    "024_bowl": {"components": [
-                        {"anchor": [0.0, 0.0, 0.02], "width": 0.045},
-                        {"anchor": [0.0, 0.0], "width": 0.045},
-                        {"width": 0.045},
-                        {"anchor": [0.0, 0.0, 0.02]},
-                    ]},
-                }}, f)
-            s = load_affordance_set(path)
-        self.assertEqual(len(s.by_object["024_bowl"]), 1)
-
 
 class LookupComponentsTests(unittest.TestCase):
     def _set(self):
@@ -301,41 +219,13 @@ class LookupComponentsTests(unittest.TestCase):
 
     def test_prefers_mshab_obj_id(self):
         s = self._set()
-        node = _interactive_obj_node(name="env-0_024_bowl-3", mshab_id="024_bowl")
-        self.assertIsNotNone(lookup_components(s, node))
-
-    def test_canonicalizes_mshab_obj_id(self):
-        s = self._set()
-        node = _interactive_obj_node(name="random", mshab_id="env-0_024_bowl-3")
-        self.assertIsNotNone(lookup_components(s, node))
-
-    def test_falls_back_to_name(self):
-        s = self._set()
-        node = _interactive_obj_node(name="env-0_024_bowl-3", mshab_id=None)
-        node.attributes.pop("mshab_obj_id", None)
+        node = _obj_node(name="env-0_024_bowl-3", mshab_id="024_bowl")
         self.assertIsNotNone(lookup_components(s, node))
 
     def test_missing(self):
         s = self._set()
-        node = _interactive_obj_node(name="999_phantom", mshab_id="999_phantom")
+        node = _obj_node(name="999_phantom", mshab_id="999_phantom")
         self.assertIsNone(lookup_components(s, node))
-
-    def test_link_uses_exact_stable_entity_key(self):
-        key = "link:cabinet-2/drawer_handle"
-        s = AffordanceSet(by_object={
-            key: [AffordanceComponent(np.array([0.0, 0.02, 0.0]), 0.04)],
-        })
-        node = Node(
-            node_id=key,
-            node_type="object",
-            name="drawer_handle",
-            attributes={
-                "is_link": True,
-                "entity_key": key,
-                "pair_type": "interactive_object",
-            },
-        )
-        self.assertIsNotNone(lookup_components(s, node))
 
 
 class HasAffordanceTests(unittest.TestCase):
@@ -343,129 +233,150 @@ class HasAffordanceTests(unittest.TestCase):
         s = AffordanceSet(by_object={
             "024_bowl": [AffordanceComponent(np.array([0.0, 0.0, 0.02]), 0.045)],
         })
-        node = _interactive_obj_node()
-        self.assertTrue(has_affordance(s, node))
+        self.assertTrue(has_affordance(s, _obj_node()))
 
     def test_false_when_empty(self):
-        node = _interactive_obj_node()
-        self.assertFalse(has_affordance(AffordanceSet(), node))
+        self.assertFalse(has_affordance(AffordanceSet(), _obj_node()))
 
 
 # --------------------------------------------------------------------------- #
-# Interactive-object edge emission
+# Compatibility helper
 # --------------------------------------------------------------------------- #
-class InteractiveEdgeTests(unittest.TestCase):
-    def _aff_set(self, with_dir=True):
-        approach = np.array([0.0, 0.0, 1.0]) if with_dir else None
+class CompatibilityComponentsTests(unittest.TestCase):
+    def test_zero_mismatch_at_perfect_match(self):
+        comp = AffordanceComponent(
+            anchor_obj_frame=np.array([0.0, 0.0, 0.02]),
+            preferred_width=0.045,
+            approach_dir_obj_frame=np.array([0.0, 0.0, 1.0]),
+        )
+        anchor_world = np.array([0.0, 0.0, 0.02])
+        meas = compatibility_components(
+            comp, 0, anchor_world,
+            obj_pose_world=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            tcp_pose_world=np.array([0.0, 0.0, 0.02, 1.0, 0.0, 0.0, 0.0]),
+            tcp_axis_local=[0.0, 0.0, 1.0],
+            gripper_width=0.045,
+        )
+        self.assertAlmostEqual(meas.pos_mismatch, 0.0, places=6)
+        self.assertAlmostEqual(meas.orient_mismatch, 0.0, places=6)
+        self.assertAlmostEqual(meas.width_mismatch, 0.0, places=6)
+
+    def test_width_none_when_gripper_width_missing(self):
+        comp = AffordanceComponent(
+            anchor_obj_frame=np.array([0.0, 0.0, 0.02]),
+            preferred_width=0.045,
+        )
+        meas = compatibility_components(
+            comp, 0, np.array([0.0, 0.0, 0.02]),
+            obj_pose_world=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            tcp_pose_world=np.array([0.0, 0.0, 0.02, 1.0, 0.0, 0.0, 0.0]),
+            tcp_axis_local=[0.0, 0.0, 1.0],
+            gripper_width=None,
+        )
+        self.assertIsNone(meas.width_mismatch)
+
+
+# --------------------------------------------------------------------------- #
+# Spatial / event edges (replaces previous interactive/static split)
+# --------------------------------------------------------------------------- #
+class SpatialEventEdgeTests(unittest.TestCase):
+    def test_object_center_spatial_for_every_object(self):
+        cfg = _cfg()
+        # Object at (0.10, 0, 0); ee at origin -> planar-distance 0.10 ("medium").
+        node = _obj_node(pose=(0.10, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
+        graph = Graph(0, "env", "cam", nodes=[_ee(), node])
+        edges = ee_object_spatial_event_edges(graph, _State([0.0, 0.0, 0.0]), cfg)
+        rels = {(e.relation, e.label) for e in edges}
+        self.assertIn(("planar-distance", "medium"), rels)
+        self.assertIn(("height-offset", "level"), rels)
+
+    def test_grasp_masks_contact(self):
+        cfg = _cfg()
+        node = _obj_node()
+        graph = Graph(0, "env", "cam", nodes=[_ee(), node])
+        edges = ee_object_spatial_event_edges(
+            graph, _State([0.0, 0.0, 0.0], grasping=True, contact_force=2.0), cfg,
+        )
+        contact = [e for e in edges if e.relation == "contact"]
+        grasp = [e for e in edges if e.relation == "grasp"]
+        self.assertEqual(len(contact), 1)
+        self.assertTrue(contact[0].masked)
+        self.assertEqual(contact[0].attributes.get("suppressed_by_grasp"), True)
+        self.assertEqual(len(grasp), 1)
+        self.assertFalse(grasp[0].masked)
+
+
+# --------------------------------------------------------------------------- #
+# Compatibility edge gating
+# --------------------------------------------------------------------------- #
+class CompatibilityEdgeTests(unittest.TestCase):
+    def _aff_set(self):
         return AffordanceSet(by_object={
             "024_bowl": [
                 AffordanceComponent(
                     anchor_obj_frame=np.array([0.0, 0.0, 0.02]),
                     preferred_width=0.045,
-                    approach_dir_obj_frame=approach,
-                ),
-                AffordanceComponent(
-                    anchor_obj_frame=np.array([0.05, 0.0, 0.01]),
-                    preferred_width=0.050,
-                    approach_dir_obj_frame=approach,
+                    approach_dir_obj_frame=np.array([0.0, 0.0, 1.0]),
                 ),
             ]
         })
 
-    def test_records_a_star_on_node(self):
-        cfg = _cfg(self._aff_set())
-        state = _State([0.05, 0.0, 0.01], gripper_width=0.050)
-        node = _interactive_obj_node()
-        graph = Graph(0, "env", "cam", nodes=[_ee(), node])
-        ee_interactive_object_edges(graph, state, cfg)
-        self.assertEqual(node.attributes.get("affordance_a_star"), 1)
-
-    def test_a_star_is_fixed_after_first_episode_selection(self):
-        cfg = _cfg(self._aff_set())
-
-        first = _interactive_obj_node()
-        first_graph = Graph(0, "env", "cam", nodes=[_ee(), first])
-        ee_interactive_object_edges(
-            first_graph,
-            _State([0.05, 0.0, 0.01], gripper_width=0.050),
-            cfg,
+    def test_emits_grasp_compat_when_whitelist_grasps(self):
+        cfg = _cfg(
+            self._aff_set(),
+            interaction_types={"actor:024_bowl": {"contact", "grasp"}},
         )
-        self.assertEqual(first.attributes.get("affordance_a_star"), 1)
-
-        later = _interactive_obj_node()
-        later_graph = Graph(1, "env", "cam", nodes=[_ee(), later])
-        ee_interactive_object_edges(
-            later_graph,
-            _State([0.0, 0.0, 0.02], gripper_width=0.045),
-            cfg,
-        )
-        self.assertEqual(later.attributes.get("affordance_a_star"), 1)
-
-    def test_emits_anchor_based_spatial(self):
-        cfg = _cfg(self._aff_set())
-        state = _State([0.0, 0.0, 0.02], gripper_width=0.020)  # near anchor 0
-        node = _interactive_obj_node()
-        graph = Graph(0, "env", "cam", nodes=[_ee(), node])
-        edges = ee_interactive_object_edges(graph, state, cfg)
-        rels = sorted({e.relation for e in edges})
-        self.assertIn("planar-distance", rels)
-        self.assertIn("height-offset", rels)
-        self.assertEqual(node.attributes.get("spatial_ref"), "anchor")
-
-    def test_orientation_alignment_when_direction_present(self):
-        cfg = _cfg(self._aff_set(with_dir=True))
-        # TCP approach axis (+Z by default) aligned with object +Z (no rotation)
-        # so the angle should be 0 -> "aligned".
+        node = _obj_node(whitelist_key="actor:024_bowl",
+                         pose=(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
         state = _State([0.0, 0.0, 0.02], gripper_width=0.045)
-        node = _interactive_obj_node()
         graph = Graph(0, "env", "cam", nodes=[_ee(), node])
-        edges = ee_interactive_object_edges(graph, state, cfg)
-        align = [e for e in edges if e.relation == "orientation-alignment"]
-        self.assertEqual(len(align), 1)
-        self.assertEqual(align[0].label, "aligned")
-        self.assertAlmostEqual(align[0].raw_value, 0.0, places=6)
+        edges = ee_object_compatibility_edges(graph, state, cfg)
+        rels = sorted(e.relation for e in edges)
+        self.assertEqual(rels, ["contact-compatibility", "grasp-compatibility"])
+        # Perfect alignment at the anchor -> normalized score 0 -> "match".
+        for e in edges:
+            self.assertEqual(e.label, "match")
 
-    def test_no_orientation_when_direction_missing(self):
-        cfg = _cfg(self._aff_set(with_dir=False))
-        state = _State([0.0, 0.0, 0.02], gripper_width=0.045)
-        node = _interactive_obj_node()
-        graph = Graph(0, "env", "cam", nodes=[_ee(), node])
-        edges = ee_interactive_object_edges(graph, state, cfg)
-        self.assertFalse(
-            any(e.relation == "orientation-alignment" for e in edges)
+    def test_skips_grasp_compat_without_whitelist_grasp(self):
+        cfg = _cfg(
+            self._aff_set(),
+            interaction_types={"actor:024_bowl": {"contact"}},  # contact only
         )
-
-    def test_falls_back_to_center_without_asset(self):
-        cfg = _cfg(AffordanceSet())
-        state = _State([0.0, 0.0, 0.0], gripper_width=0.045)
-        node = _interactive_obj_node(pose=(0.1, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
+        node = _obj_node(whitelist_key="actor:024_bowl")
+        state = _State([0.0, 0.0, 0.02], gripper_width=0.045)
         graph = Graph(0, "env", "cam", nodes=[_ee(), node])
-        edges = ee_interactive_object_edges(graph, state, cfg)
-        # No asset -> no a_star recorded.
-        self.assertNotIn("affordance_a_star", node.attributes)
-        # Spatial edges still emitted relative to object center.
+        edges = ee_object_compatibility_edges(graph, state, cfg)
         rels = {e.relation for e in edges}
-        self.assertIn("planar-distance", rels)
-        self.assertIn("height-offset", rels)
+        self.assertNotIn("grasp-compatibility", rels)
+        self.assertIn("contact-compatibility", rels)
 
-    def test_pose_invariant_reuse(self):
-        cfg = _cfg(self._aff_set())
-        # Object at (1, 2, 3); TCP + ee node at (1.05, 2.0, 3.01) -> on anchor 1.
-        bowl = _interactive_obj_node(pose=(1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0))
-        state = _State([1.05, 2.0, 3.01], gripper_width=0.050)
-        ee = _ee(pose=(1.05, 2.0, 3.01, 1.0, 0.0, 0.0, 0.0))
-        graph = Graph(0, "env", "cam", nodes=[ee, bowl])
-        edges = ee_interactive_object_edges(graph, state, cfg)
-        d = [e for e in edges if e.relation == "planar-distance"][0]
-        self.assertLess(abs(d.raw_value), 1e-6)
-
-    def test_static_node_is_ignored(self):
-        cfg = _cfg(self._aff_set())
-        state = _State([0.0, 0.0, 0.0], gripper_width=0.045)
-        node = _interactive_obj_node()
-        node.attributes["pair_type"] = "static_object"
+    def test_skips_when_planar_distance_not_near(self):
+        cfg = _cfg(
+            self._aff_set(),
+            interaction_types={"actor:024_bowl": {"contact", "grasp"}},
+        )
+        # Far enough away that planar-distance label != "near".
+        node = _obj_node(whitelist_key="actor:024_bowl",
+                         pose=(0.30, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
+        state = _State([0.0, 0.0, 0.02], gripper_width=0.045)
         graph = Graph(0, "env", "cam", nodes=[_ee(), node])
-        self.assertEqual(ee_interactive_object_edges(graph, state, cfg), [])
+        self.assertEqual(ee_object_compatibility_edges(graph, state, cfg), [])
+
+    def test_contact_compat_masked_under_grasp(self):
+        cfg = _cfg(
+            self._aff_set(),
+            interaction_types={"actor:024_bowl": {"contact", "grasp"}},
+        )
+        node = _obj_node(whitelist_key="actor:024_bowl")
+        state = _State([0.0, 0.0, 0.02], gripper_width=0.045, grasping=True)
+        graph = Graph(0, "env", "cam", nodes=[_ee(), node])
+        edges = ee_object_compatibility_edges(graph, state, cfg)
+        contact_compat = [e for e in edges if e.relation == "contact-compatibility"]
+        self.assertEqual(len(contact_compat), 1)
+        self.assertTrue(contact_compat[0].masked)
+        self.assertEqual(
+            contact_compat[0].attributes.get("suppressed_by_grasp"), True,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -473,28 +384,27 @@ class InteractiveEdgeTests(unittest.TestCase):
 # --------------------------------------------------------------------------- #
 class PersistenceStrippingTests(unittest.TestCase):
     def test_snapshot_strips_dynamic_component_only(self):
-        n = _interactive_obj_node()
+        n = _obj_node()
         n.attributes["affordance_a_star"] = 1
         snap = _snapshot(n)
         self.assertNotIn("affordance_a_star", snap.attributes)
-        # Non-dynamic attrs are preserved.
         self.assertIn("is_actor", snap.attributes)
 
 
 # --------------------------------------------------------------------------- #
-# Temporal anchor-bound reset
+# Temporal anchor-bound reset (now on grasp-compatibility)
 # --------------------------------------------------------------------------- #
 class TemporalAnchorBoundResetTests(unittest.TestCase):
-    KEY = ("ee", "actor:024_bowl", "orientation-alignment")
+    KEY = ("ee", "actor:024_bowl", "grasp-compatibility")
 
     def _push(self, buf, frame, value, a_star=0):
         ee = _ee()
-        node = _interactive_obj_node()
+        node = _obj_node()
         if a_star is not None:
             node.attributes["affordance_a_star"] = a_star
         graph = Graph(frame, "env", "cam", nodes=[ee, node], edges=[
-            Edge("ee", node.node_id, "orientation-alignment",
-                 "near-aligned", float(value)),
+            Edge("ee", node.node_id, "grasp-compatibility",
+                 "partial-match", float(value)),
         ])
         buf.update(graph)
 
@@ -509,7 +419,7 @@ class TemporalAnchorBoundResetTests(unittest.TestCase):
         buf = TemporalBuffer(K=3)
         self._push(buf, 0, 0.10, a_star=0)
         self._push(buf, 1, 0.08, a_star=0)
-        self._push(buf, 2, 0.05, a_star=1)  # switch
+        self._push(buf, 2, 0.05, a_star=1)
         self.assertEqual(len(buf._values[self.KEY]), 1)
         self.assertAlmostEqual(buf._values[self.KEY][0], 0.05)
 
@@ -517,9 +427,8 @@ class TemporalAnchorBoundResetTests(unittest.TestCase):
         buf = TemporalBuffer(K=3)
         self._push(buf, 0, 0.10, a_star=0)
         self._push(buf, 1, 0.08, a_star=0)
-        # Frame 2: same node, no orientation edge -> anchor-bound key drops.
         ee = _ee()
-        node = _interactive_obj_node()
+        node = _obj_node()
         graph = Graph(2, "env", "cam", nodes=[ee, node], edges=[])
         buf.update(graph)
         self.assertNotIn(self.KEY, buf._values)

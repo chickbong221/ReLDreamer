@@ -94,6 +94,18 @@ class GraphBuilder:
             )
         wl = load_whitelist(path)
         self.selector.set_whitelist(wl)
+        # Push per-(subtask, target) bin edges, compat normalizers, and the
+        # per-member interaction-type table into cfg so relation_rules and
+        # temporal_buffer pick them up. cfg["profile"] remains the fallback
+        # for any relation the asset omits.
+        self.cfg["bin_edges"] = dict(wl.bin_edges or {})
+        self.cfg["interaction_types"] = {
+            k: set(v) for k, v in (wl.interaction_types or {}).items()
+        }
+        if wl.compat_norm:
+            self.cfg["compat_norm"] = dict(wl.compat_norm)
+        else:
+            self.cfg.pop("compat_norm", None)
         self._whitelist_key = key
 
     def step(
