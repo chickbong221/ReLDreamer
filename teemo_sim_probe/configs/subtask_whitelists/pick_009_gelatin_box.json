@@ -13,7 +13,7 @@
       ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 24
+      "interaction_rollouts": 26
     }
   },
   "bin_edges": {
@@ -26,17 +26,21 @@
       0.6666666666666666
     ],
     "planar-distance": [
-      3.879738150290813,
-      7.759476300581626
+      0.010110846280903881,
+      0.020221692561807763
     ],
     "height-offset": [
-      -0.4375549952189128,
-      0.4375549952189128
+      -0.010659734408060709,
+      0.010659734408060709
     ]
   },
+  "bin_stats_robust": {
+    "height_offset": 0.03197920322418213,
+    "planar_distance": 0.030332538842711646
+  },
   "bin_stats_observed": {
-    "planar_distance": 11.639214450872439,
-    "height_offset": 1.3126649856567383
+    "height_offset": 0.04342222213745117,
+    "planar_distance": 0.03483583287311427
   },
   "compat_norm": {
     "pos": 0.1,

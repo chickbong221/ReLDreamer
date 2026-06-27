@@ -13,7 +13,19 @@
       ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 26
+      "interaction_rollouts": 22
+    },
+    "actor:004_sugar_box": {
+      "roles": [
+        "support"
+      ],
+      "interaction_types": [],
+      "kind": "actor",
+      "name": "env-2_004_sugar_box-0",
+      "support_rollouts": 2,
+      "supports": [
+        "actor:003_cracker_box"
+      ]
     }
   },
   "bin_edges": {
@@ -26,17 +38,21 @@
       0.6666666666666666
     ],
     "planar-distance": [
-      3.9126125805935046,
-      7.825225161187009
+      0.039239401367076994,
+      0.07847880273415399
     ],
     "height-offset": [
-      -0.4374360243479411,
-      0.4374360243479411
+      -0.03593728542327881,
+      0.03593728542327881
     ]
   },
+  "bin_stats_robust": {
+    "height_offset": 0.10781185626983643,
+    "planar_distance": 0.11771820410123099
+  },
   "bin_stats_observed": {
-    "planar_distance": 11.737837741780513,
-    "height_offset": 1.3123080730438232
+    "height_offset": 0.4618796706199646,
+    "planar_distance": 0.6705152314167976
   },
   "compat_norm": {
     "pos": 0.1,

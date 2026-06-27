@@ -13,7 +13,19 @@
       ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 19
+      "interaction_rollouts": 27
+    },
+    "link:scs-[6,7]_fridge-0/body": {
+      "roles": [
+        "support"
+      ],
+      "interaction_types": [],
+      "kind": "link",
+      "name": "body",
+      "support_rollouts": 9,
+      "supports": [
+        "actor:010_potted_meat_can"
+      ]
     }
   },
   "bin_edges": {
@@ -26,17 +38,21 @@
       0.6666666666666666
     ],
     "planar-distance": [
-      2.98709413133856,
-      5.97418826267712
+      0.15547948199838826,
+      0.3109589639967765
     ],
     "height-offset": [
-      -0.4300173918406169,
-      0.4300173918406169
+      -0.08689447244008382,
+      0.08689447244008382
     ]
   },
+  "bin_stats_robust": {
+    "height_offset": 0.26068341732025146,
+    "planar_distance": 0.4664384459951648
+  },
   "bin_stats_observed": {
-    "planar_distance": 8.96128239401568,
-    "height_offset": 1.2900521755218506
+    "height_offset": 0.27559995651245117,
+    "planar_distance": 0.6422245340947458
   },
   "compat_norm": {
     "pos": 0.1,

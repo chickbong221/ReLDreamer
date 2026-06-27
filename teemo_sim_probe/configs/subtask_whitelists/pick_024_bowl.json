@@ -13,7 +13,19 @@
       ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 23
+      "interaction_rollouts": 25
+    },
+    "link:scs-[2,3]_fridge-0/body": {
+      "roles": [
+        "support"
+      ],
+      "interaction_types": [],
+      "kind": "link",
+      "name": "body",
+      "support_rollouts": 5,
+      "supports": [
+        "actor:024_bowl"
+      ]
     }
   },
   "bin_edges": {
@@ -26,17 +38,21 @@
       0.6666666666666666
     ],
     "planar-distance": [
-      3.0671619263710306,
-      6.134323852742061
+      0.16900980873180438,
+      0.33801961746360876
     ],
     "height-offset": [
-      -0.42715295155843097,
-      0.42715295155843097
+      -0.08255743185679118,
+      0.08255743185679118
     ]
   },
+  "bin_stats_robust": {
+    "height_offset": 0.24767229557037354,
+    "planar_distance": 0.5070294261954131
+  },
   "bin_stats_observed": {
-    "planar_distance": 9.201485779113092,
-    "height_offset": 1.281458854675293
+    "height_offset": 0.2746882438659668,
+    "planar_distance": 0.7381604938913707
   },
   "compat_norm": {
     "pos": 0.1,

@@ -13,7 +13,19 @@
       ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 25
+      "interaction_rollouts": 24
+    },
+    "link:scs-[4,5]_fridge-0/body": {
+      "roles": [
+        "support"
+      ],
+      "interaction_types": [],
+      "kind": "link",
+      "name": "body",
+      "support_rollouts": 4,
+      "supports": [
+        "actor:007_tuna_fish_can"
+      ]
     }
   },
   "bin_edges": {
@@ -26,17 +38,21 @@
       0.6666666666666666
     ],
     "planar-distance": [
-      3.1974378850388643,
-      6.394875770077729
+      0.13051268653859394,
+      0.26102537307718787
     ],
     "height-offset": [
-      -0.4301137129465739,
-      0.4301137129465739
+      -0.08557846546173097,
+      0.08557846546173097
     ]
   },
+  "bin_stats_robust": {
+    "height_offset": 0.2567353963851929,
+    "planar_distance": 0.3915380596157818
+  },
   "bin_stats_observed": {
-    "planar_distance": 9.592313655116593,
-    "height_offset": 1.2903411388397217
+    "height_offset": 0.2721139192581177,
+    "planar_distance": 0.6872978429920362
   },
   "compat_norm": {
     "pos": 0.1,

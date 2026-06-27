@@ -3,6 +3,18 @@
   "subtask": "pick",
   "target": "actor:013_apple",
   "members": {
+    "actor:003_cracker_box": {
+      "roles": [
+        "support"
+      ],
+      "interaction_types": [],
+      "kind": "actor",
+      "name": "env-7_003_cracker_box-0",
+      "support_rollouts": 4,
+      "supports": [
+        "actor:013_apple"
+      ]
+    },
     "actor:013_apple": {
       "roles": [
         "interacted"
@@ -13,7 +25,7 @@
       ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 26
+      "interaction_rollouts": 24
     }
   },
   "bin_edges": {
@@ -26,17 +38,21 @@
       0.6666666666666666
     ],
     "planar-distance": [
-      3.0812778386068853,
-      6.162555677213771
+      0.1197295800759922,
+      0.2394591601519844
     ],
     "height-offset": [
-      -0.4332864284515381,
-      0.4332864284515381
+      -0.07961092789967855,
+      0.07961092789967855
     ]
   },
+  "bin_stats_robust": {
+    "height_offset": 0.23883278369903566,
+    "planar_distance": 0.3591887402279766
+  },
   "bin_stats_observed": {
-    "planar_distance": 9.243833515820656,
-    "height_offset": 1.2998592853546143
+    "height_offset": 0.2621530294418335,
+    "planar_distance": 0.4584422003999924
   },
   "compat_norm": {
     "pos": 0.1,
