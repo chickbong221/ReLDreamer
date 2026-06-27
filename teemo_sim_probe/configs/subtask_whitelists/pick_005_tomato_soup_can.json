@@ -1,5 +1,5 @@
 {
-  "_schema_version": 2,
+  "_schema_version": 3,
   "subtask": "pick",
   "target": "actor:005_tomato_soup_can",
   "members": {
@@ -7,10 +7,41 @@
       "roles": [
         "interacted"
       ],
+      "interaction_types": [
+        "contact",
+        "grasp"
+      ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 31
+      "interaction_rollouts": 26
     }
+  },
+  "bin_edges": {
+    "grasp-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "contact-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "planar-distance": [
+      3.851724645767741,
+      7.703449291535482
+    ],
+    "height-offset": [
+      -0.4305597146352132,
+      0.4305597146352132
+    ]
+  },
+  "bin_stats_observed": {
+    "planar_distance": 11.555173937303223,
+    "height_offset": 1.2916791439056396
+  },
+  "compat_norm": {
+    "pos": 0.1,
+    "orient": 1.5707963267948966,
+    "width": 0.04
   },
   "_n_successful_rollouts": 31
 }

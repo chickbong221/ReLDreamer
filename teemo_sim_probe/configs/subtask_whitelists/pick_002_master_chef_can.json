@@ -1,5 +1,5 @@
 {
-  "_schema_version": 2,
+  "_schema_version": 3,
   "subtask": "pick",
   "target": "actor:002_master_chef_can",
   "members": {
@@ -7,10 +7,41 @@
       "roles": [
         "interacted"
       ],
+      "interaction_types": [
+        "contact",
+        "grasp"
+      ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 30
+      "interaction_rollouts": 25
     }
+  },
+  "bin_edges": {
+    "grasp-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "contact-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "planar-distance": [
+      3.704720006769899,
+      7.409440013539798
+    ],
+    "height-offset": [
+      -0.43315402666727704,
+      0.43315402666727704
+    ]
+  },
+  "bin_stats_observed": {
+    "planar_distance": 11.114160020309697,
+    "height_offset": 1.299462080001831
+  },
+  "compat_norm": {
+    "pos": 0.1,
+    "orient": 1.5707963267948966,
+    "width": 0.04
   },
   "_n_successful_rollouts": 30
 }

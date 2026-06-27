@@ -1,5 +1,5 @@
 {
-  "_schema_version": 2,
+  "_schema_version": 3,
   "subtask": "pick",
   "target": "actor:007_tuna_fish_can",
   "members": {
@@ -7,10 +7,41 @@
       "roles": [
         "interacted"
       ],
+      "interaction_types": [
+        "contact",
+        "grasp"
+      ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 30
+      "interaction_rollouts": 25
     }
+  },
+  "bin_edges": {
+    "grasp-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "contact-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "planar-distance": [
+      3.1974378850388643,
+      6.394875770077729
+    ],
+    "height-offset": [
+      -0.4301137129465739,
+      0.4301137129465739
+    ]
+  },
+  "bin_stats_observed": {
+    "planar_distance": 9.592313655116593,
+    "height_offset": 1.2903411388397217
+  },
+  "compat_norm": {
+    "pos": 0.1,
+    "orient": 1.5707963267948966,
+    "width": 0.04
   },
   "_n_successful_rollouts": 30
 }

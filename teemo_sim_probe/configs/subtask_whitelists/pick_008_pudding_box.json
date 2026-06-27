@@ -1,5 +1,5 @@
 {
-  "_schema_version": 2,
+  "_schema_version": 3,
   "subtask": "pick",
   "target": "actor:008_pudding_box",
   "members": {
@@ -7,10 +7,41 @@
       "roles": [
         "interacted"
       ],
+      "interaction_types": [
+        "contact",
+        "grasp"
+      ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 31
+      "interaction_rollouts": 22
     }
   },
-  "_n_successful_rollouts": 31
+  "bin_edges": {
+    "grasp-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "contact-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "planar-distance": [
+      2.9601498983257586,
+      5.920299796651517
+    ],
+    "height-offset": [
+      -0.4262244701385498,
+      0.4262244701385498
+    ]
+  },
+  "bin_stats_observed": {
+    "planar_distance": 8.880449694977276,
+    "height_offset": 1.2786734104156494
+  },
+  "compat_norm": {
+    "pos": 0.1,
+    "orient": 1.5707963267948966,
+    "width": 0.04
+  },
+  "_n_successful_rollouts": 30
 }

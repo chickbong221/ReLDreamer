@@ -1,5 +1,5 @@
 {
-  "_schema_version": 2,
+  "_schema_version": 3,
   "subtask": "pick",
   "target": "actor:024_bowl",
   "members": {
@@ -7,10 +7,41 @@
       "roles": [
         "interacted"
       ],
+      "interaction_types": [
+        "contact",
+        "grasp"
+      ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 31
+      "interaction_rollouts": 23
     }
   },
-  "_n_successful_rollouts": 31
+  "bin_edges": {
+    "grasp-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "contact-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "planar-distance": [
+      3.0671619263710306,
+      6.134323852742061
+    ],
+    "height-offset": [
+      -0.42715295155843097,
+      0.42715295155843097
+    ]
+  },
+  "bin_stats_observed": {
+    "planar_distance": 9.201485779113092,
+    "height_offset": 1.281458854675293
+  },
+  "compat_norm": {
+    "pos": 0.1,
+    "orient": 1.5707963267948966,
+    "width": 0.04
+  },
+  "_n_successful_rollouts": 30
 }

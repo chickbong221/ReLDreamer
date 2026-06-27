@@ -1,5 +1,5 @@
 {
-  "_schema_version": 2,
+  "_schema_version": 3,
   "subtask": "pick",
   "target": "actor:013_apple",
   "members": {
@@ -7,10 +7,41 @@
       "roles": [
         "interacted"
       ],
+      "interaction_types": [
+        "contact",
+        "grasp"
+      ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 32
+      "interaction_rollouts": 26
     }
   },
-  "_n_successful_rollouts": 32
+  "bin_edges": {
+    "grasp-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "contact-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "planar-distance": [
+      3.0812778386068853,
+      6.162555677213771
+    ],
+    "height-offset": [
+      -0.4332864284515381,
+      0.4332864284515381
+    ]
+  },
+  "bin_stats_observed": {
+    "planar_distance": 9.243833515820656,
+    "height_offset": 1.2998592853546143
+  },
+  "compat_norm": {
+    "pos": 0.1,
+    "orient": 1.5707963267948966,
+    "width": 0.04
+  },
+  "_n_successful_rollouts": 30
 }
