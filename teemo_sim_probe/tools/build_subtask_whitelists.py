@@ -23,6 +23,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+import numpy as np
+
 from teemo_sim_probe.core.entity_identity import normalize_asset_key
 from teemo_sim_probe.core.whitelist import (
     INTERACTION_CONTACT,
@@ -30,6 +32,23 @@ from teemo_sim_probe.core.whitelist import (
     derive_bin_edges,
     whitelist_target_slug,
 )
+
+
+# Quantile used to aggregate per-relation samples across all rollouts. Lower
+# than 1.0 so a single bad frame (autoreset transient, physics blow-up) can't
+# pin the bin edges to absurd values. The collector already emits a per-rollout
+# 0.95 quantile in ``bin_stats``; that's used as a fallback when the legacy
+# pickles don't carry the raw per-rollout sample lists.
+_MINER_QUANTILE = 0.9
+# Per-relation sanity ceiling. Anything above this is treated as a numerical
+# blow-up rather than a meaningful EE-operating range. Tuned for Fetch in a
+# kitchen scene (max reach ~1.5 m planar; ~1.2 m vertical).
+_BIN_VALUE_CEILING: Dict[str, float] = {
+    "planar_distance": 2.0,
+    "height_offset": 1.5,
+    "planar_distance_change": 2.0,
+    "height_offset_change": 1.5,
+}
 
 
 log = logging.getLogger("build_subtask_whitelists")
@@ -71,7 +90,14 @@ class _WhitelistBuilder:
         self.interaction_count: Dict[str, int] = defaultdict(int)
         self.support_count: Dict[str, int] = defaultdict(int)
         self.supports: Dict[str, Set[str]] = defaultdict(set)
-        self.bin_max: Dict[str, float] = defaultdict(float)
+        # Aggregated robust value per relation. Filled at payload() time.
+        self.bin_value: Dict[str, float] = {}
+        # Raw per-relation sample pool across rollouts (preferred input).
+        self.bin_samples: Dict[str, List[float]] = defaultdict(list)
+        # Fallback: per-rollout per-relation 0.95 quantiles emitted by the
+        # collector. Used only when ``bin_samples`` is empty for that relation
+        # (legacy pickles, capped sample buffer, etc.).
+        self.bin_quantiles: Dict[str, List[float]] = defaultdict(list)
 
     def absorb(self, rollout: Dict[str, Any]) -> None:
         self.rollout_count += 1
@@ -124,6 +150,20 @@ class _WhitelistBuilder:
         for supporter_key, _supported in supported_pairs_this_rollout:
             self.support_count[supporter_key] += 1
 
+        raw_samples = rollout.get("bin_samples")
+        if isinstance(raw_samples, dict):
+            for k, values in raw_samples.items():
+                if not isinstance(values, (list, tuple)):
+                    continue
+                bucket = self.bin_samples[str(k)]
+                for v in values:
+                    try:
+                        fv = float(v)
+                    except (TypeError, ValueError):
+                        continue
+                    if np.isfinite(fv):
+                        bucket.append(fv)
+
         stats = rollout.get("bin_stats") or {}
         if isinstance(stats, dict):
             for k, v in stats.items():
@@ -131,8 +171,43 @@ class _WhitelistBuilder:
                     fv = float(v)
                 except (TypeError, ValueError):
                     continue
-                if fv > self.bin_max[str(k)]:
-                    self.bin_max[str(k)] = fv
+                if np.isfinite(fv):
+                    self.bin_quantiles[str(k)].append(fv)
+
+    def _aggregate_bins(self) -> Tuple[Dict[str, float], Dict[str, float]]:
+        """Return ``(robust_value, observed_max)`` per relation.
+
+        The robust value -- fed to ``derive_bin_edges`` -- is the configured
+        quantile across all raw samples when available, else across per-rollout
+        quantiles. A per-relation ceiling caps numerical blow-ups so a single
+        bad pickle cannot push the bin edges to absurd ranges.
+        """
+        robust: Dict[str, float] = {}
+        observed: Dict[str, float] = {}
+        keys = set(self.bin_samples) | set(self.bin_quantiles)
+        for k in keys:
+            samples = self.bin_samples.get(k) or []
+            fallback = self.bin_quantiles.get(k) or []
+            if samples:
+                value = float(np.quantile(samples, _MINER_QUANTILE))
+                obs = float(np.max(samples))
+            elif fallback:
+                value = float(np.quantile(fallback, _MINER_QUANTILE))
+                obs = float(np.max(fallback))
+            else:
+                continue
+            ceiling = _BIN_VALUE_CEILING.get(k)
+            if ceiling is not None and value > ceiling:
+                log.warning(
+                    "bin '%s' for subtask=%s target=%s capped %.3f -> %.3f "
+                    "(observed max=%.3f); raw samples likely contain an "
+                    "outlier",
+                    k, self.subtask, self.target, value, ceiling, obs,
+                )
+                value = ceiling
+            robust[k] = value
+            observed[k] = obs
+        return robust, observed
 
     def payload(self) -> Dict[str, Any]:
         members: Dict[str, Dict[str, Any]] = {}
@@ -150,14 +225,36 @@ class _WhitelistBuilder:
                 entry["support_rollouts"] = self.support_count[key]
                 entry["supports"] = sorted(self.supports[key])
             members[key] = entry
-        bin_edges = derive_bin_edges(dict(self.bin_max))
+
+        # Surface the missing-supporter regression loudly. A pick target that
+        # is interacted across every rollout but has zero supporters almost
+        # always means the receptacle is resting-contact-only and the force-
+        # based detector silenced it; the geometric fallback in the collector
+        # should have caught it.
+        has_supporter = any("support" in roles for roles in self.roles.values())
+        if not has_supporter:
+            interacted_targets = [
+                k for k, roles in self.roles.items() if "interacted" in roles
+            ]
+            for k in interacted_targets:
+                log.warning(
+                    "subtask=%s target=%s: '%s' is interacted across %d "
+                    "rollouts but no supporters were recorded; check the "
+                    "collector's geometric supporter detection",
+                    self.subtask, self.target, k,
+                    self.interaction_count.get(k, 0),
+                )
+
+        robust, observed = self._aggregate_bins()
+        bin_edges = derive_bin_edges(robust)
         return {
             "_schema_version": 3,
             "subtask": self.subtask,
             "target": self.target,
             "members": members,
             "bin_edges": bin_edges,
-            "bin_stats_observed": dict(self.bin_max),
+            "bin_stats_robust": robust,
+            "bin_stats_observed": observed,
             "compat_norm": dict(_DEFAULT_COMPAT_NORM),
             "_n_successful_rollouts": self.rollout_count,
         }

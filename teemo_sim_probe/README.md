@@ -83,11 +83,13 @@ independently and commits one schema-v5 record per successful rollout:
   interaction_rollouts: [{
     target_key,
     interacted: [{key, name, kind, max_ee_force, grasped?}],
-    supports:   [...],
+    supports:   [{supporter, supported_key, force, vertical_force_ratio,
+                  dz, vertical_support, evidence: "force"|"geometric"}],
     bin_stats:  {planar_distance, height_offset,
-                 planar_distance_change, height_offset_change}
+                 planar_distance_change, height_offset_change},  # per-rollout 0.95 quantile
+    bin_samples: {<relation>: [floats]}                          # raw per-tick samples
   }],
-  bin_stats: {...}     # aggregated across rollouts
+  bin_stats: {...}     # max of per-rollout quantiles
 }
 ```
 
@@ -99,10 +101,23 @@ Key behaviors:
   carries `interaction_types: ["contact"]`; one that the grasp predicate
   fired on carries `["contact", "grasp"]`.
 * **One-hop supporters.** Direct supporters of an interacted entity are
-  admitted; recursive closure is rejected.
-* **Bin stats are sampled continuously.** Per `observe_stride` ticks the
-  wrapper updates per-rollout running maxes of spatial values and their
-  K-window absolute changes.
+  admitted; recursive closure is rejected. A geometric fallback (candidate
+  directly below the supported entity with horizontal overlap) catches
+  resting receptacles that PhysX GPU silences in pairwise force queries.
+* **Spatial sampling is subject-restricted.** Per `observe_stride` ticks the
+  wrapper samples ee→object planar distance / height offset (and K-window
+  changes) **only** against the target plus already-known interacted /
+  supporter entities -- not against every non-robot actor in the scene --
+  so walls and far cabinet links cannot pump the bin range.
+* **Bin aggregation is robust.** The collector emits a per-rollout 0.95
+  quantile in `bin_stats` and the raw per-tick samples in `bin_samples`; the
+  miner uses the samples to compute a quantile across all rollouts, then
+  applies a per-relation sanity ceiling. A single autoreset jump or physics
+  blow-up can no longer pin the bin edges to absurd values.
+* **Done-tick observation is skipped.** MS-HAB autoresets inside the wrapped
+  `step()`, so observing a done env this tick would mix the *next* episode's
+  pose with the *current* rollout's stats. The wrapper skips those envs and
+  also drops the first few ticks after every reset.
 
 `tools/build_subtask_whitelists.py` aggregates per `(subtask, target)` into:
 
@@ -112,9 +127,18 @@ Key behaviors:
   subtask, target,
   members: { <key>: {roles, interaction_types, kind, name, ...} },
   bin_edges: { <relation>: [edges...] },
+  bin_stats_robust: { <relation>: value },   # quantile fed to derive_bin_edges
+  bin_stats_observed: { <relation>: value }, # max across all samples (audit)
   compat_norm: {pos, orient, width}
 }
 ```
+
+The miner takes a quantile (default 0.9) across all per-tick samples (or per-
+rollout quantiles when only legacy `bin_stats` is available), then clamps the
+result to a per-relation sanity ceiling. It also logs a warning when an
+`interacted` target has zero supporters across all rollouts -- almost always a
+signal that the receptacle was resting-contact-only and the collector's
+geometric supporter fallback failed to fire.
 
 `tools/build_affordances.py` consumes the pose arrays from the same pickles
 and emits multi-modal `{anchor, approach_dir, width}` components per
