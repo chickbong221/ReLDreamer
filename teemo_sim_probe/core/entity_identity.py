@@ -14,6 +14,12 @@ from .affordance import canonical_affordance_key
 
 
 _ENV_PREFIX_RE = re.compile(r"^env-\d+_")
+# ReplicaCAD articulation names carry a scene-config-set tag like
+# ``scs-[0]_`` or ``scs-[2,3]_`` that varies per build config. The same
+# logical articulation (e.g. ``kitchen_counter-0``) shows up under different
+# prefixes across scene sets, so the offline whitelist would be unmatched at
+# runtime if we kept it. Strip it for cross-scene key portability.
+_SCS_PREFIX_RE = re.compile(r"^scs-\[[0-9,]+\]_")
 
 
 def entity_name(entity) -> str:
@@ -47,10 +53,13 @@ def _articulation(entity):
 
 
 def canonical_scene_name(name: Optional[str]) -> Optional[str]:
-    """Remove only the per-environment prefix, preserving instance suffixes."""
+    """Strip per-environment + scene-config-set prefixes, preserving instance
+    suffixes. ``env-0_scs-[2,3]_fridge-0`` -> ``fridge-0``."""
     if not name:
         return None
-    return _ENV_PREFIX_RE.sub("", str(name)) or None
+    stripped = _ENV_PREFIX_RE.sub("", str(name))
+    stripped = _SCS_PREFIX_RE.sub("", stripped)
+    return stripped or None
 
 
 def stable_entity_key(entity) -> Optional[str]:

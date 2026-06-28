@@ -66,8 +66,15 @@ _BIN_SAMPLE_CAP = 4096
 _PER_ROLLOUT_QUANTILE = 0.95
 # Geometric supporter detection (used when PhysX GPU sleeping contacts hide
 # the resting bowl-on-drawer pair from pairwise force queries).
-_GEOM_SUPPORT_MAX_DZ = 0.5     # candidate-top is at most this far below target
-_GEOM_SUPPORT_MAX_XY = 0.8     # candidate-center within this xy distance
+#
+# SAPIEN articulation link frames sit at joint origins, not at visual centers,
+# so an actual supporter's center can be slightly *above* the supported
+# entity's center (negative dz here). We absorb that with a small negative
+# lower bound; the xy_gap is the strongest "directly under" signal so we
+# tighten that threshold and rank by it first.
+_GEOM_SUPPORT_DZ_LO = -0.15    # supporter-center may sit up to 15 cm above target center
+_GEOM_SUPPORT_DZ_HI = 0.5      # ... or up to 50 cm below
+_GEOM_SUPPORT_MAX_XY = 0.4     # require tight horizontal overlap
 
 
 def _to_np(x) -> np.ndarray:
@@ -495,7 +502,7 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         # fails. PhysX GPU silences pairwise forces on resting contacts, which
         # is why a bowl sitting on a drawer at episode start would otherwise
         # never be admitted as a supporter.
-        best_geom: Optional[Tuple[float, str, Any, float]] = None
+        best_geom: Optional[Tuple[float, float, str, Any]] = None
         for supporter_key, supporter in candidates.items():
             if supporter_key == supported_key:
                 continue
@@ -532,9 +539,10 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
                 self._merge_support(env_idx, supporter_key, supported_key, rec)
                 continue
 
-            # Geometric fallback: candidate that lies just below the supported
-            # entity with horizontal overlap. Used only when no force-based
-            # supporter was recorded for this (supported, rollout).
+            # Geometric fallback: candidate with strong xy overlap whose center
+            # is near the supported entity's center vertically. Used only when
+            # no force-based supporter was recorded for this (supported,
+            # rollout).
             if supporter_xyz is None or supported_xyz is None:
                 continue
             dz = float(supported_xyz[2] - supporter_xyz[2])
@@ -542,18 +550,24 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
                 np.linalg.norm(supported_xyz[:2] - supporter_xyz[:2])
             )
             if (
-                0.0 < dz <= _GEOM_SUPPORT_MAX_DZ
+                _GEOM_SUPPORT_DZ_LO <= dz <= _GEOM_SUPPORT_DZ_HI
                 and xy_gap <= _GEOM_SUPPORT_MAX_XY
             ):
-                # Smaller dz wins (the candidate that is closest *directly*
-                # below the supported entity is the most plausible supporter).
-                rank = (dz, xy_gap)
-                if best_geom is None or rank < (best_geom[0], best_geom[3]):
-                    best_geom = (dz, supporter_key, supporter, xy_gap)
+                # xy overlap is the dominant "directly under" signal -- link
+                # frames sit at joint origins so dz on its own is noisy.
+                rank = (xy_gap, abs(dz))
+                if best_geom is None or rank < (best_geom[0], best_geom[1]):
+                    best_geom = (xy_gap, abs(dz), supporter_key, supporter)
 
         if best_geom is None:
             return
-        dz, supporter_key, supporter, xy_gap = best_geom
+        xy_gap, abs_dz, supporter_key, supporter = best_geom
+        supporter_xyz = _entity_xyz(supporter, env_idx)
+        dz = (
+            float(supported_xyz[2] - supporter_xyz[2])
+            if supporter_xyz is not None and supported_xyz is not None
+            else None
+        )
         # Only register the geometric candidate if no force-based supporter
         # was already found for this supported root in any prior tick of the
         # rollout. Real contact evidence always wins over the heuristic.

@@ -102,8 +102,16 @@ Key behaviors:
   fired on carries `["contact", "grasp"]`.
 * **One-hop supporters.** Direct supporters of an interacted entity are
   admitted; recursive closure is rejected. A geometric fallback (candidate
-  directly below the supported entity with horizontal overlap) catches
-  resting receptacles that PhysX GPU silences in pairwise force queries.
+  with tight xy overlap to the supported entity, ranked by xy overlap first
+  then |dz|) catches resting receptacles that PhysX GPU silences in pairwise
+  force queries. The dz window is asymmetric (`-0.15 m ≤ dz ≤ +0.5 m`)
+  because SAPIEN link frames sit at joint origins, so a real supporter's
+  center can be slightly *above* the supported entity's center.
+* **Articulation keys are scene-config-set agnostic.** ReplicaCAD tags
+  articulations with `scs-[N]_` or `scs-[N,M]_` prefixes that vary per build
+  config. The miner and runtime both strip that prefix when forming stable
+  keys, so a whitelist member `link:kitchen_counter-0/drawer3` matches the
+  same logical articulation across every scene that loads it.
 * **Spatial sampling is subject-restricted.** Per `observe_stride` ticks the
   wrapper samples ee→object planar distance / height offset (and K-window
   changes) **only** against the target plus already-known interacted /
