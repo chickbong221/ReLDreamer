@@ -1,10 +1,25 @@
-"""Offline miner: success rollouts -> ``affordances.json``.
+"""Offline miner: success rollouts -> ``affordances.json`` (schema v3).
 
-Per sample: ``anchor_obj = inv(obj_pose_wrt_base) * tcp_in_base``,
-``width = qpos[-2] + qpos[-1]``, ``approach_dir_obj = inv_rot(obj) * R_tcp @ axis_local``.
-Reads schema-v4 ``tcp_pose_wrt_base`` directly; falls back to SAPIEN FK on Fetch
-for older pickles. PLACE is excluded: its success requires the TCP at the rest
-pose (mshab/envs/sequential_task.py:1138), so the anchor would learn the rest pose.
+For each canonical object the miner emits up to six per-relation component
+lists:
+
+* ``grasp_components`` -- ``anchor`` + ``approach_dir`` + ``width``, mined from
+  ee--object success grasp poses (existing path).
+* ``contact_components`` -- ``anchor`` + ``outward_normal``, mined from obj-obj
+  contact events recorded by the schema-v6 collector.
+* ``support_components`` -- ``surface_anchor`` + ``surface_normal`` +
+  ``footprint_radius``, mined from obj-obj support events on the supporter
+  side.
+* ``bottom_components`` -- ``bottom_anchor`` + ``bottom_normal``, mined from
+  the supported side of the same support events.
+* ``contain_components`` / ``key_components`` -- PegInsertionSide-style entry +
+  key descriptors. MS-HAB has no containment env so these stay empty for
+  MS-HAB rollouts; collecting from PegInsertionSide-v1 would populate them.
+
+Grasp components require schema-v4 ``tcp_pose_wrt_base`` (or a SAPIEN FK
+fallback on Fetch). PLACE is excluded for grasp mining: its success requires
+the TCP at the rest pose (mshab/envs/sequential_task.py:1138), so the anchor
+would learn the rest pose.
 
 Usage::
 
@@ -357,6 +372,156 @@ def _mine_object(
 
 
 # --------------------------------------------------------------------------- #
+# Obj-obj component mining (schema-v6 collector output)
+# --------------------------------------------------------------------------- #
+def _ensure_obj_obj_entry(by_object: Dict[str, Dict], key: str) -> Dict:
+    entry = by_object.setdefault(key, {})
+    entry.setdefault("contact_components", [])
+    entry.setdefault("support_components", [])
+    entry.setdefault("bottom_components", [])
+    return entry
+
+
+def _accumulate_obj_obj_samples(
+    rollouts: List[Dict], by_object: Dict[str, Dict],
+) -> None:
+    """Aggregate obj-obj contact + support pose samples per canonical key.
+
+    For each (canonical_key, role) we collect raw observations in object-local
+    frames; the final component lists are computed downstream from these
+    aggregates so we can apply a single mean / spread per object.
+    """
+    # canonical_key -> list of (anchor_obj, outward_normal_obj_unit)
+    contact_obs: Dict[str, List[Tuple[np.ndarray, Optional[np.ndarray]]]] = {}
+    # canonical_key -> list of (supported_pos_in_supporter_frame, force_along_normal_sign)
+    support_obs: Dict[str, List[np.ndarray]] = {}
+    # canonical_key -> list of supporter_pos_in_supported_frame
+    bottom_obs: Dict[str, List[np.ndarray]] = {}
+
+    for rollout in rollouts:
+        for ev in rollout.get("obj_contacts", []) or []:
+            if not isinstance(ev, dict):
+                continue
+            a_pose = ev.get("a_pose")
+            b_pose = ev.get("b_pose")
+            force = ev.get("force_vector")
+            a_key = _canonical_key(ev.get("a_key"))
+            b_key = _canonical_key(ev.get("b_key"))
+            if a_pose is None or b_pose is None or force is None:
+                continue
+            a_pose = np.asarray(a_pose, dtype=float)
+            b_pose = np.asarray(b_pose, dtype=float)
+            f = np.asarray(force, dtype=float).reshape(3)
+            f_norm = float(np.linalg.norm(f))
+            if f_norm < 1e-6:
+                continue
+            f_unit_world = f / f_norm
+            midpoint_world = 0.5 * (a_pose[:3] + b_pose[:3])
+            if a_key:
+                anchor_a = _inv_transform_point(a_pose, midpoint_world)
+                # Outward normal on A is OPPOSITE to the contact force that B
+                # exerts on A (force_vector is the force on the first body in
+                # SAPIEN; we pick the convention that the outward normal is the
+                # one pointing AWAY from the midpoint relative to A's center).
+                outward_world = -f_unit_world
+                outward_obj_a = _inv_rotate_dir(a_pose, outward_world)
+                if anchor_a is not None:
+                    contact_obs.setdefault(a_key, []).append((anchor_a, outward_obj_a))
+            if b_key:
+                anchor_b = _inv_transform_point(b_pose, midpoint_world)
+                outward_world_b = f_unit_world  # opposite of A's outward
+                outward_obj_b = _inv_rotate_dir(b_pose, outward_world_b)
+                if anchor_b is not None:
+                    contact_obs.setdefault(b_key, []).append((anchor_b, outward_obj_b))
+
+        for rec in rollout.get("supports", []) or []:
+            if not isinstance(rec, dict):
+                continue
+            supporter_pose = rec.get("supporter_pose")
+            supported_pose = rec.get("supported_pose")
+            if supporter_pose is None or supported_pose is None:
+                continue
+            supporter = rec.get("supporter") or {}
+            supporter_key = _canonical_key(supporter.get("key"))
+            supported_key = _canonical_key(rec.get("supported_key"))
+            sp_sup = np.asarray(supporter_pose, dtype=float)
+            sp_subj = np.asarray(supported_pose, dtype=float)
+            # Surface anchor on supporter: supported center projected into
+            # supporter's local frame. We trust the supporter's surface to be
+            # the local +z plane (matches MS-HAB drawer/counter convention).
+            if supporter_key:
+                anchor = _inv_transform_point(sp_sup, sp_subj[:3])
+                if anchor is not None:
+                    support_obs.setdefault(supporter_key, []).append(anchor)
+            # Bottom anchor on supported: supporter center in supported frame.
+            if supported_key:
+                anchor = _inv_transform_point(sp_subj, sp_sup[:3])
+                if anchor is not None:
+                    bottom_obs.setdefault(supported_key, []).append(anchor)
+
+    # Emit components: one per canonical key per relation. Clustering is
+    # deliberately kept simple (mean + spread) -- can be upgraded to k-means
+    # later if multi-modality is needed.
+    for key, samples in contact_obs.items():
+        anchors = np.stack([s[0] for s in samples], axis=0)
+        anchor_mean = anchors.mean(axis=0)
+        normals = [s[1] for s in samples if s[1] is not None]
+        normal_field: Dict[str, List[float]] = {}
+        if normals:
+            n_arr = np.stack(normals, axis=0)
+            n_mean = n_arr.mean(axis=0)
+            nn = float(np.linalg.norm(n_mean))
+            if nn > 1e-9:
+                n_unit = n_mean / nn
+                normal_field = {"outward_normal":
+                                [round(float(x), 6) for x in n_unit]}
+        comp = {
+            "anchor": [round(float(x), 6) for x in anchor_mean],
+            **normal_field,
+            "n_samples": int(len(samples)),
+        }
+        entry = _ensure_obj_obj_entry(by_object, key)
+        entry["contact_components"].append(comp)
+
+    for key, samples in support_obs.items():
+        arr = np.stack(samples, axis=0)
+        anchor_mean = arr.mean(axis=0)
+        # Footprint radius: max in-plane distance from the mean (xy in
+        # supporter local frame). Floor at 1 cm so a single observation still
+        # produces a non-degenerate radius.
+        xy = arr[:, :2] - anchor_mean[:2]
+        spread = float(np.max(np.linalg.norm(xy, axis=1))) if len(arr) > 1 else 0.01
+        footprint = max(0.01, spread)
+        comp = {
+            "surface_anchor": [
+                round(float(anchor_mean[0]), 6),
+                round(float(anchor_mean[1]), 6),
+                round(float(anchor_mean[2]), 6),
+            ],
+            "surface_normal": [0.0, 0.0, 1.0],
+            "footprint_radius": round(footprint, 6),
+            "n_samples": int(len(samples)),
+        }
+        entry = _ensure_obj_obj_entry(by_object, key)
+        entry["support_components"].append(comp)
+
+    for key, samples in bottom_obs.items():
+        arr = np.stack(samples, axis=0)
+        anchor_mean = arr.mean(axis=0)
+        comp = {
+            "bottom_anchor": [
+                round(float(anchor_mean[0]), 6),
+                round(float(anchor_mean[1]), 6),
+                round(float(anchor_mean[2]), 6),
+            ],
+            "bottom_normal": [0.0, 0.0, -1.0],
+            "n_samples": int(len(samples)),
+        }
+        entry = _ensure_obj_obj_entry(by_object, key)
+        entry["bottom_components"].append(comp)
+
+
+# --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
 # Known MS-HAB YCB pickable pool (from mshab/evaluate.py:88-148). Used only for
@@ -464,25 +629,40 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     seen_canonical: set = set()
     by_object: Dict[str, Dict] = {}
+    all_rollouts: List[Dict] = []
     for pkl_path in pkls:
+        # Pass 1: grasp components (and pull rollouts out for the obj-obj pass).
         rec = _mine_object(
             pkl_path, fk=fk,
             max_samples=args.max_samples,
             approach_axis_local=approach_axis_local,
         )
-        if rec is None:
-            continue
-        key = rec["canonical_key"]
-        if key in seen_canonical:
+        if rec is not None and rec["canonical_key"] not in seen_canonical:
+            seen_canonical.add(rec["canonical_key"])
+            by_object[rec["canonical_key"]] = {
+                "raw_obj_id": rec["raw_obj_id"],
+                "n_samples": rec["n_samples"],
+                "grasp_components": rec["components"],
+            }
+        elif rec is not None:
             log.warning("duplicate canonical key %s from %s -- ignoring second",
-                        key, pkl_path)
+                        rec["canonical_key"], pkl_path)
+
+        # Pull rollouts for obj-obj mining. Failures to load are non-fatal --
+        # we already logged them in _mine_object.
+        try:
+            with open(pkl_path, "rb") as stream:
+                data = pickle.load(stream)
+        except Exception:
             continue
-        seen_canonical.add(key)
-        by_object[key] = {
-            "raw_obj_id": rec["raw_obj_id"],
-            "n_samples": rec["n_samples"],
-            "components": rec["components"],
-        }
+        rollouts = data.get("interaction_rollouts") or []
+        if isinstance(rollouts, list):
+            for r in rollouts:
+                if isinstance(r, dict):
+                    all_rollouts.append(r)
+
+    # Pass 2: obj-obj contact / support component mining across all rollouts.
+    _accumulate_obj_obj_samples(all_rollouts, by_object)
 
     # Coverage warnings apply only to the known pickable actor pool.
     if args.subtask == "pick":
@@ -504,14 +684,16 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     payload = {
         "_README": (
-            "anchor=[x,y,z] OBJECT frame (m); approach_dir=[x,y,z] OBJECT-frame "
-            "unit approach axis (optional); width=preferred gripper qpos-sum "
-            "(m). Mined by tools/build_affordances.py from "
-            "robot_success_states/<robot>/<subtask>/<obj_id>.pkl. One component is "
-            "stored per usable success grasp pose, keyed by canonical MS-HAB "
-            "obj_id (no 'env-N_' prefix, no '-N' instance suffix)."
+            "Per canonical object key, up to six per-relation component lists "
+            "(all coordinates in OBJECT frame, metres / unit-vector). "
+            "grasp_components: ee--object grasp anchors. "
+            "contact_components: obj-obj contact anchors + outward normals. "
+            "support_components: supporter surface anchors + normal + "
+            "footprint radius. bottom_components: supported bottom anchors. "
+            "contain_components / key_components: PegInsertionSide-style "
+            "container entry + containee key descriptors (empty for MS-HAB)."
         ),
-        "_schema_version": 2,
+        "_schema_version": 3,
         "objects": by_object,
     }
 

@@ -1,8 +1,41 @@
 """Affordance components mined from manipulation-success rollouts.
 
-Per stable object key the asset stores a list of components, each holding
-``anchor_obj_frame`` (point), optional ``approach_dir_obj_frame`` (unit), and
-``preferred_width`` (qpos-sum). Frames are OBJECT-local, metres.
+The asset is keyed per stable object identity. Each object can carry several
+component lists, one per affordance relation:
+
+* ``grasp`` (legacy ``components``): ``anchor``, ``approach_dir``, ``width`` -
+  used by ee--object grasp-compatibility (the original mining target).
+* ``contact``: ``anchor`` + ``outward_normal`` - used by obj--obj
+  contact-compatibility (ee--object contact-compatibility reuses the grasp
+  component without ``width``).
+* ``support``: ``surface_anchor`` + ``surface_normal`` + ``footprint_radius``
+  on the supporter side.
+* ``bottom``: ``bottom_anchor`` + ``bottom_normal`` on the supported side.
+* ``contain``: ``entry_anchor`` + ``entry_axis`` + ``opening_radius`` +
+  ``depth`` on the container side, modeled on PegInsertionSide's
+  ``box_hole_pose`` / ``box_hole_radii``.
+* ``key``: ``key_anchor`` + ``key_axis`` on the containee side (peg head + peg
+  long axis).
+
+All frames are OBJECT-local, metres. Asset shape::
+
+    {
+      "_schema_version": 3,
+      "objects": {
+        "<canonical_key>": {
+          "grasp_components":  [{"anchor": [..], "approach_dir": [..]?, "width": w}, ...],
+          "contact_components": [{"anchor": [..], "outward_normal": [..]?}, ...],
+          "support_components": [{"surface_anchor": [..], "surface_normal": [..], "footprint_radius": r}, ...],
+          "bottom_components":  [{"bottom_anchor": [..], "bottom_normal": [..]}, ...],
+          "contain_components": [{"entry_anchor": [..], "entry_axis": [..], "opening_radius": r, "depth": d}, ...],
+          "key_components":     [{"key_anchor": [..], "key_axis": [..]}, ...]
+        }
+      }
+    }
+
+Legacy v2 assets used ``components`` for grasp components and no obj--obj
+sections; the loader still accepts that shape (treats ``components`` as
+``grasp_components``).
 """
 
 from __future__ import annotations
@@ -12,7 +45,7 @@ import os
 import re
 import warnings
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TypeVar
 
 import numpy as np
 
@@ -21,17 +54,79 @@ from .schema import Node
 
 @dataclass
 class AffordanceComponent:
+    """Grasp component (legacy name kept for backwards compatibility)."""
     anchor_obj_frame: np.ndarray            # (3,) OBJECT frame, metres
     preferred_width: float                  # qpos[-2] + qpos[-1]
     approach_dir_obj_frame: Optional[np.ndarray] = None  # unit, OBJECT frame
 
 
+# Alias used by new builders for readability.
+GraspComponent = AffordanceComponent
+
+
+@dataclass
+class ContactComponent:
+    """One contact point on an object, used for obj--obj contact-compatibility.
+
+    ``outward_normal`` is the contact surface normal pointing OUT of the
+    object. At a real contact between two objects A and B, A's outward normal
+    should be anti-parallel to B's outward normal at the matching point.
+    """
+    anchor_obj_frame: np.ndarray
+    outward_normal_obj_frame: Optional[np.ndarray] = None
+
+
+@dataclass
+class SupportComponent:
+    """Surface descriptor on a supporter object."""
+    surface_anchor_obj_frame: np.ndarray
+    surface_normal_obj_frame: np.ndarray   # unit, points OUT of supporter's surface
+    footprint_radius: float                # half-extent of the valid xy region
+
+
+@dataclass
+class BottomComponent:
+    """Bottom-contact descriptor on a supported object."""
+    bottom_anchor_obj_frame: np.ndarray
+    bottom_normal_obj_frame: np.ndarray    # unit, points DOWN out of the object
+
+
+@dataclass
+class ContainComponent:
+    """Entry descriptor on a container object (PegInsertionSide-style)."""
+    entry_anchor_obj_frame: np.ndarray
+    entry_axis_obj_frame: np.ndarray       # unit, points INTO the interior
+    opening_radius: float
+    depth: float
+
+
+@dataclass
+class KeyComponent:
+    """Leading-point descriptor on a containee object."""
+    key_anchor_obj_frame: np.ndarray
+    key_axis_obj_frame: np.ndarray         # unit, long axis of the object
+
+
 @dataclass
 class AffordanceSet:
+    """Per-relation component lists, keyed by canonical object id.
+
+    ``by_object`` keeps the legacy name and stores grasp components so existing
+    call sites continue to work; the other dicts are addressed via the
+    relation-specific lookup helpers.
+    """
     by_object: Dict[str, List[AffordanceComponent]] = field(default_factory=dict)
+    contact_by_object: Dict[str, List[ContactComponent]] = field(default_factory=dict)
+    support_by_object: Dict[str, List[SupportComponent]] = field(default_factory=dict)
+    bottom_by_object: Dict[str, List[BottomComponent]] = field(default_factory=dict)
+    contain_by_object: Dict[str, List[ContainComponent]] = field(default_factory=dict)
+    key_by_object: Dict[str, List[KeyComponent]] = field(default_factory=dict)
 
     def is_empty(self) -> bool:
-        return not self.by_object
+        return not (
+            self.by_object or self.contact_by_object or self.support_by_object
+            or self.bottom_by_object or self.contain_by_object or self.key_by_object
+        )
 
 
 def _normalize(v: np.ndarray) -> Optional[np.ndarray]:
@@ -68,13 +163,156 @@ def canonical_affordance_key(name: Optional[str]) -> Optional[str]:
     return key or None
 
 
+# --------------------------------------------------------------------------- #
+# Loader
+# --------------------------------------------------------------------------- #
+def _parse_vec3(v) -> Optional[np.ndarray]:
+    if v is None:
+        return None
+    arr = np.asarray(v, dtype=float).reshape(-1)
+    if arr.size != 3 or not np.all(np.isfinite(arr)):
+        return None
+    return arr
+
+
+def _parse_unit_vec3(v) -> Optional[np.ndarray]:
+    arr = _parse_vec3(v)
+    if arr is None:
+        return None
+    return _normalize(arr)
+
+
+def _parse_scalar(v) -> Optional[float]:
+    if v is None:
+        return None
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if np.isfinite(x) else None
+
+
+def _parse_grasp_components(comps_raw) -> List[AffordanceComponent]:
+    out: List[AffordanceComponent] = []
+    if not isinstance(comps_raw, list):
+        return out
+    for c in comps_raw:
+        if not isinstance(c, dict):
+            continue
+        anchor = _parse_vec3(c.get("anchor"))
+        width = _parse_scalar(c.get("width"))
+        if anchor is None or width is None:
+            continue
+        out.append(AffordanceComponent(
+            anchor_obj_frame=anchor,
+            preferred_width=width,
+            approach_dir_obj_frame=_parse_unit_vec3(c.get("approach_dir")),
+        ))
+    return out
+
+
+def _parse_contact_components(comps_raw) -> List[ContactComponent]:
+    out: List[ContactComponent] = []
+    if not isinstance(comps_raw, list):
+        return out
+    for c in comps_raw:
+        if not isinstance(c, dict):
+            continue
+        anchor = _parse_vec3(c.get("anchor"))
+        if anchor is None:
+            continue
+        out.append(ContactComponent(
+            anchor_obj_frame=anchor,
+            outward_normal_obj_frame=_parse_unit_vec3(c.get("outward_normal")),
+        ))
+    return out
+
+
+def _parse_support_components(comps_raw) -> List[SupportComponent]:
+    out: List[SupportComponent] = []
+    if not isinstance(comps_raw, list):
+        return out
+    for c in comps_raw:
+        if not isinstance(c, dict):
+            continue
+        anchor = _parse_vec3(c.get("surface_anchor"))
+        normal = _parse_unit_vec3(c.get("surface_normal"))
+        radius = _parse_scalar(c.get("footprint_radius"))
+        if anchor is None or normal is None or radius is None or radius <= 0:
+            continue
+        out.append(SupportComponent(
+            surface_anchor_obj_frame=anchor,
+            surface_normal_obj_frame=normal,
+            footprint_radius=radius,
+        ))
+    return out
+
+
+def _parse_bottom_components(comps_raw) -> List[BottomComponent]:
+    out: List[BottomComponent] = []
+    if not isinstance(comps_raw, list):
+        return out
+    for c in comps_raw:
+        if not isinstance(c, dict):
+            continue
+        anchor = _parse_vec3(c.get("bottom_anchor"))
+        normal = _parse_unit_vec3(c.get("bottom_normal"))
+        if anchor is None or normal is None:
+            continue
+        out.append(BottomComponent(
+            bottom_anchor_obj_frame=anchor,
+            bottom_normal_obj_frame=normal,
+        ))
+    return out
+
+
+def _parse_contain_components(comps_raw) -> List[ContainComponent]:
+    out: List[ContainComponent] = []
+    if not isinstance(comps_raw, list):
+        return out
+    for c in comps_raw:
+        if not isinstance(c, dict):
+            continue
+        anchor = _parse_vec3(c.get("entry_anchor"))
+        axis = _parse_unit_vec3(c.get("entry_axis"))
+        radius = _parse_scalar(c.get("opening_radius"))
+        depth = _parse_scalar(c.get("depth"))
+        if anchor is None or axis is None or radius is None or depth is None:
+            continue
+        if radius <= 0 or depth <= 0:
+            continue
+        out.append(ContainComponent(
+            entry_anchor_obj_frame=anchor,
+            entry_axis_obj_frame=axis,
+            opening_radius=radius,
+            depth=depth,
+        ))
+    return out
+
+
+def _parse_key_components(comps_raw) -> List[KeyComponent]:
+    out: List[KeyComponent] = []
+    if not isinstance(comps_raw, list):
+        return out
+    for c in comps_raw:
+        if not isinstance(c, dict):
+            continue
+        anchor = _parse_vec3(c.get("key_anchor"))
+        axis = _parse_unit_vec3(c.get("key_axis"))
+        if anchor is None or axis is None:
+            continue
+        out.append(KeyComponent(
+            key_anchor_obj_frame=anchor,
+            key_axis_obj_frame=axis,
+        ))
+    return out
+
+
 def load_affordance_set(path: Optional[str]) -> AffordanceSet:
     """Load JSON asset; missing/unreadable file -> empty set (warn).
 
-    Shape: ``{"objects": {key: {"components": [{"anchor": [x,y,z],
-    "approach_dir": [..]?, "width": w}, ...]}}}``. Keys starting with ``_`` are
-    metadata. ``approach_dir`` is optional (the orientation component of the
-    compatibility score is skipped without it).
+    Accepts both the new per-relation shape and the legacy v2 shape where the
+    only key was ``components`` (which we treat as ``grasp_components``).
     """
     if not path or not os.path.isfile(path):
         warnings.warn(
@@ -87,49 +325,42 @@ def load_affordance_set(path: Optional[str]) -> AffordanceSet:
     with open(path, "r") as f:
         raw = json.load(f)
 
-    by_object: Dict[str, List[AffordanceComponent]] = {}
+    out = AffordanceSet()
     objects = raw.get("objects", {}) if isinstance(raw, dict) else {}
     for key, entry in objects.items():
         if not isinstance(key, str) or key.startswith("_"):
             continue
-        comps_raw = (entry or {}).get("components", []) if isinstance(entry, dict) else []
-        comps: List[AffordanceComponent] = []
-        for c in comps_raw:
-            if not isinstance(c, dict):
-                continue
-            anchor = c.get("anchor")
-            width = c.get("width")
-            if anchor is None or width is None:
-                continue
-            arr = np.asarray(anchor, dtype=float).reshape(-1)
-            if arr.size != 3 or not np.all(np.isfinite(arr)):
-                continue
-            try:
-                w = float(width)
-            except (TypeError, ValueError):
-                continue
-            if not np.isfinite(w):
-                continue
+        if not isinstance(entry, dict):
+            continue
+        # Grasp components: prefer ``grasp_components``; fall back to legacy
+        # ``components`` for v2 assets.
+        grasp_raw = entry.get("grasp_components")
+        if grasp_raw is None:
+            grasp_raw = entry.get("components")
+        grasp = _parse_grasp_components(grasp_raw)
+        if grasp:
+            out.by_object[str(key)] = grasp
 
-            approach = c.get("approach_dir")
-            approach_arr: Optional[np.ndarray] = None
-            if approach is not None:
-                a = np.asarray(approach, dtype=float).reshape(-1)
-                if a.size == 3 and np.all(np.isfinite(a)):
-                    a = _normalize(a)
-                    if a is not None:
-                        approach_arr = a
+        contact = _parse_contact_components(entry.get("contact_components"))
+        if contact:
+            out.contact_by_object[str(key)] = contact
 
-            comps.append(
-                AffordanceComponent(
-                    anchor_obj_frame=arr,
-                    preferred_width=w,
-                    approach_dir_obj_frame=approach_arr,
-                )
-            )
-        if comps:
-            by_object[str(key)] = comps
-    return AffordanceSet(by_object=by_object)
+        support = _parse_support_components(entry.get("support_components"))
+        if support:
+            out.support_by_object[str(key)] = support
+
+        bottom = _parse_bottom_components(entry.get("bottom_components"))
+        if bottom:
+            out.bottom_by_object[str(key)] = bottom
+
+        contain = _parse_contain_components(entry.get("contain_components"))
+        if contain:
+            out.contain_by_object[str(key)] = contain
+
+        keyc = _parse_key_components(entry.get("key_components"))
+        if keyc:
+            out.key_by_object[str(key)] = keyc
+    return out
 
 
 def _obj_rotmat(obj_pose_world: Optional[List[float]]) -> Optional[np.ndarray]:
@@ -141,9 +372,13 @@ def _obj_rotmat(obj_pose_world: Optional[List[float]]) -> Optional[np.ndarray]:
 
 def transform_anchors(
     obj_pose_world: Optional[List[float]],
-    components: List[AffordanceComponent],
+    components,
 ) -> Optional[np.ndarray]:
-    """(N,3) world anchors. ``obj_pose_world`` is ``[xyz, qw, qx, qy, qz]``."""
+    """(N,3) world anchors. ``obj_pose_world`` is ``[xyz, qw, qx, qy, qz]``.
+
+    Accepts any component sequence whose elements expose an attribute named
+    ``anchor_obj_frame`` (grasp / contact components do).
+    """
     if obj_pose_world is None or len(obj_pose_world) < 7 or not components:
         return None
     p = np.asarray(obj_pose_world[:3], dtype=float)
@@ -159,6 +394,43 @@ def transform_anchors(
     return p[None, :] + anchors_obj @ R.T
 
 
+def transform_point(
+    obj_pose_world: Optional[List[float]], point_obj: np.ndarray,
+) -> Optional[np.ndarray]:
+    """Transform a single 3-vector from object frame to world."""
+    if obj_pose_world is None or len(obj_pose_world) < 7:
+        return None
+    p = np.asarray(obj_pose_world[:3], dtype=float)
+    R = _obj_rotmat(obj_pose_world)
+    if R is None or not np.all(np.isfinite(p)):
+        return None
+    return p + R @ np.asarray(point_obj, dtype=float).reshape(3)
+
+
+def transform_dir(
+    obj_pose_world: Optional[List[float]], dir_obj: np.ndarray,
+) -> Optional[np.ndarray]:
+    """Rotate a unit direction from object frame to world frame."""
+    R = _obj_rotmat(obj_pose_world)
+    if R is None:
+        return None
+    out = R @ np.asarray(dir_obj, dtype=float).reshape(3)
+    return _normalize(out)
+
+
+def inv_transform_point(
+    obj_pose_world: Optional[List[float]], point_world: np.ndarray,
+) -> Optional[np.ndarray]:
+    """``inv(pose) * point`` for object pose ``[xyz, qw, qx, qy, qz]``."""
+    if obj_pose_world is None or len(obj_pose_world) < 7:
+        return None
+    p = np.asarray(obj_pose_world[:3], dtype=float)
+    R = _obj_rotmat(obj_pose_world)
+    if R is None or not np.all(np.isfinite(p)):
+        return None
+    return R.T @ (np.asarray(point_world, dtype=float).reshape(3) - p)
+
+
 def transform_approach_dir(
     obj_pose_world: Optional[List[float]],
     component: AffordanceComponent,
@@ -166,11 +438,7 @@ def transform_approach_dir(
     """World-frame unit approach direction, or None if not mined / degenerate."""
     if component.approach_dir_obj_frame is None:
         return None
-    R = _obj_rotmat(obj_pose_world)
-    if R is None:
-        return None
-    d_world = R @ np.asarray(component.approach_dir_obj_frame, dtype=float).reshape(3)
-    return _normalize(d_world)
+    return transform_dir(obj_pose_world, component.approach_dir_obj_frame)
 
 
 def select_active_component(
@@ -217,44 +485,104 @@ def select_active_component(
     return int(np.argmin(scores))
 
 
-def lookup_components(
-    aff_set: AffordanceSet, node: Node,
-) -> Optional[List[AffordanceComponent]]:
-    """Component list for a node, or None.
+# --------------------------------------------------------------------------- #
+# Per-relation lookups
+# --------------------------------------------------------------------------- #
+_T = TypeVar("_T")
 
-    Lookup: entity_key -> actor_key (legacy, strip ``actor:``) -> mshab_obj_id -> name.
-    """
-    if aff_set is None or aff_set.is_empty():
+
+def _lookup_in(
+    table: Dict[str, List[_T]], node: Node,
+) -> Optional[List[_T]]:
+    if not table:
         return None
 
     entity_key = node.attributes.get("entity_key") if node.attributes else None
     if entity_key:
-        entity_key = str(entity_key)
-        if entity_key in aff_set.by_object:
-            return aff_set.by_object[entity_key]
-        if entity_key.startswith("actor:"):
-            legacy_actor = entity_key.split(":", 1)[1]
-            if legacy_actor in aff_set.by_object:
-                return aff_set.by_object[legacy_actor]
+        ek = str(entity_key)
+        if ek in table:
+            return table[ek]
+        if ek.startswith("actor:"):
+            legacy_actor = ek.split(":", 1)[1]
+            if legacy_actor in table:
+                return table[legacy_actor]
 
     mshab_id = node.attributes.get("mshab_obj_id") if node.attributes else None
     key = canonical_affordance_key(mshab_id) if mshab_id else None
-    if key and key in aff_set.by_object:
-        return aff_set.by_object[key]
+    if key and key in table:
+        return table[key]
 
     key = canonical_affordance_key(node.name)
-    if key and key in aff_set.by_object:
-        return aff_set.by_object[key]
+    if key and key in table:
+        return table[key]
     return None
 
 
+def lookup_components(
+    aff_set: AffordanceSet, node: Node,
+) -> Optional[List[AffordanceComponent]]:
+    """Grasp components for a node. Kept as the canonical name for legacy callers."""
+    if aff_set is None or aff_set.is_empty():
+        return None
+    return _lookup_in(aff_set.by_object, node)
+
+
+def lookup_grasp_components(
+    aff_set: AffordanceSet, node: Node,
+) -> Optional[List[AffordanceComponent]]:
+    return lookup_components(aff_set, node)
+
+
+def lookup_contact_components(
+    aff_set: AffordanceSet, node: Node,
+) -> Optional[List[ContactComponent]]:
+    if aff_set is None:
+        return None
+    return _lookup_in(aff_set.contact_by_object, node)
+
+
+def lookup_support_components(
+    aff_set: AffordanceSet, node: Node,
+) -> Optional[List[SupportComponent]]:
+    if aff_set is None:
+        return None
+    return _lookup_in(aff_set.support_by_object, node)
+
+
+def lookup_bottom_components(
+    aff_set: AffordanceSet, node: Node,
+) -> Optional[List[BottomComponent]]:
+    if aff_set is None:
+        return None
+    return _lookup_in(aff_set.bottom_by_object, node)
+
+
+def lookup_contain_components(
+    aff_set: AffordanceSet, node: Node,
+) -> Optional[List[ContainComponent]]:
+    if aff_set is None:
+        return None
+    return _lookup_in(aff_set.contain_by_object, node)
+
+
+def lookup_key_components(
+    aff_set: AffordanceSet, node: Node,
+) -> Optional[List[KeyComponent]]:
+    if aff_set is None:
+        return None
+    return _lookup_in(aff_set.key_by_object, node)
+
+
 def has_affordance(aff_set: AffordanceSet, node: Node) -> bool:
-    """True if the node has any mined components (eligibility for ``interactive_object``)."""
+    """True if the node has any mined grasp components (legacy semantics).
+
+    Used by node classification to decide ``interactive_object`` eligibility.
+    """
     return bool(lookup_components(aff_set, node))
 
 
 # --------------------------------------------------------------------------- #
-# Compatibility components
+# Compatibility components (ee--object, grasp + contact reuse same primitives)
 # --------------------------------------------------------------------------- #
 @dataclass
 class CompatibilityMeasurement:

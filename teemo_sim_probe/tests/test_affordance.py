@@ -290,7 +290,7 @@ class SpatialEventEdgeTests(unittest.TestCase):
         self.assertIn(("planar-distance", "medium"), rels)
         self.assertIn(("height-offset", "level"), rels)
 
-    def test_grasp_masks_contact(self):
+    def test_grasp_suppresses_contact(self):
         cfg = _cfg()
         node = _obj_node()
         graph = Graph(0, "env", "cam", nodes=[_ee(), node])
@@ -299,9 +299,8 @@ class SpatialEventEdgeTests(unittest.TestCase):
         )
         contact = [e for e in edges if e.relation == "contact"]
         grasp = [e for e in edges if e.relation == "grasp"]
-        self.assertEqual(len(contact), 1)
-        self.assertTrue(contact[0].masked)
-        self.assertEqual(contact[0].attributes.get("suppressed_by_grasp"), True)
+        # One physical-state edge per pair: grasp wins, contact is dropped.
+        self.assertEqual(contact, [])
         self.assertEqual(len(grasp), 1)
         self.assertFalse(grasp[0].masked)
 

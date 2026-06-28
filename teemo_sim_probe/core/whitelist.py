@@ -1,26 +1,9 @@
 """Per-subtask whitelist used as the runtime's sole relevance gate.
 
-The whitelist is a *small* per-(subtask, target) JSON asset, mined offline from
-demonstration contact graphs by ``tools/build_subtask_whitelists.py``. It is
-the hard eligibility gate used by the runtime selector: every non-ee node in a
-frame must have a ``match_key`` listed in the active subtask's whitelist or it
-is dropped before slot assignment.
-
-The asset also carries:
-
-* ``interaction_types`` per member -- the set of ee-driven interactions that
-  actually happened in the demos (``contact`` and/or ``grasp``). This gates
-  which affordance compatibility edges runtime emits for that object.
-* ``bin_edges`` -- per-(subtask, target) bin edges for spatial, affordance,
-  and change relations derived from per-rollout running maxes (equal-width on
-  ``[0, max]`` for unsigned, ``[-max, max]`` for signed).
-* ``compat_norm`` -- per-component [0,1] normalization scales for position,
-  orientation, and gripper-width mismatches used by compatibility scoring.
-
-Asset shape (``_schema_version: 3``)::
+Asset shape (``_schema_version: 4``)::
 
     {
-      "_schema_version": 3,
+      "_schema_version": 4,
       "subtask": "pick",
       "target": "actor:024_bowl",
       "members": {
@@ -31,21 +14,30 @@ Asset shape (``_schema_version: 3``)::
         },
         "link:cabinet/drawer3": {
             "roles": ["support"],
-            "interaction_types": [],
+            "interaction_types": ["support"],
             "kind": "link"
         }
       },
       "bin_edges": { "<relation>": [edges...], ... },
-      "compat_norm": {"pos": float, "orient": float, "width": float}
+      "compat_norm": {"pos": ..., "orient": ..., "width": ...,
+                      "xy": ..., "vertical": ..., "radial": ..., "axial": ...}
     }
+
+Per-member ``interaction_types`` controls which compatibility edges runtime
+emits for the object:
+
+  * ``contact`` -- ee touched (or for obj-obj, both endpoints touched in demos)
+  * ``grasp``   -- grasp predicate fired in demos
+  * ``support`` -- participated in an obj-obj support pair in demos
+  * ``contain`` -- participated in an obj-obj contain pair in demos
 
 Match-key conventions:
 
   * Free actors: ``actor:<canonical object id>``.
-    Strips ``env-N_`` prefix and ``-N`` instance suffix so every instance of the
-    same YCB type shares one key.
   * Articulation links: ``link:<articulation instance>/<link name>``.
-  * Handles are ordinary links and have no special admission path.
+
+v3 assets without the new ``support`` / ``contain`` tokens still load (those
+edges simply never emit).
 """
 
 from __future__ import annotations
@@ -61,15 +53,14 @@ from .entity_identity import normalize_asset_key
 from .schema import Node
 
 
+WHITELIST_SCHEMA_VERSION = 4
+
+
 # --------------------------------------------------------------------------- #
 # Match key (used by both runtime and miner)
 # --------------------------------------------------------------------------- #
 def match_key(node: Node) -> Optional[str]:
-    """Resolve the cross-frame whitelist key for one node.
-
-    Returns None when no key can be produced (e.g. blank name on a malformed
-    node); the selector treats None as "not in any whitelist" => dropped.
-    """
+    """Resolve the cross-frame whitelist key for one node."""
     name = node.name
     if not name:
         return None
@@ -85,14 +76,22 @@ def match_key(node: Node) -> Optional[str]:
 
 
 # --------------------------------------------------------------------------- #
-# Asset
+# Interaction-type vocabulary
 # --------------------------------------------------------------------------- #
-# Canonical interaction-type tokens that runtime understands.
 INTERACTION_CONTACT = "contact"
 INTERACTION_GRASP = "grasp"
-_VALID_INTERACTION_TYPES = frozenset({INTERACTION_CONTACT, INTERACTION_GRASP})
+INTERACTION_SUPPORT = "support"
+INTERACTION_CONTAIN = "contain"
+
+_VALID_INTERACTION_TYPES = frozenset({
+    INTERACTION_CONTACT, INTERACTION_GRASP,
+    INTERACTION_SUPPORT, INTERACTION_CONTAIN,
+})
 
 
+# --------------------------------------------------------------------------- #
+# Asset
+# --------------------------------------------------------------------------- #
 @dataclass
 class Whitelist:
     subtask: str = ""
@@ -124,12 +123,7 @@ class Whitelist:
 
 
 def load_whitelist(path: str) -> Whitelist:
-    """Load a per-subtask whitelist. Raises FileNotFoundError if missing.
-
-    A missing whitelist must not silently fall back to "admit everything".
-    Older (v2) assets without ``interaction_types`` / ``bin_edges`` still load;
-    the missing fields fall back to runtime defaults at edge-build time.
-    """
+    """Load a per-subtask whitelist. Raises FileNotFoundError if missing."""
     if not path or not os.path.isfile(path):
         raise FileNotFoundError(
             f"per-subtask whitelist not found at {path!r}; mine it with "
@@ -244,30 +238,28 @@ def _equal_width_5_signed(max_v: float) -> Optional[List[float]]:
 
 # Relations and the kind of bin-derivation they use.
 _BIN_DERIVATION = {
-    "planar-distance": ("unsigned3", "planar_distance"),
-    "height-offset": ("signed3", "height_offset"),
-    "planar-distance-change": ("signed5", "planar_distance_change"),
-    "height-offset-change": ("signed5", "height_offset_change"),
-    "grasp-compatibility-change": ("signed5", "grasp_compatibility_change"),
-    "contact-compatibility-change": ("signed5", "contact_compatibility_change"),
+    "planar-distance":              ("unsigned3", "planar_distance"),
+    "height-offset":                ("signed3",   "height_offset"),
+    "planar-distance-change":       ("signed5",   "planar_distance_change"),
+    "height-offset-change":         ("signed5",   "height_offset_change"),
+    "grasp-compatibility-change":   ("signed5",   "grasp_compatibility_change"),
+    "contact-compatibility-change": ("signed5",   "contact_compatibility_change"),
+    "support-compatibility-change": ("signed5",   "support_compatibility_change"),
+    "contain-compatibility-change": ("signed5",   "contain_compatibility_change"),
 }
 
 
 def derive_bin_edges(max_values: Dict[str, float]) -> Dict[str, List[float]]:
     """Derive runtime bin edges from per-relation demo maxes.
 
-    ``max_values`` keys are the *snake_case* names emitted by the collector:
-    ``planar_distance``, ``height_offset`` (abs), ``planar_distance_change``,
-    ``height_offset_change``, ``grasp_compatibility_change``,
-    ``contact_compatibility_change``. The returned dict is keyed by the
-    *dashed* relation name used by the schema.
-
     Compatibility absolute edges are always ``[1/3, 2/3]`` because the score
     is normalized to ``[0, 1]`` before binning.
     """
     out: Dict[str, List[float]] = {
-        "grasp-compatibility": [1.0 / 3.0, 2.0 / 3.0],
+        "grasp-compatibility":   [1.0 / 3.0, 2.0 / 3.0],
         "contact-compatibility": [1.0 / 3.0, 2.0 / 3.0],
+        "support-compatibility": [1.0 / 3.0, 2.0 / 3.0],
+        "contain-compatibility": [1.0 / 3.0, 2.0 / 3.0],
     }
     for relation, (kind, src) in _BIN_DERIVATION.items():
         try:
@@ -294,11 +286,7 @@ def resolve_whitelist_path(
     subtask_type: Optional[str],
     target_canonical: Optional[str],
 ) -> Optional[str]:
-    """Return the on-disk path for ``<subtask>_<target>.json`` if it exists.
-
-    Returns None if any of the inputs is missing or the file is absent. The
-    caller decides whether to raise.
-    """
+    """Return the on-disk path for ``<subtask>_<target>.json`` if it exists."""
     if not whitelist_dir or not subtask_type or not target_canonical:
         return None
     target_slug = whitelist_target_slug(target_canonical)

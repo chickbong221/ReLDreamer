@@ -1,19 +1,31 @@
 """Absolute relation labels from privileged state.
 
-Vocabulary (independent of pair_type):
+Three families, all driven off the per-(subtask, target) whitelist + the
+multi-modal affordance asset:
 
-* Event:     ``contact``, ``grasp``, ``support``
-* Spatial:   ``planar-distance`` (object-center), ``height-offset`` (object-center)
-* Affordance: ``grasp-compatibility``, ``contact-compatibility``
-  Emitted only when (a) the object has affordance components, (b) the
-  current ``planar-distance`` is the closest bin (``near``), and (c) the
-  whitelist asset records that interaction type for the object.
+* **Physical state** (single positive label, no paired ``no-*``):
+  ``contact`` (actor--obj, obj--obj), ``grasp`` (actor--obj),
+  ``support`` (obj--obj, supporter -> supported),
+  ``contain`` (obj--obj, container -> containee).
+  Transitions are NOT separately annotated -- they fall out of consecutive
+  absolute frames.
+
+* **Spatial** (actor--obj only): ``planar-distance``, ``height-offset``.
+
+* **Affordance compatibility**:
+    - ``grasp-compatibility``        (actor--near_obj)
+    - ``contact-compatibility``      (actor--obj AND obj--obj)
+    - ``support-compatibility``      (obj--near_obj)
+    - ``contain-compatibility``      (obj--near_obj)
+  Each compat edge is gated on (a) the relevant affordance components being
+  mined for the object(s) involved, (b) the planar-distance bin being
+  ``near``, and (c) the whitelist asset listing the matching interaction type.
   ``contact-compatibility`` is masked while the object is grasped, mirroring
-  the contact-edge mask.
+  the contact edge mask.
 
 Bin edges come from the active per-(subtask, target) whitelist
-(``cfg["bin_edges"]``); ``cfg["profile"]`` is used as a fallback for any
-relation the asset omits. The per-object interaction-type map lives in
+(``cfg["bin_edges"]``); ``cfg["profile"]`` is a fallback for any relation the
+asset omits. The per-object interaction-type table lives in
 ``cfg["interaction_types"]`` (also wired from the whitelist by the builder).
 """
 
@@ -28,8 +40,19 @@ from .affordance import (
     CompatibilityMeasurement,
     compatibility_components,
     lookup_components,
+    lookup_contact_components,
+    lookup_contain_components,
+    lookup_bottom_components,
+    lookup_key_components,
+    lookup_support_components,
     select_active_component,
     transform_anchors,
+)
+from .containment import (
+    contain_compatibility,
+    contain_holds,
+    obj_contact_compatibility,
+    support_compatibility,
 )
 from .schema import Edge, Graph, Node
 from ..adapters.privileged_state import PrivilegedState
@@ -43,8 +66,10 @@ SPATIAL_LABELS: Dict[str, List[str]] = {
     "height-offset": ["below", "level", "above"],
 }
 COMPAT_LABELS: Dict[str, List[str]] = {
-    "grasp-compatibility": ["match", "partial-match", "poor-match"],
+    "grasp-compatibility":   ["match", "partial-match", "poor-match"],
     "contact-compatibility": ["match", "partial-match", "poor-match"],
+    "support-compatibility": ["match", "partial-match", "poor-match"],
+    "contain-compatibility": ["match", "partial-match", "poor-match"],
 }
 CHANGE_LABELS: Dict[str, List[str]] = {
     "planar-distance-change": [
@@ -63,6 +88,16 @@ CHANGE_LABELS: Dict[str, List[str]] = {
         "contact-fit-better-fast", "contact-fit-better-slow",
         "stable-contact-fit",
         "contact-fit-worse-slow", "contact-fit-worse-fast",
+    ],
+    "support-compatibility-change": [
+        "support-fit-better-fast", "support-fit-better-slow",
+        "stable-support-fit",
+        "support-fit-worse-slow", "support-fit-worse-fast",
+    ],
+    "contain-compatibility-change": [
+        "contain-fit-better-fast", "contain-fit-better-slow",
+        "stable-contain-fit",
+        "contain-fit-worse-slow", "contain-fit-worse-fast",
     ],
 }
 ALL_LABELS: Dict[str, List[str]] = {
@@ -101,11 +136,26 @@ def _get_bin_spec(cfg: dict, relation: str) -> Optional[Tuple[List[float], List[
 
 
 def _compat_norm(cfg: dict) -> Dict[str, float]:
+    """Per-component normalizers (metres / radians) shared by all compat scorers.
+
+    Defaults:
+      pos      = 0.10 m   (close-approach distance)
+      orient   = pi / 2   (90deg half-cone)
+      width    = 0.04 m   (gripper spread)
+      xy       = 0.05 m   (in-plane support offset)
+      vertical = 0.03 m   (support gap/interpenetration)
+      radial   = 0.02 m   (contain radial slack)
+      axial    = 0.03 m   (contain axial slack)
+    """
     norm = cfg.get("compat_norm") or {}
     out = {
-        "pos": float(norm.get("pos", 0.10)),
-        "orient": float(norm.get("orient", np.pi / 2.0)),
-        "width": float(norm.get("width", 0.04)),
+        "pos":      float(norm.get("pos",      0.10)),
+        "orient":   float(norm.get("orient",   np.pi / 2.0)),
+        "width":    float(norm.get("width",    0.04)),
+        "xy":       float(norm.get("xy",       0.05)),
+        "vertical": float(norm.get("vertical", 0.03)),
+        "radial":   float(norm.get("radial",   0.02)),
+        "axial":    float(norm.get("axial",    0.03)),
     }
     for k, v in out.items():
         if not np.isfinite(v) or v <= 0:
@@ -254,14 +304,26 @@ def _compatibility_score(
     return float(np.mean(parts))
 
 
+def _mean_normalized(parts: List[float]) -> float:
+    if not parts:
+        return 1.0
+    return float(np.mean([min(max(p, 0.0), 1.0) for p in parts]))
+
+
 # --------------------------------------------------------------------------- #
-# Edge builders
+# Edge builders -- ee -> object
 # --------------------------------------------------------------------------- #
 def ee_object_spatial_event_edges(
     graph: Graph, state: PrivilegedState, cfg: dict
 ) -> List[Edge]:
-    """Object-center spatial relations plus contact / grasp events for every
-    object node. Spatial is always ee->object-center regardless of pair_type."""
+    """Spatial + physical-state edges for every visible object node.
+
+    Spatial is always ee->object-center. At most one physical-state edge per
+    pair: ``grasp`` takes precedence over ``contact``. When grasped, the
+    ``contact`` edge is not emitted at all (the temporal buffer's contact-
+    compatibility history reset is driven by the ``contact-compatibility``
+    edge's own ``suppressed_by_grasp`` attribute).
+    """
     ee = graph.get_node("ee")
     if ee is None or ee.pose_world is None:
         return []
@@ -299,19 +361,18 @@ def ee_object_spatial_event_edges(
             grasped = state.is_grasping(ent, max_angle=grasp_angle)
 
         force = state.ee_object_contact_force(ent)
-        contact_attrs: dict = {"suppressed_by_grasp": True} if grasped else {}
-        edges.append(Edge(
-            "ee", node.node_id, "contact",
-            "contact" if force > eps_contact else "no-contact",
-            force, masked=(force <= eps_contact) or grasped,
-            attributes=contact_attrs,
-        ))
+        in_contact = force > eps_contact
 
-        if _graspable(node):
+        # One physical-state edge per pair: grasp > contact.
+        if grasped:
             edges.append(Edge(
-                "ee", node.node_id, "grasp",
-                "grasp" if grasped else "no-grasp",
-                1.0 if grasped else 0.0, masked=(not grasped),
+                "ee", node.node_id, "grasp", "grasp",
+                1.0, masked=False,
+            ))
+        elif in_contact:
+            edges.append(Edge(
+                "ee", node.node_id, "contact", "contact", force,
+                masked=False,
             ))
     return edges
 
@@ -319,12 +380,12 @@ def ee_object_spatial_event_edges(
 def ee_object_compatibility_edges(
     graph: Graph, state: PrivilegedState, cfg: dict
 ) -> List[Edge]:
-    """Affordance compatibility edges, gated by near + whitelist + grasp.
+    """ee--object affordance compatibility edges, near + whitelist + grasp gated.
 
     Per object:
-      * Skip unless the object has mined affordance components.
+      * Skip unless the object has mined grasp components.
       * Compute planar-distance; skip unless the label resolves to the closest
-        bin (the first label of ``SPATIAL_LABELS['planar-distance']``).
+        bin (``near``).
       * Score against the active affordance component.
       * Emit ``grasp-compatibility`` only when the whitelist says this object
         was grasped during demonstrations.
@@ -402,15 +463,10 @@ def ee_object_compatibility_edges(
     return edges
 
 
-def object_object_edges(
-    graph: Graph, state: PrivilegedState, cfg: dict
-) -> List[Edge]:
-    """One of ``support`` (supporter -> supported), ``contact``, or nothing per pair.
-    Evaluated only on fresh nodes; frozen nodes get cached edges in ``GraphBuilder``."""
-    eps_contact = cfg["contact"]["eps_force"]
-    eps_z = cfg["support"]["eps_z"]
-    min_vertical_ratio = cfg["support"].get("min_vertical_force_ratio", 0.5)
-
+# --------------------------------------------------------------------------- #
+# Edge builders -- object -> object
+# --------------------------------------------------------------------------- #
+def _object_pairs(graph: Graph) -> List[Tuple[Node, Node]]:
     objs = [
         n for n in graph.nodes
         if n.node_type == "object"
@@ -418,41 +474,238 @@ def object_object_edges(
         and n.segmentation_ids
         and not n.frozen_pose
     ]
-    edges: List[Edge] = []
+    out: List[Tuple[Node, Node]] = []
     for i in range(len(objs)):
         for j in range(i + 1, len(objs)):
-            a, b = objs[i], objs[j]
-            ea = _resolve_entity(a, state)
-            eb = _resolve_entity(b, state)
+            out.append((objs[i], objs[j]))
+    return out
 
-            force_vector = state.pairwise_force_vector(ea, eb)
-            force = float(np.linalg.norm(force_vector))
-            in_contact = force > eps_contact
-            if not in_contact:
-                continue
 
-            # Support = vertical-dominated force AND supporter below supported.
-            support_pair = None
-            if force > 0.0:
-                vertical_ratio = abs(float(force_vector[2])) / force
-                if vertical_ratio >= min_vertical_ratio:
-                    pa, pb = _xyz(a), _xyz(b)
-                    if pa is not None and pb is not None:
-                        if pa[2] + eps_z < pb[2]:
-                            support_pair = (a, b)
-                        elif pb[2] + eps_z < pa[2]:
-                            support_pair = (b, a)
+def object_object_edges(
+    graph: Graph, state: PrivilegedState, cfg: dict
+) -> List[Edge]:
+    """At most one physical-state edge per object pair, in priority order
+    ``contain > support > contact``:
 
-            if support_pair is not None:
-                supporter, supported = support_pair
+      * ``contain`` (container -> containee) when the containee's mined key
+        point lies inside the container's mined entry volume (geometric
+        PegInsertion check). Tried in both directions; first hit wins.
+      * ``support`` (supporter -> supported) when no contain edge fires AND
+        the pair has vertical-dominated contact force AND the supporter sits
+        below the supported (center dz).
+      * ``contact`` (undirected, A -> B in iteration order) when neither of
+        the above fires but the pair is in contact above ``eps_force``.
+    """
+    eps_contact = cfg["contact"]["eps_force"]
+    eps_z = cfg["support"]["eps_z"]
+    min_vertical_ratio = cfg["support"].get("min_vertical_force_ratio", 0.5)
+
+    aff_set = cfg.get("affordance_set")
+    edges: List[Edge] = []
+    for a, b in _object_pairs(graph):
+        # Priority 1: geometric containment (orthogonal to force evidence).
+        contain_emitted = False
+        if aff_set is not None:
+            for container, containee in ((a, b), (b, a)):
+                container_comps = lookup_contain_components(aff_set, container)
+                key_comps = lookup_key_components(aff_set, containee)
+                if not container_comps or not key_comps:
+                    continue
+                held = False
+                for cc in container_comps:
+                    for kc in key_comps:
+                        if contain_holds(
+                            container.pose_world, cc, containee.pose_world, kc,
+                        ):
+                            held = True
+                            break
+                    if held:
+                        break
+                if held:
+                    edges.append(Edge(
+                        container.node_id, containee.node_id,
+                        "contain", "contain", 1.0,
+                        attributes={"contain_role": "container"},
+                    ))
+                    contain_emitted = True
+                    break
+        if contain_emitted:
+            continue
+
+        # Priorities 2 and 3: force-driven support / contact.
+        ea = _resolve_entity(a, state)
+        eb = _resolve_entity(b, state)
+        force_vector = state.pairwise_force_vector(ea, eb)
+        force = float(np.linalg.norm(force_vector))
+        in_contact = force > eps_contact
+        if not in_contact:
+            continue
+
+        support_pair = None
+        if force > 0.0:
+            vertical_ratio = abs(float(force_vector[2])) / force
+            if vertical_ratio >= min_vertical_ratio:
+                pa, pb = _xyz(a), _xyz(b)
+                if pa is not None and pb is not None:
+                    if pa[2] + eps_z < pb[2]:
+                        support_pair = (a, b)
+                    elif pb[2] + eps_z < pa[2]:
+                        support_pair = (b, a)
+
+        if support_pair is not None:
+            supporter, supported = support_pair
+            edges.append(Edge(
+                supporter.node_id, supported.node_id,
+                "support", "support", force,
+                attributes={"support_role": "supporter"},
+            ))
+        else:
+            edges.append(Edge(
+                a.node_id, b.node_id, "contact", "contact", force,
+            ))
+    return edges
+
+
+def _near_pair(
+    a_xyz: np.ndarray, b_xyz: np.ndarray, pd_spec, near_label: str,
+) -> bool:
+    return bin_label(
+        planar_distance_xyz(a_xyz, b_xyz), pd_spec[0], pd_spec[1],
+    ) == near_label
+
+
+def object_object_compatibility_edges(
+    graph: Graph, state: PrivilegedState, cfg: dict
+) -> List[Edge]:
+    """obj--near_obj compatibility edges: contact / support / contain.
+
+    For each ordered object pair:
+
+      * Skip unless their planar distance bins ``near``.
+      * Skip unless both endpoints' whitelist ``interaction_types`` carry the
+        relation token (``contact`` / ``support`` / ``contain``).
+      * Skip unless the matching affordance components are mined for both
+        endpoints.
+
+    ``contact-compatibility`` is also masked when either endpoint is currently
+    grasped (mirrors the ee-object mask).
+    """
+    pd_spec = _get_bin_spec(cfg, "planar-distance")
+    if pd_spec is None:
+        return []
+    near_label = SPATIAL_LABELS["planar-distance"][0]
+    aff_set = cfg.get("affordance_set")
+    if aff_set is None:
+        return []
+
+    contact_spec = _get_bin_spec(cfg, "contact-compatibility")
+    support_spec = _get_bin_spec(cfg, "support-compatibility")
+    contain_spec = _get_bin_spec(cfg, "contain-compatibility")
+    if contact_spec is None and support_spec is None and contain_spec is None:
+        return []
+
+    norm = _compat_norm(cfg)
+    grasp_angle = cfg["grasp"]["max_angle"]
+
+    edges: List[Edge] = []
+    for a, b in _object_pairs(graph):
+        a_xyz = _xyz(a)
+        b_xyz = _xyz(b)
+        if a_xyz is None or b_xyz is None:
+            continue
+        if not _near_pair(a_xyz, b_xyz, pd_spec, near_label):
+            continue
+
+        a_key = a.attributes.get("whitelist_key")
+        b_key = b.attributes.get("whitelist_key")
+        a_types = _interaction_types(cfg, a_key)
+        b_types = _interaction_types(cfg, b_key)
+
+        # ---- contact-compatibility (obj-obj, symmetric) --------------------
+        if contact_spec is not None and "contact" in a_types and "contact" in b_types:
+            a_comps = lookup_contact_components(aff_set, a)
+            b_comps = lookup_contact_components(aff_set, b)
+            if a_comps and b_comps:
+                meas = obj_contact_compatibility(
+                    a.pose_world, a_comps, b.pose_world, b_comps,
+                )
+                if meas is not None:
+                    parts: List[float] = [meas.pos_mismatch / norm["pos"]]
+                    if meas.orient_mismatch is not None:
+                        parts.append(meas.orient_mismatch / norm["orient"])
+                    score = _mean_normalized(parts)
+                    grasped_a = (
+                        _graspable(a)
+                        and state.is_grasping(_resolve_entity(a, state),
+                                              max_angle=grasp_angle)
+                    )
+                    grasped_b = (
+                        _graspable(b)
+                        and state.is_grasping(_resolve_entity(b, state),
+                                              max_angle=grasp_angle)
+                    )
+                    suppressed = grasped_a or grasped_b
+                    attrs = {"suppressed_by_grasp": True} if suppressed else {}
+                    edges.append(Edge(
+                        a.node_id, b.node_id, "contact-compatibility",
+                        bin_label(score, contact_spec[0], contact_spec[1]),
+                        score, masked=suppressed, attributes=attrs,
+                    ))
+
+        # ---- support-compatibility (directed: supporter -> supported) ------
+        if support_spec is not None and "support" in a_types and "support" in b_types:
+            for supporter, supported in ((a, b), (b, a)):
+                sup_comps = lookup_support_components(aff_set, supporter)
+                bot_comps = lookup_bottom_components(aff_set, supported)
+                if not sup_comps or not bot_comps:
+                    continue
+                meas = support_compatibility(
+                    supporter.pose_world, sup_comps,
+                    supported.pose_world, bot_comps,
+                )
+                if meas is None:
+                    continue
+                parts = [
+                    meas.xy_mismatch / norm["xy"],
+                    meas.vertical_mismatch / norm["vertical"],
+                ]
+                if meas.orient_mismatch is not None:
+                    parts.append(meas.orient_mismatch / norm["orient"])
+                score = _mean_normalized(parts)
                 edges.append(Edge(
                     supporter.node_id, supported.node_id,
-                    "support", "support", force,
+                    "support-compatibility",
+                    bin_label(score, support_spec[0], support_spec[1]),
+                    score,
                     attributes={"support_role": "supporter"},
                 ))
-            else:
+
+        # ---- contain-compatibility (directed: container -> containee) ------
+        if contain_spec is not None and "contain" in a_types and "contain" in b_types:
+            for container, containee in ((a, b), (b, a)):
+                con_comps = lookup_contain_components(aff_set, container)
+                key_comps = lookup_key_components(aff_set, containee)
+                if not con_comps or not key_comps:
+                    continue
+                meas = contain_compatibility(
+                    container.pose_world, con_comps,
+                    containee.pose_world, key_comps,
+                )
+                if meas is None:
+                    continue
+                parts = [
+                    meas.radial_mismatch / norm["radial"],
+                    meas.axial_mismatch / norm["axial"],
+                ]
+                if meas.orient_mismatch is not None:
+                    parts.append(meas.orient_mismatch / norm["orient"])
+                score = _mean_normalized(parts)
                 edges.append(Edge(
-                    a.node_id, b.node_id, "contact", "contact", force,
+                    container.node_id, containee.node_id,
+                    "contain-compatibility",
+                    bin_label(score, contain_spec[0], contain_spec[1]),
+                    score,
+                    attributes={"contain_role": "container"},
                 ))
     return edges
 
@@ -464,3 +717,4 @@ def build_absolute_edges(
     graph.edges.extend(ee_object_spatial_event_edges(graph, state, cfg))
     graph.edges.extend(ee_object_compatibility_edges(graph, state, cfg))
     graph.edges.extend(object_object_edges(graph, state, cfg))
+    graph.edges.extend(object_object_compatibility_edges(graph, state, cfg))

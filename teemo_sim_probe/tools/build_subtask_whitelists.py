@@ -28,7 +28,10 @@ import numpy as np
 from teemo_sim_probe.core.entity_identity import normalize_asset_key
 from teemo_sim_probe.core.whitelist import (
     INTERACTION_CONTACT,
+    INTERACTION_CONTAIN,
     INTERACTION_GRASP,
+    INTERACTION_SUPPORT,
+    WHITELIST_SCHEMA_VERSION,
     derive_bin_edges,
     whitelist_target_slug,
 )
@@ -63,6 +66,10 @@ _DEFAULT_COMPAT_NORM = {
     "pos": 0.10,
     "orient": 1.5707963267948966,
     "width": 0.04,
+    "xy": 0.05,
+    "vertical": 0.03,
+    "radial": 0.02,
+    "axial": 0.03,
 }
 
 
@@ -145,10 +152,32 @@ class _WhitelistBuilder:
                 supporter_key, str(supporter.get("name") or supporter_key)
             )
             self.supports[supporter_key].add(supported)
-            self.interaction_types.setdefault(supporter_key, set())
+            # Both endpoints of a support pair carry the ``support`` token so
+            # the runtime can gate obj-obj support-compatibility on it.
+            self.interaction_types[supporter_key].add(INTERACTION_SUPPORT)
+            self.interaction_types[supported].add(INTERACTION_SUPPORT)
             supported_pairs_this_rollout.add((supporter_key, supported))
         for supporter_key, _supported in supported_pairs_this_rollout:
             self.support_count[supporter_key] += 1
+
+        # Obj-obj contact events (schema-v6 collector). Both endpoints get the
+        # ``contact`` token so the runtime can emit obj-obj
+        # contact-compatibility for whitelisted pairs. A separate ``contain``
+        # token is opt-in: it's added only when the source data explicitly
+        # marks an event as a containment (no MS-HAB env does this today).
+        for ev in rollout.get("obj_contacts", []) or []:
+            if not isinstance(ev, dict):
+                continue
+            a_key = normalize_asset_key(ev.get("a_key"))
+            b_key = normalize_asset_key(ev.get("b_key"))
+            for k in (a_key, b_key):
+                if not k:
+                    continue
+                self.interaction_types[k].add(INTERACTION_CONTACT)
+            if bool(ev.get("contain")):
+                for k in (a_key, b_key):
+                    if k:
+                        self.interaction_types[k].add(INTERACTION_CONTAIN)
 
         raw_samples = rollout.get("bin_samples")
         if isinstance(raw_samples, dict):
@@ -248,7 +277,7 @@ class _WhitelistBuilder:
         robust, observed = self._aggregate_bins()
         bin_edges = derive_bin_edges(robust)
         return {
-            "_schema_version": 3,
+            "_schema_version": WHITELIST_SCHEMA_VERSION,
             "subtask": self.subtask,
             "target": self.target,
             "members": members,

@@ -23,18 +23,18 @@ from .palette import ColorMap
 # --------------------------------------------------------------------------- #
 # Relation -> family classification
 # --------------------------------------------------------------------------- #
-_FAMILY_EVENT = "event"
+# Three TEEMO families. Physical-state replaces the old ``event`` family;
+# transition edges have been removed from the vocabulary entirely.
+_FAMILY_PHYSICAL_STATE = "physical_state"
 _FAMILY_SPATIAL = "spatial"
 _FAMILY_AFFORDANCE = "affordance"
 
 _RELATION_FAMILY: Dict[str, str] = {
-    # Event (absolute + transition)
-    "contact": _FAMILY_EVENT,
-    "grasp": _FAMILY_EVENT,
-    "support": _FAMILY_EVENT,
-    "contact-transition": _FAMILY_EVENT,
-    "grasp-transition": _FAMILY_EVENT,
-    "support-transition": _FAMILY_EVENT,
+    # Physical state (absolute only)
+    "contact": _FAMILY_PHYSICAL_STATE,
+    "grasp": _FAMILY_PHYSICAL_STATE,
+    "support": _FAMILY_PHYSICAL_STATE,
+    "contain": _FAMILY_PHYSICAL_STATE,
     # Spatial
     "planar-distance": _FAMILY_SPATIAL,
     "height-offset": _FAMILY_SPATIAL,
@@ -43,30 +43,36 @@ _RELATION_FAMILY: Dict[str, str] = {
     # Affordance compatibility
     "grasp-compatibility": _FAMILY_AFFORDANCE,
     "contact-compatibility": _FAMILY_AFFORDANCE,
+    "support-compatibility": _FAMILY_AFFORDANCE,
+    "contain-compatibility": _FAMILY_AFFORDANCE,
     "grasp-compatibility-change": _FAMILY_AFFORDANCE,
     "contact-compatibility-change": _FAMILY_AFFORDANCE,
+    "support-compatibility-change": _FAMILY_AFFORDANCE,
+    "contain-compatibility-change": _FAMILY_AFFORDANCE,
 }
 
 # Family ordering used both for chip-row ordering and (within a chip) the
 # absolute-then-temporal stacking.
-_FAMILY_ORDER = (_FAMILY_EVENT, _FAMILY_SPATIAL, _FAMILY_AFFORDANCE)
+_FAMILY_ORDER = (_FAMILY_PHYSICAL_STATE, _FAMILY_SPATIAL, _FAMILY_AFFORDANCE)
 
 # Within a family, sort absolute relations by this order then temporal ones.
 _INTRA_FAMILY_ORDER = {
-    _FAMILY_EVENT: ("contact", "grasp", "support",
-                    "contact-transition", "grasp-transition", "support-transition"),
+    _FAMILY_PHYSICAL_STATE: ("contact", "grasp", "support", "contain"),
     _FAMILY_SPATIAL: ("planar-distance", "height-offset",
                       "planar-distance-change", "height-offset-change"),
     _FAMILY_AFFORDANCE: ("grasp-compatibility", "contact-compatibility",
+                         "support-compatibility", "contain-compatibility",
                          "grasp-compatibility-change",
-                         "contact-compatibility-change"),
+                         "contact-compatibility-change",
+                         "support-compatibility-change",
+                         "contain-compatibility-change"),
 }
 
 # Per-family chip styling.
 _FAMILY_STYLE: Dict[str, Dict[str, str]] = {
-    _FAMILY_EVENT:      {"bg": "#ffe0c2", "edge": "#c25a00", "text": "#5a2900"},
-    _FAMILY_SPATIAL:    {"bg": "#d4e7ff", "edge": "#2f6ec2", "text": "#13396b"},
-    _FAMILY_AFFORDANCE: {"bg": "#e4dcf5", "edge": "#6c5aa1", "text": "#2c1f5c"},
+    _FAMILY_PHYSICAL_STATE: {"bg": "#ffe0c2", "edge": "#c25a00", "text": "#5a2900"},
+    _FAMILY_SPATIAL:        {"bg": "#d4e7ff", "edge": "#2f6ec2", "text": "#13396b"},
+    _FAMILY_AFFORDANCE:     {"bg": "#e4dcf5", "edge": "#6c5aa1", "text": "#2c1f5c"},
 }
 
 # Stale edges override every family chip with the same blue palette used for
@@ -199,12 +205,13 @@ def render_graph(
         a0 = p0 + u * node_r
         a1 = p1 - u * node_r
         is_stale = any(e.stale for e in elist)
-        is_support = any(
-            (not e.temporal) and e.relation == "support" and not e.masked
+        is_directed_physical = any(
+            (not e.temporal) and e.relation in ("support", "contain")
+            and not e.masked
             for e in elist
         )
 
-        if is_support:
+        if is_directed_physical:
             edge_color = "#b15a00"
             lw = 2.2
             alpha = 0.95

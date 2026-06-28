@@ -81,15 +81,19 @@ class OneHopWhitelistTests(unittest.TestCase):
             }],
         })
         members = builder.payload()["members"]
+        # Bowl was grasped AND participated in a support pair as the supported
+        # entity, so it carries contact + grasp + support tokens.
         self.assertEqual(
-            members["actor:024_bowl"]["interaction_types"], ["contact", "grasp"],
+            members["actor:024_bowl"]["interaction_types"],
+            ["contact", "grasp", "support"],
         )
         self.assertEqual(
             members["link:cabinet/handle"]["interaction_types"], ["contact"],
         )
-        # Supporters never carry an ee interaction.
+        # Supporters now carry the ``support`` token so the runtime can gate
+        # obj-obj support-compatibility on it.
         self.assertEqual(
-            members["link:cabinet/drawer"]["interaction_types"], [],
+            members["link:cabinet/drawer"]["interaction_types"], ["support"],
         )
 
     def test_bin_edges_emitted_from_bin_stats(self):
@@ -141,11 +145,13 @@ class StaleEdgeTests(unittest.TestCase):
         self.assertEqual(stale.edges[0].age, 3)
 
     def test_stale_edge_does_not_advance_temporal_history(self):
+        # Use a continuous relation (planar-distance) since physical-state
+        # predicates no longer feed the temporal buffer at all.
         buffer = TemporalBuffer(K=1)
         ee = Node("ee", "ee", "end_effector")
         bowl = Node("actor:024_bowl", "object", "bowl")
         fresh = Graph(0, "env", "cam", nodes=[ee, bowl], edges=[
-            Edge("ee", bowl.node_id, "contact", "contact", 2.0),
+            Edge("ee", bowl.node_id, "planar-distance", "near", 0.05),
         ])
         buffer.update(fresh)
         stale_bowl = Node(
@@ -153,12 +159,14 @@ class StaleEdgeTests(unittest.TestCase):
         )
         stale = Graph(1, "env", "cam", nodes=[ee, stale_bowl], edges=[
             Edge(
-                "ee", bowl.node_id, "contact", "contact", 2.0,
+                "ee", bowl.node_id, "planar-distance", "near", 0.10,
                 stale=True, observed_frame=0, age=1,
             ),
         ])
         buffer.update(stale)
-        self.assertFalse(buffer._bools)
+        # The fresh value gets purged when bowl becomes frozen-pose; the
+        # stale-tagged edge is not re-ingested.
+        self.assertNotIn(("ee", bowl.node_id, "planar-distance"), buffer._values)
 
 
 class _Pose:

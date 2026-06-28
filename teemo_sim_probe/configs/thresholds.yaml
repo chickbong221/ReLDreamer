@@ -28,12 +28,25 @@ affordances:
   asset_path: affordances.json
 
 # Compatibility normalization. Each per-component mismatch (metres for pos /
-# width, radians for orient) is clipped to its norm before averaging into the
-# [0, 1] compatibility score. The whitelist asset may override these.
+# width / xy / vertical / radial / axial, radians for orient) is clipped to
+# its norm before averaging into the [0, 1] compatibility score. The whitelist
+# asset may override these per (subtask, target).
+#
+#   pos       -- ee--object anchor distance (grasp + ee contact compat).
+#   orient    -- approach-axis / surface-normal angle.
+#   width     -- gripper-width spread for grasp.
+#   xy        -- supported.bottom_anchor offset from supporter.surface_anchor.
+#   vertical  -- gap / interpenetration along supporter.surface_normal.
+#   radial    -- containee.key_anchor distance to container.entry_axis line.
+#   axial     -- containee.key_anchor distance past the [0, depth] interval.
 compat_norm:
   pos: 0.10
   orient: 1.5707963267948966
   width: 0.04
+  xy: 0.05
+  vertical: 0.03
+  radial: 0.02
+  axial: 0.03
 
 # The probe loads one per-(subtask,target) whitelist from this directory and
 # fails loud if no file matches. Mine these via
@@ -60,6 +73,12 @@ profiles:
     contact_compatibility:
       edges:  [0.3333333333333333, 0.6666666666666666]
       labels: [match, partial-match, poor-match]
+    support_compatibility:
+      edges:  [0.3333333333333333, 0.6666666666666666]
+      labels: [match, partial-match, poor-match]
+    contain_compatibility:
+      edges:  [0.3333333333333333, 0.6666666666666666]
+      labels: [match, partial-match, poor-match]
     planar_distance_change:
       edges:  [-0.06, -0.02, 0.02, 0.06]
       labels: [approaching-fast, approaching-slow, stable-distance,
@@ -77,6 +96,16 @@ profiles:
       labels: [contact-fit-better-fast, contact-fit-better-slow,
                stable-contact-fit,
                contact-fit-worse-slow, contact-fit-worse-fast]
+    support_compatibility_change:
+      edges:  [-0.30, -0.10, 0.10, 0.30]
+      labels: [support-fit-better-fast, support-fit-better-slow,
+               stable-support-fit,
+               support-fit-worse-slow, support-fit-worse-fast]
+    contain_compatibility_change:
+      edges:  [-0.30, -0.10, 0.10, 0.30]
+      labels: [contain-fit-better-fast, contain-fit-better-slow,
+               stable-contain-fit,
+               contain-fit-worse-slow, contain-fit-worse-fast]
 
   room_scale:
     planar_distance:
@@ -89,6 +118,12 @@ profiles:
       edges:  [0.3333333333333333, 0.6666666666666666]
       labels: [match, partial-match, poor-match]
     contact_compatibility:
+      edges:  [0.3333333333333333, 0.6666666666666666]
+      labels: [match, partial-match, poor-match]
+    support_compatibility:
+      edges:  [0.3333333333333333, 0.6666666666666666]
+      labels: [match, partial-match, poor-match]
+    contain_compatibility:
       edges:  [0.3333333333333333, 0.6666666666666666]
       labels: [match, partial-match, poor-match]
     planar_distance_change:
@@ -108,3 +143,13 @@ profiles:
       labels: [contact-fit-better-fast, contact-fit-better-slow,
                stable-contact-fit,
                contact-fit-worse-slow, contact-fit-worse-fast]
+    support_compatibility_change:
+      edges:  [-0.30, -0.10, 0.10, 0.30]
+      labels: [support-fit-better-fast, support-fit-better-slow,
+               stable-support-fit,
+               support-fit-worse-slow, support-fit-worse-fast]
+    contain_compatibility_change:
+      edges:  [-0.30, -0.10, 0.10, 0.30]
+      labels: [contain-fit-better-fast, contain-fit-better-slow,
+               stable-contain-fit,
+               contain-fit-worse-slow, contain-fit-worse-fast]

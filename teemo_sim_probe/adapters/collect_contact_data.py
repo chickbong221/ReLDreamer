@@ -1,4 +1,4 @@
-"""Local successful-rollout interaction collector (schema version 5).
+"""Local successful-rollout interaction collector (schema version 6).
 
 MS-HAB is treated as read-only.  This wrapper observes the simulator through
 public environment state, buffers each vector environment independently, and
@@ -10,7 +10,13 @@ For each successful rollout it records:
   contact by any other robot link does not count as evidence -- the runtime
   graph only cares about ee-driven interactions.
 * the task target key, used to name/select offline assets;
-* direct supporters of contacted entities (one hop only).
+* direct supporters of contacted entities (one hop only).  Each support event
+  carries a pose snapshot (supporter + supported) so the affordance miner can
+  derive ``support_components`` and ``bottom_components``.
+* obj-obj contact events (force > eps, neither side a robot link, neither
+  classified as the support pair).  Pose snapshot + contact-force vector are
+  stored so the affordance miner can derive ``contact_components`` (anchor +
+  outward normal) on both sides.
 * a per-rollout ``bin_stats`` block: running maxes of ee->object planar
   distance, |height offset|, and their K-window absolute changes, used by the
   whitelist miner to derive per-(subtask, target) bin edges.
@@ -49,7 +55,9 @@ if TYPE_CHECKING:
     from mshab.envs.sequential_task import SequentialTaskEnv
 
 
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
+# Per-rollout cap on stored obj-obj contact event poses (keeps pickles small).
+_OBJ_CONTACT_SAMPLE_CAP = 1024
 _EPS_FORCE_DEFAULT = 0.05
 _MIN_VERTICAL_FORCE_RATIO_DEFAULT = 0.5
 _OBSERVE_STRIDE_DEFAULT = 5
@@ -97,6 +105,33 @@ def _entity_xyz(ent, env_idx: int) -> Optional[np.ndarray]:
         p = p[env_idx]
     p = np.asarray(p, dtype=float).reshape(-1)
     return p[:3] if p.size >= 3 and np.all(np.isfinite(p[:3])) else None
+
+
+def _entity_pose7(ent, env_idx: int) -> Optional[List[float]]:
+    """Return ``[x, y, z, qw, qx, qy, qz]`` for ``ent`` at ``env_idx`` or None."""
+    pose = getattr(ent, "pose", None)
+    if pose is None:
+        return None
+    try:
+        p = _to_np(pose.p)
+        q = _to_np(pose.q)
+    except Exception:
+        return None
+    if p.ndim == 2:
+        if env_idx >= p.shape[0]:
+            return None
+        p = p[env_idx]
+    if q.ndim == 2:
+        if env_idx >= q.shape[0]:
+            return None
+        q = q[env_idx]
+    arr = np.concatenate(
+        [np.asarray(p, dtype=float).reshape(-1)[:3],
+         np.asarray(q, dtype=float).reshape(-1)[:4]]
+    )
+    if arr.shape[0] != 7 or not np.all(np.isfinite(arr)):
+        return None
+    return arr.tolist()
 
 
 def _record(ent, *, key: Optional[str] = None) -> Optional[Dict[str, str]]:
@@ -170,6 +205,9 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         self._episode_history: List[Dict[Tuple[str, str], Deque[float]]] = []
         # Per-env tick count since last reset (used to skip warmup samples).
         self._episode_ticks: List[int] = []
+        # Per-env raw obj-obj contact event samples. Each item is a dict with
+        # ``a_key``, ``b_key``, ``a_pose``, ``b_pose``, ``force_vector``.
+        self._episode_obj_contacts: List[List[Dict[str, Any]]] = []
         self._reset_buffers()
 
         # Aggregated across every committed success, used as a quick top-level
@@ -191,6 +229,7 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             ]
             self._episode_history = [dict() for _ in range(self.num_envs)]
             self._episode_ticks = [0 for _ in range(self.num_envs)]
+            self._episode_obj_contacts = [[] for _ in range(self.num_envs)]
         indices = range(self.num_envs) if env_indices is None else env_indices
         for idx in indices:
             i = int(idx)
@@ -200,6 +239,7 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             self._episode_bin_samples[i].clear()
             self._episode_history[i].clear()
             self._episode_ticks[i] = 0
+            self._episode_obj_contacts[i].clear()
 
     def reset(self, *args, **kwargs):
         result = super().reset(*args, **kwargs)
@@ -488,6 +528,52 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
                 subjects.setdefault(supporter_key, ent)
         self._update_bin_stats(env_idx, subjects, ee_xyz)
 
+        # Obj-obj contact event sampling. Skip pairs already accounted for by
+        # the support pass; the miner uses these to derive ``contact_components``
+        # (anchor + outward normal) per object for obj-obj contact-compatibility.
+        self._sample_obj_obj_contacts(env_idx, entity_by_key)
+
+    def _sample_obj_obj_contacts(
+        self, env_idx: int, entity_by_key: Dict[str, Any],
+    ) -> None:
+        bucket = self._episode_obj_contacts[env_idx]
+        if len(bucket) >= _OBJ_CONTACT_SAMPLE_CAP:
+            return
+        support_pairs = {
+            frozenset({supporter, supported})
+            for (supporter, supported) in self._episode_supports[env_idx]
+        }
+        scene = self._base_env.scene
+        keys = list(entity_by_key.keys())
+        for i in range(len(keys)):
+            for j in range(i + 1, len(keys)):
+                if len(bucket) >= _OBJ_CONTACT_SAMPLE_CAP:
+                    return
+                a_key, b_key = keys[i], keys[j]
+                if frozenset({a_key, b_key}) in support_pairs:
+                    continue
+                a, b = entity_by_key[a_key], entity_by_key[b_key]
+                vector = self._pairwise_force(scene, a, b, env_idx)
+                if vector is None:
+                    continue
+                force = float(np.linalg.norm(vector))
+                if force <= self.eps_force:
+                    continue
+                a_pose = _entity_pose7(a, env_idx)
+                b_pose = _entity_pose7(b, env_idx)
+                if a_pose is None or b_pose is None:
+                    continue
+                bucket.append({
+                    "a_key": a_key,
+                    "b_key": b_key,
+                    "a_pose": a_pose,
+                    "b_pose": b_pose,
+                    "force_vector": [
+                        float(vector[0]), float(vector[1]), float(vector[2]),
+                    ],
+                    "force": force,
+                })
+
     def _observe_direct_supporters(
         self,
         env_idx: int,
@@ -535,6 +621,11 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
                     "dz": dz,
                     "vertical_support": vertical_support,
                     "evidence": "force",
+                    "supporter_pose": _entity_pose7(supporter, env_idx),
+                    "supported_pose": _entity_pose7(supported, env_idx),
+                    "force_vector": [
+                        float(vector[0]), float(vector[1]), float(vector[2]),
+                    ],
                 }
                 self._merge_support(env_idx, supporter_key, supported_key, rec)
                 continue
@@ -588,6 +679,9 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             "vertical_support": True,
             "evidence": "geometric",
             "geom_xy_gap": xy_gap,
+            "supporter_pose": _entity_pose7(supporter, env_idx),
+            "supported_pose": _entity_pose7(supported, env_idx),
+            "force_vector": [0.0, 0.0, 0.0],
         }
         self._merge_support(env_idx, supporter_key, supported_key, rec)
 
@@ -673,6 +767,7 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             "supports": supports,
             "bin_stats": rollout_bin_stats,
             "bin_samples": rollout_bin_samples,
+            "obj_contacts": list(self._episode_obj_contacts[env_idx]),
         })
 
     def close(self):

@@ -18,47 +18,95 @@ active per-(subtask, target) whitelist.
 ### Relation vocabulary
 
 Relations are grouped into three families. The visualizer paints chips in one
-background color per family so the viewer can read `event` vs `spatial` vs
-`affordance` at a glance.
+background color per family so the viewer can read `physical_state` vs
+`spatial` vs `affordance` at a glance.
 
-| Family | Absolute relations | Absolute labels | Temporal relations | Temporal labels |
-|---|---|---|---|---|
-| **Event** | `contact`, `grasp`, `support` | `<relation>` / `no-<relation>` | `*-transition` | `gain-` / `lose-` / `maintain-` |
-| **Spatial** | `planar-distance` | `near`, `medium`, `far` | `planar-distance-change` | `approaching-{slow,fast}`, `stable-distance`, `receding-{slow,fast}` |
-|  | `height-offset` | `below`, `level`, `above` | `height-offset-change` | `lowering-{slow,fast}`, `stable-height`, `rising-{slow,fast}` |
-| **Affordance** | `grasp-compatibility` | `match`, `partial-match`, `poor-match` | `grasp-compatibility-change` | `grasp-fit-{better,worse}-{slow,fast}`, `stable-grasp-fit` |
-|  | `contact-compatibility` | `match`, `partial-match`, `poor-match` | `contact-compatibility-change` | `contact-fit-{better,worse}-{slow,fast}`, `stable-contact-fit` |
+| Family | Pair type | Absolute relation | Absolute labels | Change relation | Change labels |
+|---|---|---|---|---|---|
+| **Physical state** | `actor--obj`, `obj--obj` | `contact` | `contact` | — | — |
+|  | `actor--obj` | `grasp` | `grasp` | — | — |
+|  | `obj--obj` | `support` | `support` | — | — |
+|  | `obj--obj` | `contain` | `contain` | — | — |
+| **Spatial** | `actor--obj` | `planar-distance` | `far`, `medium`, `near` | `planar-distance-change` | `approaching-{slow,fast}`, `stable-distance`, `receding-{slow,fast}` |
+|  | `actor--obj` | `height-offset` | `below`, `level`, `above` | `height-offset-change` | `lowering-{slow,fast}`, `stable-height`, `rising-{slow,fast}` |
+| **Affordance** | `actor--obj`, `obj--obj` | `contact-compatibility` | `poor-match`, `partial-match`, `match` | `contact-compatibility-change` | `contact-fit-{better,worse}-{slow,fast}`, `stable-contact-fit` |
+|  | `actor--near_obj` | `grasp-compatibility` | `poor-match`, `partial-match`, `match` | `grasp-compatibility-change` | `grasp-fit-{better,worse}-{slow,fast}`, `stable-grasp-fit` |
+|  | `obj--near_obj` | `support-compatibility` | `poor-match`, `partial-match`, `match` | `support-compatibility-change` | `support-fit-{better,worse}-{slow,fast}`, `stable-support-fit` |
+|  | `obj--near_obj` | `contain-compatibility` | `poor-match`, `partial-match`, `match` | `contain-compatibility-change` | `contain-fit-{better,worse}-{slow,fast}`, `stable-contain-fit` |
+
+Physical-state transitions are NOT separately annotated: consecutive absolute
+frames are sufficient evidence of their dynamics. The single positive label
+form (`contact`, not `contact`/`no-contact`) reflects that an edge either
+exists or doesn't.
 
 ### Gating rules
 
 1. **Spatial is always object-center.** Both `planar-distance` and
    `height-offset` use the object's center pose, never an affordance anchor.
+   Spatial is emitted only for the `actor--obj` pair type; obj-obj near-gating
+   is computed internally for compatibility edges.
 2. **Affordance compatibility is `near`-only.** If the current
-   `planar-distance` label is anything but `near`, no compatibility edge is
-   emitted (selection cache stays warm so it does not churn).
-3. **Whitelist governs compatibility per object.** `grasp-compatibility` is
-   emitted only when the whitelist records `grasp` for that object;
-   `contact-compatibility` only when it records `contact`.
-4. **Grasp masks contact.** While the object is grasped, `contact`,
-   `contact-transition`, `contact-compatibility`, and
-   `contact-compatibility-change` are masked.
-5. **Direct supporters are first-class.** `object/object` `support` edges are
-   always emitted between admitted supporter and supported nodes.
+   `planar-distance` between the two endpoint centers is anything but `near`,
+   no compatibility edge is emitted (selection cache stays warm so it does
+   not churn).
+3. **Whitelist governs compatibility per object.** Each whitelist member
+   carries an `interaction_types` set drawn from `{contact, grasp, support,
+   contain}`. A compatibility edge fires only when both endpoints' types
+   include the matching token.
+4. **One physical-state edge per pair.** ee--object emits `grasp` when the
+   grasp predicate fires, else `contact` when in contact -- never both.
+   obj--obj uses strict priority `contain > support > contact`: a pair that
+   is geometrically contained gets only a `contain` edge, a non-contained
+   pair with vertical-dominated support force gets only a `support` edge,
+   and any remaining contacting pair gets a `contact` edge. The
+   `contact-compatibility` edge still carries
+   `attributes['suppressed_by_grasp']=True` (and `masked=True`) when an
+   endpoint is grasped, which the temporal buffer uses to drop that edge's
+   history; the physical-state contact edge itself is no longer emitted in
+   that case.
+5. **Direct supporters are first-class.** `obj--obj` `support` edges are
+   emitted between admitted supporter and supported nodes (vertical force
+   ratio + center dz) for pairs that did not already qualify for `contain`.
+   `contain` is decided geometrically: transform the containee's mined key
+   point into the container's frame, then check that it lies within
+   `[0, depth]` along the entry axis and within `opening_radius` transverse
+   -- the same template ManiSkill's `PegInsertionSide-v1.has_peg_inserted`
+   uses.
 
 ### Compatibility scoring
 
-For each object's active affordance component, the scorer measures
-three mismatches against the live gripper-object configuration:
+All four compatibility relations score an unweighted mean of `[0, 1]` per-
+component mismatches and bin with `[1/3, 2/3]` into `match` / `partial-match`
+/ `poor-match`. Per-component normalizers live under `cfg["compat_norm"]`
+(overridable per `(subtask, target)` in the whitelist asset). Components per
+relation:
 
-* `pos_mismatch` — tcp → anchor distance (metres)
-* `orient_mismatch` — angle between tcp approach axis and component approach
-  direction (radians)
-* `width_mismatch` — `|qpos_sum − preferred_width|` (metres)
-
-Each is clipped to `[0, 1]` by its `compat_norm` divisor, then the unweighted
-mean is binned with `[1/3, 2/3]` into `match` / `partial-match` / `poor-match`.
-`grasp-compatibility` uses all three components; `contact-compatibility` drops
-the width term.
+* **`grasp-compatibility`** (actor → near_obj):
+  * `pos_mismatch` — tcp → anchor distance (metres, norm `pos`)
+  * `orient_mismatch` — angle between tcp approach axis and component approach
+    direction (radians, norm `orient`)
+  * `width_mismatch` — `|qpos_sum − preferred_width|` (metres, norm `width`)
+* **`contact-compatibility`** drops the width term:
+  * actor-obj: `pos` + `orient` against the active grasp component.
+  * obj-obj: `pos` between matched contact anchors + `orient` between
+    each side's outward normal (anti-parallel expected at a real contact).
+* **`support-compatibility`** (obj → near_obj, supporter → supported):
+  * `xy_mismatch` — in-plane offset of supported.`bottom_anchor` from
+    supporter.`surface_anchor`, clipped to 0 inside `footprint_radius`
+    (norm `xy`)
+  * `vertical_mismatch` — gap / interpenetration along surface normal
+    (norm `vertical`)
+  * `orient_mismatch` — angle between supported.`bottom_normal` and the
+    inverted surface normal (norm `orient`)
+* **`contain-compatibility`** (obj → near_obj, container → containee), modeled
+  on PegInsertionSide:
+  * `radial_mismatch` — perpendicular distance from containee.`key_anchor`
+    to the entry axis line minus `opening_radius`, clipped at 0 (norm
+    `radial`)
+  * `axial_mismatch` — distance past the `[0, depth]` interval along the
+    entry axis, clipped at 0 (norm `axial`)
+  * `orient_mismatch` — angle between containee.`key_axis` and container.
+    `entry_axis` (norm `orient`)
 
 ### Bin edges from demos
 
@@ -73,18 +121,20 @@ provides fallback bins only for relations the asset omits.
 ## Offline pipeline
 
 `FetchCollectContactDataWrapper` buffers each vector environment
-independently and commits one schema-v5 record per successful rollout:
+independently and commits one schema-v6 record per successful rollout:
 
 ```text
 {
-  _schema_version: 5,
+  _schema_version: 6,
   obj_id, entity_key, subtask_type, temporal_k,
   robot_qpos, obj_pose_wrt_base, tcp_pose_wrt_base,
   interaction_rollouts: [{
     target_key,
     interacted: [{key, name, kind, max_ee_force, grasped?}],
     supports:   [{supporter, supported_key, force, vertical_force_ratio,
-                  dz, vertical_support, evidence: "force"|"geometric"}],
+                  dz, vertical_support, evidence: "force"|"geometric",
+                  supporter_pose, supported_pose, force_vector}],
+    obj_contacts: [{a_key, b_key, a_pose, b_pose, force_vector, force}],
     bin_stats:  {planar_distance, height_offset,
                  planar_distance_change, height_offset_change},  # per-rollout 0.95 quantile
     bin_samples: {<relation>: [floats]}                          # raw per-tick samples
@@ -131,15 +181,19 @@ Key behaviors:
 
 ```text
 {
-  _schema_version: 3,
+  _schema_version: 4,
   subtask, target,
   members: { <key>: {roles, interaction_types, kind, name, ...} },
   bin_edges: { <relation>: [edges...] },
   bin_stats_robust: { <relation>: value },   # quantile fed to derive_bin_edges
   bin_stats_observed: { <relation>: value }, # max across all samples (audit)
-  compat_norm: {pos, orient, width}
+  compat_norm: {pos, orient, width, xy, vertical, radial, axial}
 }
 ```
+
+`interaction_types` per member is a subset of `{contact, grasp, support,
+contain}`, each token controlling which compatibility edges runtime emits for
+that object.
 
 The miner takes a quantile (default 0.9) across all per-tick samples (or per-
 rollout quantiles when only legacy `bin_stats` is available), then clamps the
@@ -148,9 +202,18 @@ result to a per-relation sanity ceiling. It also logs a warning when an
 signal that the receptacle was resting-contact-only and the collector's
 geometric supporter fallback failed to fire.
 
-`tools/build_affordances.py` consumes the pose arrays from the same pickles
-and emits multi-modal `{anchor, approach_dir, width}` components per
-canonical object key.
+`tools/build_affordances.py` consumes pose arrays + obj-obj contact / support
+event samples from the same pickles and emits an `affordances.json` (schema
+v3) with up to six per-relation component lists per canonical object:
+
+* `grasp_components` — `{anchor, approach_dir, width}` (ee → object).
+* `contact_components` — `{anchor, outward_normal}` (obj-obj contact).
+* `support_components` — `{surface_anchor, surface_normal, footprint_radius}`
+  on supporters.
+* `bottom_components` — `{bottom_anchor, bottom_normal}` on supported objects.
+* `contain_components` / `key_components` — PegInsertionSide-style entry +
+  key descriptors. MS-HAB has no containment env, so these stay empty for
+  MS-HAB pickles; collecting from PegInsertionSide-v1 would populate them.
 
 ## Runtime pipeline
 
@@ -163,10 +226,11 @@ active (subtask, target key)
   -> role-aware capacity (interacted > support > other)
   -> stable slots
   -> absolute edges:
-       ee_object_spatial_event_edges   (every object, center-based)
-       ee_object_compatibility_edges   (near-gated, whitelist-gated)
-       object_object_edges             (contact / support, supporter-> supported)
-  -> temporal edges (signed change + binary transitions over K frames)
+       ee_object_spatial_event_edges        (every object, center-based)
+       ee_object_compatibility_edges        (near-gated, whitelist-gated)
+       object_object_edges                  (contact / support / contain)
+       object_object_compatibility_edges    (contact / support / contain compat)
+  -> temporal edges (signed change over K frames; no transitions)
 ```
 
 There is no invisible active-target injection and no local-contact admission
@@ -216,8 +280,8 @@ Notes:
 
 ## Re-mining after a schema bump
 
-Whenever this README's schema versions advance (currently rollout `v5` /
-whitelist `v3`), every offline asset must be regenerated:
+Whenever this README's schema versions advance (currently rollout `v6` /
+whitelist `v4` / affordances `v3`), every offline asset must be regenerated:
 
 ```bash
 # (Optional) clear stale pickles + assets first.
