@@ -96,17 +96,18 @@ class OneHopWhitelistTests(unittest.TestCase):
             members["link:cabinet/drawer"]["interaction_types"], ["support"],
         )
 
-    def test_bin_edges_emitted_from_bin_stats(self):
+    def test_bin_edges_emitted_from_bin_samples(self):
         builder = _WhitelistBuilder("pick", "actor:024_bowl")
+        # Repeat each sample so the 0.9 quantile equals the constant value.
         builder.absorb({
             "interacted": [
                 {"key": "actor:024_bowl", "kind": "actor", "name": "bowl"},
             ],
             "supports": [],
-            "bin_stats": {
-                "planar_distance": 0.60,
-                "height_offset": 0.30,
-                "planar_distance_change": 0.10,
+            "bin_samples": {
+                "planar_distance": [0.60] * 10,
+                "height_offset": [0.30] * 10,
+                "planar_distance_change": [0.10] * 10,
             },
         })
         payload = builder.payload()

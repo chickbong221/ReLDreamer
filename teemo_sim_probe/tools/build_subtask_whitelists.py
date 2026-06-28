@@ -39,9 +39,7 @@ from teemo_sim_probe.core.whitelist import (
 
 # Quantile used to aggregate per-relation samples across all rollouts. Lower
 # than 1.0 so a single bad frame (autoreset transient, physics blow-up) can't
-# pin the bin edges to absurd values. The collector already emits a per-rollout
-# 0.95 quantile in ``bin_stats``; that's used as a fallback when the legacy
-# pickles don't carry the raw per-rollout sample lists.
+# pin the bin edges to absurd values.
 _MINER_QUANTILE = 0.9
 # Per-relation sanity ceiling. Anything above this is treated as a numerical
 # blow-up rather than a meaningful EE-operating range. Tuned for Fetch in a
@@ -55,22 +53,6 @@ _BIN_VALUE_CEILING: Dict[str, float] = {
 
 
 log = logging.getLogger("build_subtask_whitelists")
-
-
-# Compatibility-norm defaults used when no per-asset value has been collected.
-# These match what runtime applies when the whitelist asset omits the block:
-#   * 0.10 m  -- typical close-approach ee->anchor offset
-#   * pi/2    -- 90deg orientation half-cone
-#   * 0.04 m  -- typical gripper-width spread
-_DEFAULT_COMPAT_NORM = {
-    "pos": 0.10,
-    "orient": 1.5707963267948966,
-    "width": 0.04,
-    "xy": 0.05,
-    "vertical": 0.03,
-    "radial": 0.02,
-    "axial": 0.03,
-}
 
 
 def _iter_pickles(root: Path):
@@ -99,12 +81,8 @@ class _WhitelistBuilder:
         self.supports: Dict[str, Set[str]] = defaultdict(set)
         # Aggregated robust value per relation. Filled at payload() time.
         self.bin_value: Dict[str, float] = {}
-        # Raw per-relation sample pool across rollouts (preferred input).
+        # Raw per-relation sample pool across rollouts.
         self.bin_samples: Dict[str, List[float]] = defaultdict(list)
-        # Fallback: per-rollout per-relation 0.95 quantiles emitted by the
-        # collector. Used only when ``bin_samples`` is empty for that relation
-        # (legacy pickles, capped sample buffer, etc.).
-        self.bin_quantiles: Dict[str, List[float]] = defaultdict(list)
 
     def absorb(self, rollout: Dict[str, Any]) -> None:
         self.rollout_count += 1
@@ -193,38 +171,21 @@ class _WhitelistBuilder:
                     if np.isfinite(fv):
                         bucket.append(fv)
 
-        stats = rollout.get("bin_stats") or {}
-        if isinstance(stats, dict):
-            for k, v in stats.items():
-                try:
-                    fv = float(v)
-                except (TypeError, ValueError):
-                    continue
-                if np.isfinite(fv):
-                    self.bin_quantiles[str(k)].append(fv)
-
     def _aggregate_bins(self) -> Tuple[Dict[str, float], Dict[str, float]]:
         """Return ``(robust_value, observed_max)`` per relation.
 
         The robust value -- fed to ``derive_bin_edges`` -- is the configured
-        quantile across all raw samples when available, else across per-rollout
-        quantiles. A per-relation ceiling caps numerical blow-ups so a single
-        bad pickle cannot push the bin edges to absurd ranges.
+        quantile across all raw samples. A per-relation ceiling caps numerical
+        blow-ups so a single bad pickle cannot push the bin edges to absurd
+        ranges.
         """
         robust: Dict[str, float] = {}
         observed: Dict[str, float] = {}
-        keys = set(self.bin_samples) | set(self.bin_quantiles)
-        for k in keys:
-            samples = self.bin_samples.get(k) or []
-            fallback = self.bin_quantiles.get(k) or []
-            if samples:
-                value = float(np.quantile(samples, _MINER_QUANTILE))
-                obs = float(np.max(samples))
-            elif fallback:
-                value = float(np.quantile(fallback, _MINER_QUANTILE))
-                obs = float(np.max(fallback))
-            else:
+        for k, samples in self.bin_samples.items():
+            if not samples:
                 continue
+            value = float(np.quantile(samples, _MINER_QUANTILE))
+            obs = float(np.max(samples))
             ceiling = _BIN_VALUE_CEILING.get(k)
             if ceiling is not None and value > ceiling:
                 log.warning(
@@ -284,7 +245,6 @@ class _WhitelistBuilder:
             "bin_edges": bin_edges,
             "bin_stats_robust": robust,
             "bin_stats_observed": observed,
-            "compat_norm": dict(_DEFAULT_COMPAT_NORM),
             "_n_successful_rollouts": self.rollout_count,
         }
 

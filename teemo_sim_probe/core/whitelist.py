@@ -18,9 +18,7 @@ Asset shape (``_schema_version: 4``)::
             "kind": "link"
         }
       },
-      "bin_edges": { "<relation>": [edges...], ... },
-      "compat_norm": {"pos": ..., "orient": ..., "width": ...,
-                      "xy": ..., "vertical": ..., "radial": ..., "axial": ...}
+      "bin_edges": { "<relation>": [edges...], ... }
     }
 
 Per-member ``interaction_types`` controls which compatibility edges runtime
@@ -99,7 +97,6 @@ class Whitelist:
     by_key: Dict[str, Set[str]] = field(default_factory=dict)
     interaction_types: Dict[str, Set[str]] = field(default_factory=dict)
     bin_edges: Dict[str, List[float]] = field(default_factory=dict)
-    compat_norm: Dict[str, float] = field(default_factory=dict)
     source_path: Optional[str] = None
 
     @property
@@ -186,24 +183,12 @@ def load_whitelist(path: str) -> Whitelist:
             if ok and parsed:
                 bin_edges[rel] = parsed
 
-    compat_norm: Dict[str, float] = {}
-    raw_norm = raw.get("compat_norm", {})
-    if isinstance(raw_norm, dict):
-        for k, v in raw_norm.items():
-            try:
-                fv = float(v)
-            except (TypeError, ValueError):
-                continue
-            if math.isfinite(fv) and fv > 0:
-                compat_norm[str(k)] = fv
-
     return Whitelist(
         subtask=str(raw.get("subtask", "") or ""),
         target=str(raw.get("target", "") or ""),
         by_key=by_key,
         interaction_types=interaction_types,
         bin_edges=bin_edges,
-        compat_norm=compat_norm,
         source_path=path,
     )
 

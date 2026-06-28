@@ -17,9 +17,10 @@ For each successful rollout it records:
   classified as the support pair).  Pose snapshot + contact-force vector are
   stored so the affordance miner can derive ``contact_components`` (anchor +
   outward normal) on both sides.
-* a per-rollout ``bin_stats`` block: running maxes of ee->object planar
-  distance, |height offset|, and their K-window absolute changes, used by the
-  whitelist miner to derive per-(subtask, target) bin edges.
+* a per-rollout ``bin_samples`` block: raw per-tick samples of ee->object
+  planar distance, |height offset|, and their K-window absolute changes, used
+  by the whitelist miner to derive per-(subtask, target) bin edges via a
+  robust quantile across rollouts.
 
 The active target is not injected as a whitelist member unless an ee link
 actually contacts it. Robot links other than tcp/finger1/finger2 are evidence
@@ -69,9 +70,6 @@ _RESET_WARMUP_TICKS = 3
 # Per-rollout sample buffer cap (per relation, per env). The miner takes a
 # robust quantile across these.
 _BIN_SAMPLE_CAP = 4096
-# Per-rollout quantile applied at commit_success to harden against any single
-# bad frame still slipping through (e.g. physics blow-up).
-_PER_ROLLOUT_QUANTILE = 0.95
 # Geometric supporter detection (used when PhysX GPU sleeping contacts hide
 # the resting bowl-on-drawer pair from pairwise force queries).
 #
@@ -209,10 +207,6 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         # ``a_key``, ``b_key``, ``a_pose``, ``b_pose``, ``force_vector``.
         self._episode_obj_contacts: List[List[Dict[str, Any]]] = []
         self._reset_buffers()
-
-        # Aggregated across every committed success, used as a quick top-level
-        # summary in the pickle. The miner still re-aggregates per rollout.
-        self.aggregated_bin_max: Dict[str, float] = defaultdict(float)
 
         root = Path(out_root) if out_root else Path(ASSET_DIR) / "robot_success_states"
         save_dir = root / self.agent.uid / self.subtask_type
@@ -745,27 +739,15 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             if supported in root_keys
             and value.get("supporter") is not None
         ]
-        # Per-rollout robust quantile: a single autoreset jump or transient
-        # physics blow-up no longer pins the bin to a giant value the way the
-        # old running-max did.
-        samples = self._episode_bin_samples[env_idx]
-        rollout_bin_stats: Dict[str, float] = {}
-        rollout_bin_samples: Dict[str, List[float]] = {}
-        for k, values in samples.items():
-            if not values:
-                continue
-            rollout_bin_stats[k] = float(
-                np.quantile(values, _PER_ROLLOUT_QUANTILE)
-            )
-            rollout_bin_samples[k] = list(values)
-        for k, v in rollout_bin_stats.items():
-            if v > self.aggregated_bin_max[k]:
-                self.aggregated_bin_max[k] = v
+        rollout_bin_samples: Dict[str, List[float]] = {
+            k: list(values)
+            for k, values in self._episode_bin_samples[env_idx].items()
+            if values
+        }
         self.interaction_rollouts.append({
             "target_key": target_key,
             "interacted": interacted,
             "supports": supports,
-            "bin_stats": rollout_bin_stats,
             "bin_samples": rollout_bin_samples,
             "obj_contacts": list(self._episode_obj_contacts[env_idx]),
         })
@@ -785,7 +767,6 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             "obj_pose_wrt_base": self.success_obj_pose_wrt_base,
             "tcp_pose_wrt_base": self.success_tcp_pose_wrt_base,
             "interaction_rollouts": self.interaction_rollouts,
-            "bin_stats": dict(self.aggregated_bin_max),
         }
         with open(self.save_path, "wb") as stream:
             pickle.dump(payload, stream)

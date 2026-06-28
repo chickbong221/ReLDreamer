@@ -53,16 +53,15 @@ def _setup_logging(verbose: bool) -> None:
     )
 
 
-def _canonical_key(name: Optional[str]) -> Optional[str]:
-    """Delegates to ``canonical_affordance_key`` so the two cannot drift."""
-    if not name:
-        return None
-    value = str(name)
-    if value.startswith(("actor:", "link:", "object:")):
+def _stable_key(value: Optional[str]) -> Optional[str]:
+    """Validate a pre-prefixed stable entity key from the collector.
+
+    The collector emits ``actor:<id>`` / ``link:<art>/<link>`` / ``object:<n>``;
+    anything else is treated as malformed and dropped.
+    """
+    if isinstance(value, str) and value.startswith(("actor:", "link:", "object:")):
         return value
-    from teemo_sim_probe.core.affordance import canonical_affordance_key
-    canonical = canonical_affordance_key(value)
-    return f"actor:{canonical}" if canonical else None
+    return None
 
 
 def _normalize(v: np.ndarray) -> Optional[np.ndarray]:
@@ -240,20 +239,16 @@ def _load_pkl(path: Path) -> Optional[Dict]:
 
 
 def _mine_object(
-    pkl_path: Path, fk: Optional[_FetchFK], max_samples: int,
+    pkl_path: Path, data: Dict, fk: Optional[_FetchFK], max_samples: int,
     approach_axis_local: np.ndarray,
 ) -> Optional[Dict]:
-    data = _load_pkl(pkl_path)
-    if data is None:
-        return None
-
     qpos_list = np.asarray(data["robot_qpos"], dtype=float)
     pose_list = np.asarray(data["obj_pose_wrt_base"], dtype=float)
     tcp_in_base_list: Optional[np.ndarray] = None
     if "tcp_pose_wrt_base" in data and data["tcp_pose_wrt_base"]:
         tcp_in_base_list = np.asarray(data["tcp_pose_wrt_base"], dtype=float)
     raw_obj_id = data.get("entity_key")
-    canonical = _canonical_key(raw_obj_id)
+    canonical = _stable_key(raw_obj_id)
     if canonical is None:
         log.error("%s: entity_key %r did not canonicalize", pkl_path, raw_obj_id)
         return None
@@ -405,8 +400,8 @@ def _accumulate_obj_obj_samples(
             a_pose = ev.get("a_pose")
             b_pose = ev.get("b_pose")
             force = ev.get("force_vector")
-            a_key = _canonical_key(ev.get("a_key"))
-            b_key = _canonical_key(ev.get("b_key"))
+            a_key = _stable_key(ev.get("a_key"))
+            b_key = _stable_key(ev.get("b_key"))
             if a_pose is None or b_pose is None or force is None:
                 continue
             a_pose = np.asarray(a_pose, dtype=float)
@@ -442,8 +437,8 @@ def _accumulate_obj_obj_samples(
             if supporter_pose is None or supported_pose is None:
                 continue
             supporter = rec.get("supporter") or {}
-            supporter_key = _canonical_key(supporter.get("key"))
-            supported_key = _canonical_key(rec.get("supported_key"))
+            supporter_key = _stable_key(supporter.get("key"))
+            supported_key = _stable_key(rec.get("supported_key"))
             sp_sup = np.asarray(supporter_pose, dtype=float)
             sp_subj = np.asarray(supported_pose, dtype=float)
             # Surface anchor on supporter: supported center projected into
@@ -631,9 +626,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     by_object: Dict[str, Dict] = {}
     all_rollouts: List[Dict] = []
     for pkl_path in pkls:
-        # Pass 1: grasp components (and pull rollouts out for the obj-obj pass).
+        data = _load_pkl(pkl_path)
+        if data is None:
+            continue
+        # Pass 1: grasp components.
         rec = _mine_object(
-            pkl_path, fk=fk,
+            pkl_path, data, fk=fk,
             max_samples=args.max_samples,
             approach_axis_local=approach_axis_local,
         )
@@ -648,18 +646,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             log.warning("duplicate canonical key %s from %s -- ignoring second",
                         rec["canonical_key"], pkl_path)
 
-        # Pull rollouts for obj-obj mining. Failures to load are non-fatal --
-        # we already logged them in _mine_object.
-        try:
-            with open(pkl_path, "rb") as stream:
-                data = pickle.load(stream)
-        except Exception:
-            continue
+        # Stash rollouts for the obj-obj pass below.
         rollouts = data.get("interaction_rollouts") or []
         if isinstance(rollouts, list):
-            for r in rollouts:
-                if isinstance(r, dict):
-                    all_rollouts.append(r)
+            all_rollouts.extend(r for r in rollouts if isinstance(r, dict))
 
     # Pass 2: obj-obj contact / support component mining across all rollouts.
     _accumulate_obj_obj_samples(all_rollouts, by_object)
