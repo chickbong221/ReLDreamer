@@ -154,6 +154,11 @@ Affordances (schema v3, `affordances.json`), keyed by canonical object id:
 ```bash
 export MS_ASSET_DIR=/root/.maniskill
 
+# 0. Download the MS-HAB policy checkpoints used to drive the demos.
+#    Skip if mshab_checkpoints/ is already populated.
+huggingface-cli download arth-shukla/mshab_checkpoints \
+    --local-dir mshab_checkpoints
+
 # 1. Collect successful rollouts (one .pkl per object).
 #    Pass --no-skip-done after a schema bump to overwrite stale pkls.
 python -m teemo_sim_probe.tools.collect_robot_success_states \
