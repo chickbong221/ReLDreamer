@@ -693,7 +693,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         json.dump(payload, f, indent=2, sort_keys=False)
     log.info("wrote %d objects (%d components total) to %s",
              len(by_object),
-             sum(len(v["components"]) for v in by_object.values()),
+             sum(len(lst)
+                 for v in by_object.values()
+                 for k, lst in v.items()
+                 if k.endswith("_components") and isinstance(lst, list)),
              out_path)
     return 0
 
