@@ -254,14 +254,15 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         for i in range(self.num_envs):
             self._episode_ticks[i] += 1
 
-        # MS-HAB autoresets done envs *inside* super().step() above, so the
-        # pose we'd sample for those envs is already the next episode's fresh
-        # state. Skip them this tick to avoid injecting a giant cross-episode
-        # outlier into the running max.
-        done = np.logical_or(
-            _to_np(term).astype(bool).reshape(-1),
-            _to_np(trunc).astype(bool).reshape(-1),
-        )
+        # Episode-boundary detection. The collector is always wrapped by
+        # ManiSkillVectorEnv(ignore_terminations=True), so MS-HAB's task-success
+        # `term` signal does NOT trigger an autoreset -- the env keeps running
+        # in the post-success state (bowl still held) until `trunc` fires at
+        # max_episode_steps. Using `term|trunc` here would clear the per-env
+        # buffers the instant MS-HAB reported success, wiping every drawer /
+        # counter supporter we accumulated during the pick, right before the
+        # outer script calls `commit_success`. Only trunc is a real boundary.
+        done = _to_np(trunc).astype(bool).reshape(-1)
         done_envs = set(np.where(done[:self.num_envs])[0].tolist())
 
         if self._step_count % self.observe_stride == 0:
