@@ -100,6 +100,22 @@ def _make_traced_wrapper_cls():
                 key = stable_entity_key(ent)
                 if key:
                     entity_by_key[key] = ent
+            # Snapshot the seg-map entry at target_key BEFORE the swap.
+            seg_target_ent = entity_by_key.get(target_key)
+            seg_target_is_merged = (
+                seg_target_ent is physics_target_ent
+                if seg_target_ent is not None else None
+            )
+            drawer_force_via_seg = None
+            if seg_target_ent is not None and entity_by_key.get(DRAWER_KEY) is not None:
+                try:
+                    vec = self._pairwise_force(
+                        scene, entity_by_key[DRAWER_KEY], seg_target_ent, env_idx,
+                    )
+                    if vec is not None:
+                        drawer_force_via_seg = float(np.linalg.norm(vec))
+                except Exception as e:
+                    drawer_force_via_seg = f"exc:{e!r}"
             if target_ent is not None:
                 raw_key = stable_entity_key(target_ent)
                 if raw_key and raw_key != target_key:
@@ -193,6 +209,9 @@ def _make_traced_wrapper_cls():
                 "drawer_z": None if drawer_xyz is None else float(drawer_xyz[2]),
                 "drawer_force": drawer_force,
                 "drawer_force_actual": drawer_force_actual,
+                "drawer_force_via_seg": drawer_force_via_seg,
+                "seg_target_present": seg_target_ent is not None,
+                "seg_target_is_merged": seg_target_is_merged,
                 "body_force": body_force,
                 "body_force_actual": body_force_actual,
                 "merged_is_target": merged_is_target,
@@ -414,6 +433,22 @@ def report(success_envs: List[Dict[str, Any]]) -> None:
         print(f"    merged_key seen across ticks         : {keys_seen}")
         print(f"    actual raw_key seen across ticks     : {raw_keys_seen}")
         print(f"    merged is target at ALL ticks        : {merged_eq_target}")
+        seg_present_any = any(r["seg_target_present"] for r in trace)
+        seg_is_merged_any = any(
+            r["seg_target_is_merged"] is True for r in trace
+        )
+        seg_is_distinct_any = any(
+            r["seg_target_is_merged"] is False for r in trace
+        )
+        seg_force_gt = any(
+            isinstance(r["drawer_force_via_seg"], float)
+            and r["drawer_force_via_seg"] > 0.05
+            for r in trace
+        )
+        print(f"    seg-map entity at target_key at ANY  : {seg_present_any}")
+        print(f"    seg-map entity IS merged handle      : {seg_is_merged_any}")
+        print(f"    seg-map entity DISTINCT from merged  : {seg_is_distinct_any}")
+        print(f"    |F|drawer-SEG > 0.05 at ANY tick     : {seg_force_gt}")
 
         # Print each observed tick.
         for r in trace:
@@ -425,7 +460,9 @@ def report(success_envs: List[Dict[str, Any]]) -> None:
                 f"|F|drawer-M={_fmt_force(r['drawer_force'])} "
                 f"|F|drawer-A={_fmt_force(r['drawer_force_actual'])} "
                 f"|F|body-M={_fmt_force(r['body_force'])} "
-                f"|F|body-A={_fmt_force(r['body_force_actual'])}"
+                f"|F|body-A={_fmt_force(r['body_force_actual'])} "
+                f"|F|drawer-SEG={_fmt_force(r['drawer_force_via_seg'])} "
+                f"seg_is_merged={r['seg_target_is_merged']}"
             )
 
         print(f"    supports_committed  ({len(supports)}):")
