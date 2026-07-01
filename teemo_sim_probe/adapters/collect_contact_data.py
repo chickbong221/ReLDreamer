@@ -174,7 +174,18 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         self.temporal_k = max(1, int(temporal_k))
         self._step_count = 0
         self._last_observed_step = -1
+        # Per-tick force samples, keyed by (id(a), id(b)). Cleared each step
+        # after the physics tick so we never serve stale GPU contact data.
         self._force_cache: Dict[Tuple[int, int], Optional[np.ndarray]] = {}
+        # Persistent GPU impulse queries with intra-env pairs, keyed the
+        # same way. Each entry is ``(query_object, env_to_row)`` where
+        # ``env_to_row[env_idx]`` is the row index inside the query's
+        # impulse tensor for the intra-env pair in sub-scene env_idx.
+        # See ``_pairwise_force`` for why we can't reuse ManiSkill's
+        # own scene-level batched query directly.
+        self._pair_query_cache: Dict[
+            Tuple[int, int], Tuple[Optional[Any], Dict[int, int]]
+        ] = {}
 
         self.success_robot_qpos: List[List[float]] = []
         self.success_obj_pose_wrt_base: List[List[float]] = []
@@ -227,6 +238,9 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
     def reset(self, *args, **kwargs):
         result = super().reset(*args, **kwargs)
         self._reset_buffers()
+        # Reconfigure-style resets rebuild the scene; the cached queries
+        # still reference the previous SAPIEN body ids, so drop them.
+        self._pair_query_cache.clear()
         return result
 
     def step(self, action, *args, **kwargs):
@@ -267,22 +281,133 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         return obs, rew, term, trunc, info
 
     def _pairwise_force(self, scene, a, b, env_idx: int) -> Optional[np.ndarray]:
+        """Contact-force 3-vector between ``a`` and ``b`` in sub-scene ``env_idx``.
+
+        ManiSkill's ``scene.get_pairwise_contact_forces`` builds its GPU
+        query via ``zip(a._bodies, b._bodies)``
+        (mani_skill/envs/scene.py:771). MS-HAB's merged pick target always
+        spans ``arange(num_envs)`` -- but scene-config-specific supporters
+        (e.g. ``kitchen_counter-0/drawer3``, or any articulation link whose
+        parent isn't in every build_config) have ``_scene_idxs`` equal to
+        just the subset of sub-scenes whose build_config contains them.
+        The zip then pairs their bodies position-for-position with the
+        merged target's bodies, so unless positions coincide the pair
+        crosses sub-scenes and the impulse is always zero. Every such
+        supporter is silently dropped from the collected rollouts.
+
+        This helper builds a targeted per-``(a, b)`` GPU impulse query
+        containing exactly one pair per sub-scene where both entities
+        have a body, and returns the row for ``env_idx``. Query objects
+        are persistent across ticks (they reference SAPIEN body ids that
+        stay stable until a reconfigure-style reset); the raw impulse
+        tensor is cached per tick alongside the rest of ``_force_cache``.
+        """
         key = (id(a), id(b))
+
+        query_entry = self._pair_query_cache.get(key)
+        if query_entry is None:
+            query_entry = self._build_pair_query(scene, a, b)
+            self._pair_query_cache[key] = query_entry
+        query, env_to_row = query_entry
+        if query is None or env_idx not in env_to_row:
+            return None
+
         if key not in self._force_cache:
             try:
-                self._force_cache[key] = _to_np(
-                    scene.get_pairwise_contact_forces(a, b)
-                )
+                scene.px.gpu_query_contact_pair_impulses(query)
+                impulses = _to_np(query.cuda_impulses.torch().clone())
+                self._force_cache[key] = impulses / float(scene.px.timestep)
             except Exception:
                 self._force_cache[key] = None
-        force = self._force_cache[key]
-        if force is None:
+        forces = self._force_cache[key]
+        if forces is None:
             return None
-        if force.ndim == 1:
-            return np.asarray(force, dtype=float)
-        if env_idx >= force.shape[0]:
+
+        return self._pair_row_lookup(
+            forces, env_to_row[env_idx], env_idx, len(env_to_row),
+        )
+
+    def _build_pair_query(
+        self, scene, a, b,
+    ) -> Tuple[Optional[Any], Dict[int, int]]:
+        """Return ``(query, env_to_row)`` for a GPU impulse query holding
+        one ``(a, b)`` pair per sub-scene where both entities have a body.
+
+        Falls back to the classic ``zip(a._bodies, b._bodies)`` pairing when
+        either side lacks ``_scene_idxs`` -- that keeps the single-env / EE
+        cases working unchanged, since there the two lists always align.
+        """
+        try:
+            a_bodies = list(a._bodies)
+            b_bodies = list(b._bodies)
+        except AttributeError:
+            return None, {}
+        a_idxs = self._scene_idxs_list(a)
+        b_idxs = self._scene_idxs_list(b)
+        pairs: List[Tuple[Any, Any]] = []
+        env_to_row: Dict[int, int] = {}
+        if a_idxs is None or b_idxs is None:
+            n = min(len(a_bodies), len(b_bodies))
+            for i in range(n):
+                env_to_row[i] = i
+                pairs.append((a_bodies[i], b_bodies[i]))
+        else:
+            for env_idx in sorted(set(a_idxs) & set(b_idxs)):
+                try:
+                    pair = (
+                        a_bodies[a_idxs.index(env_idx)],
+                        b_bodies[b_idxs.index(env_idx)],
+                    )
+                except (IndexError, ValueError):
+                    continue
+                env_to_row[env_idx] = len(pairs)
+                pairs.append(pair)
+        if not pairs:
+            return None, {}
+        try:
+            query = scene.px.gpu_create_contact_pair_impulse_query(pairs)
+        except Exception:
+            return None, {}
+        return query, env_to_row
+
+    @staticmethod
+    def _scene_idxs_list(entity) -> Optional[List[int]]:
+        idxs_attr = getattr(entity, "_scene_idxs", None)
+        if idxs_attr is None:
             return None
-        return np.asarray(force[env_idx], dtype=float)
+        try:
+            return _to_np(idxs_attr).reshape(-1).tolist()
+        except Exception:
+            return None
+
+    def _pair_row_lookup(
+        self, forces: np.ndarray, row: int, env_idx: int, n_pairs: int,
+    ) -> Optional[np.ndarray]:
+        """Extract the row for a specific pair from a GPU impulse tensor.
+
+        The comment at ``mani_skill/envs/scene.py:779`` claims
+        ``cuda_impulses`` has shape ``(num_unique_pairs * num_envs, 3)``,
+        but real observations show single-pair queries returning either
+        ``(1, 3)`` or ``(num_envs, 3)``. We resolve the ambiguity
+        empirically: try direct ``(num_pairs, 3)`` indexing first, then
+        the pair-major ``(num_pairs * num_envs, 3)`` layout, then a plain
+        row index as last resort.
+        """
+        if forces.ndim == 1:
+            return forces.astype(float) if n_pairs == 1 and row == 0 else None
+        if forces.ndim != 2 or forces.shape[1] != 3:
+            return None
+        n_rows = forces.shape[0]
+        if n_rows == n_pairs:
+            return forces[row].astype(float)
+        num_envs = int(self.num_envs)
+        if n_rows == n_pairs * num_envs:
+            candidate = row * num_envs + env_idx
+            if 0 <= candidate < n_rows:
+                return forces[candidate].astype(float)
+        if 0 <= row < n_rows:
+            return forces[row].astype(float)
+        return None
 
     def _robot_links(self) -> Tuple[List[Any], set]:
         try:
@@ -699,6 +824,12 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         })
 
     def close(self):
+        # Never overwrite an existing pkl with an empty payload. Diagnostic
+        # wrappers (which never call commit_success) previously wiped the
+        # production pkl on venv.close() and turned every downstream whitelist
+        # build into a silent no-op.
+        if not self.interaction_rollouts and self.save_path.exists():
+            return super().close()
         entity_key = (
             self.interaction_rollouts[0].get("target_key")
             if self.interaction_rollouts else f"actor:{self.obj_id}"

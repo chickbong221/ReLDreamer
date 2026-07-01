@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import os
 import pickle
+import tempfile
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -282,7 +283,12 @@ def live_probe(
             add_event_tracker_info=True,
             sensor_configs=dict(width=128, height=128),
         )
-        collect = FetchCollectContactDataWrapper(env)
+        # Redirect the wrapper's save_path into a scratch dir. This tool
+        # never calls commit_success, so venv.close() would otherwise write an
+        # empty payload over the production pkl (Fix A now also guards close(),
+        # but keeping the scratch redirect belt-and-braces).
+        scratch_root = tempfile.mkdtemp(prefix="diagnose_bowl_")
+        collect = FetchCollectContactDataWrapper(env, out_root=scratch_root)
         env = collect
         env = FetchDepthObservationWrapper(env, cat_state=True, cat_pixels=False)
         env = FrameStack(
