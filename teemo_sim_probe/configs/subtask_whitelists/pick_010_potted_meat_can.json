@@ -14,7 +14,7 @@
       ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 28
+      "interaction_rollouts": 30
     },
     "link:fridge-0/body": {
       "roles": [
@@ -25,7 +25,7 @@
       ],
       "kind": "link",
       "name": "body",
-      "support_rollouts": 1,
+      "support_rollouts": 11,
       "supports": [
         "actor:010_potted_meat_can"
       ]
@@ -39,7 +39,7 @@
       ],
       "kind": "link",
       "name": "top_door",
-      "support_rollouts": 2,
+      "support_rollouts": 6,
       "supports": [
         "actor:010_potted_meat_can"
       ]
@@ -63,21 +63,37 @@
       0.6666666666666666
     ],
     "planar-distance": [
-      0.016664375657457976,
-      0.03332875131491595
+      0.2547379932625628,
+      0.5094759865251256
     ],
     "height-offset": [
-      -0.016668836275736492,
-      0.016668836275736492
+      -0.10248433748881021,
+      0.10248433748881021
+    ],
+    "planar-distance-change": [
+      -0.5460449556731816,
+      -0.18201498522439385,
+      0.18201498522439385,
+      0.5460449556731816
+    ],
+    "height-offset-change": [
+      -0.05887239217758179,
+      -0.019624130725860597,
+      0.019624130725860597,
+      0.05887239217758179
     ]
   },
   "bin_stats_robust": {
-    "planar_distance": 0.04999312697237392,
-    "height_offset": 0.05000650882720947
+    "planar_distance": 0.7642139797876885,
+    "height_offset": 0.30745301246643064,
+    "planar_distance_change": 0.9100749261219693,
+    "height_offset_change": 0.09812065362930299
   },
   "bin_stats_observed": {
-    "planar_distance": 0.42008437294984463,
-    "height_offset": 0.2691216468811035
+    "planar_distance": 1.492222424933869,
+    "height_offset": 0.3492097854614258,
+    "planar_distance_change": 1.4661879898579664,
+    "height_offset_change": 0.21729552745819092
   },
-  "_n_successful_rollouts": 31
+  "_n_successful_rollouts": 30
 }

@@ -3,17 +3,33 @@
   "subtask": "pick",
   "target": "actor:013_apple",
   "members": {
+    "actor:003_cracker_box": {
+      "roles": [
+        "support"
+      ],
+      "interaction_types": [
+        "contact",
+        "support"
+      ],
+      "kind": "actor",
+      "name": "env-7_003_cracker_box-0",
+      "support_rollouts": 3,
+      "supports": [
+        "actor:013_apple"
+      ]
+    },
     "actor:013_apple": {
       "roles": [
         "interacted"
       ],
       "interaction_types": [
         "contact",
-        "grasp"
+        "grasp",
+        "support"
       ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 24
+      "interaction_rollouts": 30
     }
   },
   "bin_edges": {
@@ -34,21 +50,37 @@
       0.6666666666666666
     ],
     "planar-distance": [
-      0.009104950882873032,
-      0.018209901765746064
+      0.21386032205401465,
+      0.4277206441080293
     ],
     "height-offset": [
-      -0.008882462978363035,
-      0.008882462978363035
+      -0.02010158697764079,
+      0.02010158697764079
+    ],
+    "planar-distance-change": [
+      -0.5052461874032371,
+      -0.16841539580107903,
+      0.16841539580107903,
+      0.5052461874032371
+    ],
+    "height-offset-change": [
+      -0.03873565435409547,
+      -0.01291188478469849,
+      0.01291188478469849,
+      0.03873565435409547
     ]
   },
   "bin_stats_robust": {
-    "planar_distance": 0.027314852648619097,
-    "height_offset": 0.026647388935089108
+    "planar_distance": 0.641580966162044,
+    "height_offset": 0.06030476093292236,
+    "planar_distance_change": 0.8420769790053951,
+    "height_offset_change": 0.06455942392349245
   },
   "bin_stats_observed": {
-    "planar_distance": 0.0393858441209583,
-    "height_offset": 0.0340195894241333
+    "planar_distance": 1.3457860965033905,
+    "height_offset": 0.2976340055465698,
+    "planar_distance_change": 1.3372260533242295,
+    "height_offset_change": 0.12441611289978027
   },
   "_n_successful_rollouts": 30
 }

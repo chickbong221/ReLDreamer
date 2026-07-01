@@ -9,11 +9,26 @@
       ],
       "interaction_types": [
         "contact",
-        "grasp"
+        "grasp",
+        "support"
       ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 24
+      "interaction_rollouts": 30
+    },
+    "link:fridge-0/body": {
+      "roles": [
+        "support"
+      ],
+      "interaction_types": [
+        "support"
+      ],
+      "kind": "link",
+      "name": "body",
+      "support_rollouts": 10,
+      "supports": [
+        "actor:024_bowl"
+      ]
     }
   },
   "bin_edges": {
@@ -34,21 +49,37 @@
       0.6666666666666666
     ],
     "planar-distance": [
-      0.023619448620026004,
-      0.04723889724005201
+      0.2684715967089969,
+      0.5369431934179938
     ],
     "height-offset": [
-      -0.018192708492279053,
-      0.018192708492279053
+      -0.09504923025767009,
+      0.09504923025767009
+    ],
+    "planar-distance-change": [
+      -0.5616834476616672,
+      -0.1872278158872224,
+      0.1872278158872224,
+      0.5616834476616672
+    ],
+    "height-offset-change": [
+      -0.11083823204040529,
+      -0.03694607734680176,
+      0.03694607734680176,
+      0.11083823204040529
     ]
   },
   "bin_stats_robust": {
-    "planar_distance": 0.07085834586007801,
-    "height_offset": 0.05457812547683716
+    "planar_distance": 0.8054147901269907,
+    "height_offset": 0.2851476907730103,
+    "planar_distance_change": 0.936139079436112,
+    "height_offset_change": 0.1847303867340088
   },
   "bin_stats_observed": {
-    "planar_distance": 0.07303265613633893,
-    "height_offset": 0.06829249858856201
+    "planar_distance": 1.3936165513414709,
+    "height_offset": 0.38870370388031006,
+    "planar_distance_change": 1.2427547464923974,
+    "height_offset_change": 0.34610509872436523
   },
   "_n_successful_rollouts": 30
 }

@@ -9,11 +9,26 @@
       ],
       "interaction_types": [
         "contact",
-        "grasp"
+        "grasp",
+        "support"
       ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 24
+      "interaction_rollouts": 30
+    },
+    "link:chestOfDrawers_01-0/drawer_topR": {
+      "roles": [
+        "support"
+      ],
+      "interaction_types": [
+        "support"
+      ],
+      "kind": "link",
+      "name": "drawer_topR",
+      "support_rollouts": 1,
+      "supports": [
+        "actor:002_master_chef_can"
+      ]
     }
   },
   "bin_edges": {
@@ -34,21 +49,37 @@
       0.6666666666666666
     ],
     "planar-distance": [
-      0.010430538106037376,
-      0.020861076212074753
+      0.17780775977083385,
+      0.3556155195416677
     ],
     "height-offset": [
-      -0.01580541928609212,
-      0.01580541928609212
+      -0.05720008412996928,
+      0.05720008412996928
+    ],
+    "planar-distance-change": [
+      -0.434068955100828,
+      -0.14468965170027598,
+      0.14468965170027598,
+      0.434068955100828
+    ],
+    "height-offset-change": [
+      -0.13523903310298918,
+      -0.04507967770099639,
+      0.04507967770099639,
+      0.13523903310298918
     ]
   },
   "bin_stats_robust": {
-    "planar_distance": 0.03129161431811213,
-    "height_offset": 0.04741625785827636
+    "planar_distance": 0.5334232793125016,
+    "height_offset": 0.17160025238990784,
+    "planar_distance_change": 0.72344825850138,
+    "height_offset_change": 0.22539838850498195
   },
   "bin_stats_observed": {
-    "planar_distance": 0.03874389945570558,
-    "height_offset": 0.05030834674835205
+    "planar_distance": 1.187591546540332,
+    "height_offset": 0.4010501652956009,
+    "planar_distance_change": 1.1700330195242898,
+    "height_offset_change": 0.34981007874011993
   },
   "_n_successful_rollouts": 30
 }

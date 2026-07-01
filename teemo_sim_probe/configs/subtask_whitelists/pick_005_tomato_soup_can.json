@@ -13,7 +13,7 @@
       ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 24
+      "interaction_rollouts": 30
     }
   },
   "bin_edges": {
@@ -34,21 +34,37 @@
       0.6666666666666666
     ],
     "planar-distance": [
-      0.00962870490156964,
-      0.01925740980313928
+      0.20728071540562032,
+      0.41456143081124064
     ],
     "height-offset": [
-      -0.014809636274973552,
-      0.014809636274973552
+      -0.08008060455322266,
+      0.08008060455322266
+    ],
+    "planar-distance-change": [
+      -0.493714168961227,
+      -0.16457138965374232,
+      0.16457138965374232,
+      0.493714168961227
+    ],
+    "height-offset-change": [
+      -0.17244984984397888,
+      -0.05748328328132629,
+      0.05748328328132629,
+      0.17244984984397888
     ]
   },
   "bin_stats_robust": {
-    "planar_distance": 0.02888611470470892,
-    "height_offset": 0.044428908824920656
+    "planar_distance": 0.621842146216861,
+    "height_offset": 0.24024181365966799,
+    "planar_distance_change": 0.8228569482687116,
+    "height_offset_change": 0.28741641640663146
   },
   "bin_stats_observed": {
-    "planar_distance": 0.03458297690182677,
-    "height_offset": 0.047275543212890625
+    "planar_distance": 1.1902138196227479,
+    "height_offset": 0.4116494655609131,
+    "planar_distance_change": 1.1570977064419146,
+    "height_offset_change": 0.38455164432525635
   },
   "_n_successful_rollouts": 30
 }
