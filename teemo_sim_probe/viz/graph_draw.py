@@ -68,12 +68,22 @@ _INTRA_FAMILY_ORDER = {
                          "contain-compatibility-change"),
 }
 
-# Per-family chip styling.
+# Per-family chip styling. Affordance uses a green palette so it doesn't
+# read as the same family as the (also light+cool) spatial blue.
 _FAMILY_STYLE: Dict[str, Dict[str, str]] = {
     _FAMILY_PHYSICAL_STATE: {"bg": "#ffe0c2", "edge": "#c25a00", "text": "#5a2900"},
     _FAMILY_SPATIAL:        {"bg": "#d4e7ff", "edge": "#2f6ec2", "text": "#13396b"},
-    _FAMILY_AFFORDANCE:     {"bg": "#e4dcf5", "edge": "#6c5aa1", "text": "#2c1f5c"},
+    _FAMILY_AFFORDANCE:     {"bg": "#d8f0dc", "edge": "#3a8f5b", "text": "#1c4a2b"},
 }
+
+# Minimum axis-unit separation between chip centers before we consider two
+# chips as "overlapping" and nudge the later one along its edge's perp.
+# Tuned against the multi-line spatial chips (up to four rows), which are
+# the largest labels in the graph.
+_CHIP_MIN_SEP_X = 0.85
+_CHIP_MIN_SEP_Y = 0.45
+_CHIP_NUDGE_STEP = 0.35
+_CHIP_NUDGE_MAX_ITERS = 8
 
 # Stale edges override every family chip with the same blue palette used for
 # frozen-pose nodes -- a single visual signal that the data is not fresh.
@@ -197,6 +207,10 @@ def render_graph(
             continue
         by_pair.setdefault((e.src, e.dst), []).append(e)
 
+    # Track every placed chip center across ALL edges so a chip laid down
+    # for a later edge can nudge itself away from earlier chips.
+    placed_chip_centers: List[Tuple[float, float]] = []
+
     for (src, dst), elist in by_pair.items():
         p0, p1 = pos[src], pos[dst]
         d = p1 - p0
@@ -242,8 +256,9 @@ def render_graph(
         if not grouped:
             continue
 
-        # Place one chip per family, distributed perpendicular to the edge
-        # midpoint. Offsets are symmetric around the line: 1 chip -> 0,
+        # Place one chip per family stacked at the edge midpoint, then
+        # de-collide against every chip placed so far (across all edges).
+        # Offsets are symmetric perpendicular to the edge: 1 chip -> 0,
         # 2 chips -> +/-spacing, 3 chips -> -spacing, 0, +spacing.
         mid = a0 + (a1 - a0) * 0.5
         perp = np.array([-u[1], u[0]])
@@ -256,8 +271,37 @@ def render_graph(
             offsets = [-spacing * 0.5, spacing * 0.5]
         else:
             offsets = [-spacing, 0.0, spacing]
+
         for offset, family in zip(offsets, families_present):
             anchor = mid + perp * offset
+            # Greedy cross-edge de-collision: nudge outward along perp
+            # until no earlier chip is within the min-sep window. Direction
+            # follows the chip's assigned side (from ``offset``); the
+            # centre chip picks its side from the first collision it
+            # encounters so it doesn't just oscillate.
+            push_sign = 1.0 if offset > 0 else (-1.0 if offset < 0 else 0.0)
+            for _ in range(_CHIP_NUDGE_MAX_ITERS):
+                collided = False
+                first_hit_side = 0.0
+                for px, py in placed_chip_centers:
+                    if (
+                        abs(anchor[0] - px) < _CHIP_MIN_SEP_X
+                        and abs(anchor[1] - py) < _CHIP_MIN_SEP_Y
+                    ):
+                        collided = True
+                        proj = float(
+                            (anchor[0] - px) * perp[0]
+                            + (anchor[1] - py) * perp[1]
+                        )
+                        first_hit_side = 1.0 if proj >= 0 else -1.0
+                        break
+                if not collided:
+                    break
+                step_sign = push_sign if push_sign != 0.0 else first_hit_side
+                if step_sign == 0.0:
+                    step_sign = 1.0
+                anchor = anchor + perp * (_CHIP_NUDGE_STEP * step_sign)
+            placed_chip_centers.append((float(anchor[0]), float(anchor[1])))
             style = _STALE_STYLE if is_stale else _FAMILY_STYLE[family]
             ax.text(
                 anchor[0], anchor[1], "\n".join(grouped[family]),

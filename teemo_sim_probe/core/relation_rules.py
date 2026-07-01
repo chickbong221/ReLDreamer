@@ -497,7 +497,6 @@ def object_object_edges(
         the above fires but the pair is in contact above ``eps_force``.
     """
     eps_contact = cfg["contact"]["eps_force"]
-    eps_z = cfg["support"]["eps_z"]
     min_vertical_ratio = cfg["support"].get("min_vertical_force_ratio", 0.5)
 
     aff_set = cfg.get("affordance_set")
@@ -545,12 +544,20 @@ def object_object_edges(
         if force > 0.0:
             vertical_ratio = abs(float(force_vector[2])) / force
             if vertical_ratio >= min_vertical_ratio:
-                pa, pb = _xyz(a), _xyz(b)
-                if pa is not None and pb is not None:
-                    if pa[2] + eps_z < pb[2]:
-                        support_pair = (a, b)
-                    elif pb[2] + eps_z < pa[2]:
-                        support_pair = (b, a)
+                # Direction from the contact force sign, not pose-center dz.
+                # Link-frame origins are usually not at the contact surface
+                # (a drawer's origin sits at the drawer front, not on its
+                # top face), so ``supporter = lower-z endpoint`` flips
+                # whenever a tall/thin supporter carries a short/wide
+                # supported object. ManiSkill's ``get_pairwise_contact_forces``
+                # returns "force on ``a`` due to ``b``" (see
+                # mani_skill/envs/scene.py:789), so:
+                #   fz < 0  -> b's weight pushes a down -> a is supporter
+                #   fz > 0  -> reaction pushes a up     -> b is supporter
+                if float(force_vector[2]) < 0.0:
+                    support_pair = (a, b)
+                else:
+                    support_pair = (b, a)
 
         if support_pair is not None:
             supporter, supported = support_pair
