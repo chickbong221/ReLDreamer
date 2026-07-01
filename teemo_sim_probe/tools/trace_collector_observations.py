@@ -128,6 +128,21 @@ def _make_traced_wrapper_cls():
                 except Exception as e:
                     drawer_force = f"exc:{e!r}"
 
+            # Same query, but against ``actual.active_obj`` (the original,
+            # non-merged bowl). If this returns 5 N while ``drawer_force``
+            # against ``merged.active_obj`` returns 0, the merged runtime
+            # actor is the wrong physics target for contact queries.
+            drawer_force_actual = None
+            if drawer_present and target_ent is not None:
+                try:
+                    vec = self._pairwise_force(
+                        scene, drawer, target_ent, env_idx,
+                    )
+                    if vec is not None:
+                        drawer_force_actual = float(np.linalg.norm(vec))
+                except Exception as e:
+                    drawer_force_actual = f"exc:{e!r}"
+
             body_force = None
             if body_present and physics_target_ent is not None:
                 try:
@@ -138,6 +153,28 @@ def _make_traced_wrapper_cls():
                         body_force = float(np.linalg.norm(vec))
                 except Exception as e:
                     body_force = f"exc:{e!r}"
+
+            body_force_actual = None
+            if body_present and target_ent is not None:
+                try:
+                    vec = self._pairwise_force(
+                        scene, body, target_ent, env_idx,
+                    )
+                    if vec is not None:
+                        body_force_actual = float(np.linalg.norm(vec))
+                except Exception as e:
+                    body_force_actual = f"exc:{e!r}"
+
+            merged_is_target = (
+                physics_target_ent is target_ent
+            )
+            merged_key = (
+                stable_entity_key(physics_target_ent)
+                if physics_target_ent is not None else None
+            )
+            target_raw_key = (
+                stable_entity_key(target_ent) if target_ent is not None else None
+            )
 
             # Now invoke the real observation logic (which will populate
             # _episode_supports / _episode_obj_contacts).
@@ -155,7 +192,12 @@ def _make_traced_wrapper_cls():
                 "bowl_z": None if bowl_xyz is None else float(bowl_xyz[2]),
                 "drawer_z": None if drawer_xyz is None else float(drawer_xyz[2]),
                 "drawer_force": drawer_force,
+                "drawer_force_actual": drawer_force_actual,
                 "body_force": body_force,
+                "body_force_actual": body_force_actual,
+                "merged_is_target": merged_is_target,
+                "merged_key": merged_key,
+                "target_raw_key": target_raw_key,
                 "supports_pairs": supports_snapshot,
                 "interacted_keys": interacted_snapshot,
             })
@@ -343,31 +385,47 @@ def report(success_envs: List[Dict[str, Any]]) -> None:
             print("    [!] no observed ticks recorded before commit -- "
                   "warmup skip covered the entire pre-success window")
         drawer_ever_present = any(r["drawer_in_ebk"] for r in trace)
-        drawer_force_ever_positive = any(
+        drawer_force_merged = any(
             isinstance(r["drawer_force"], float) and r["drawer_force"] > 0.05
             for r in trace
         )
-        body_force_ever_positive = any(
+        drawer_force_actual = any(
+            isinstance(r["drawer_force_actual"], float)
+            and r["drawer_force_actual"] > 0.05
+            for r in trace
+        )
+        body_force_merged = any(
             isinstance(r["body_force"], float) and r["body_force"] > 0.05
             for r in trace
         )
+        body_force_actual = any(
+            isinstance(r["body_force_actual"], float)
+            and r["body_force_actual"] > 0.05
+            for r in trace
+        )
+        keys_seen = {r["merged_key"] for r in trace}
+        raw_keys_seen = {r["target_raw_key"] for r in trace}
+        merged_eq_target = all(r["merged_is_target"] for r in trace)
         print(f"    drawer3 in entity_by_key at ANY tick : {drawer_ever_present}")
-        print(f"    drawer3 force > 0.05 at ANY tick     : "
-              f"{drawer_force_ever_positive}")
-        print(f"    counter body force > 0.05 at ANY tick: "
-              f"{body_force_ever_positive}")
+        print(f"    drawer3 force>0.05 via MERGED bowl   : {drawer_force_merged}")
+        print(f"    drawer3 force>0.05 via ACTUAL bowl   : {drawer_force_actual}")
+        print(f"    body    force>0.05 via MERGED bowl   : {body_force_merged}")
+        print(f"    body    force>0.05 via ACTUAL bowl   : {body_force_actual}")
+        print(f"    merged_key seen across ticks         : {keys_seen}")
+        print(f"    actual raw_key seen across ticks     : {raw_keys_seen}")
+        print(f"    merged is target at ALL ticks        : {merged_eq_target}")
 
         # Print each observed tick.
         for r in trace:
             print(
                 f"      tick={r['episode_tick']:3d} "
-                f"n_ent={r['n_entities']:3d} "
                 f"drawer_in_ebk={r['drawer_in_ebk']!s:5s} "
                 f"body_in_ebk={r['body_in_ebk']!s:5s} "
                 f"bowl_z={r['bowl_z']} drawer_z={r['drawer_z']} "
-                f"|F|drawer-bowl={_fmt_force(r['drawer_force'])} "
-                f"|F|body-bowl={_fmt_force(r['body_force'])} "
-                f"supports_pairs={len(r['supports_pairs'])}"
+                f"|F|drawer-M={_fmt_force(r['drawer_force'])} "
+                f"|F|drawer-A={_fmt_force(r['drawer_force_actual'])} "
+                f"|F|body-M={_fmt_force(r['body_force'])} "
+                f"|F|body-A={_fmt_force(r['body_force_actual'])}"
             )
 
         print(f"    supports_committed  ({len(supports)}):")
