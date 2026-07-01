@@ -56,7 +56,7 @@ whitelists:
 
 selection:
   n_slots: 10                       # hard slot capacity
-  k_persist: -1                     # -1 = keep whitelist members sticky for the whole episode; 0 disables persistence; N>0 = evict after N frames unseen
+  k_persist: 5                      # frames a whitelisted entity stays after last seen; -1 = whole episode, 0 = disabled, N>0 = evict after N frames unseen
 
 profiles:
 

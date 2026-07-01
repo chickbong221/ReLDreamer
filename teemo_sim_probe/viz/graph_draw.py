@@ -256,30 +256,29 @@ def render_graph(
         if not grouped:
             continue
 
-        # Place one chip per family stacked at the edge midpoint, then
-        # de-collide against every chip placed so far (across all edges).
-        # Offsets are symmetric perpendicular to the edge: 1 chip -> 0,
-        # 2 chips -> +/-spacing, 3 chips -> -spacing, 0, +spacing.
+        # Chips stack SCREEN-VERTICALLY at the edge midpoint, ordered
+        # top-to-bottom as physical / spatial / affordance -- regardless
+        # of edge angle. Cross-edge collisions are resolved by nudging
+        # the later chip further up or down, so the stack stays vertical
+        # instead of drifting off to the side.
         mid = a0 + (a1 - a0) * 0.5
-        perp = np.array([-u[1], u[0]])
-        spacing = 0.42
+        spacing = 0.55
         families_present = [f for f in _FAMILY_ORDER if f in grouped]
         n = len(families_present)
         if n == 1:
-            offsets = [0.0]
+            y_offsets = [0.0]
         elif n == 2:
-            offsets = [-spacing * 0.5, spacing * 0.5]
+            y_offsets = [spacing * 0.5, -spacing * 0.5]
         else:
-            offsets = [-spacing, 0.0, spacing]
+            y_offsets = [spacing, 0.0, -spacing]
 
-        for offset, family in zip(offsets, families_present):
-            anchor = mid + perp * offset
-            # Greedy cross-edge de-collision: nudge outward along perp
-            # until no earlier chip is within the min-sep window. Direction
-            # follows the chip's assigned side (from ``offset``); the
-            # centre chip picks its side from the first collision it
-            # encounters so it doesn't just oscillate.
-            push_sign = 1.0 if offset > 0 else (-1.0 if offset < 0 else 0.0)
+        for y_offset, family in zip(y_offsets, families_present):
+            anchor = np.array([float(mid[0]), float(mid[1] + y_offset)])
+            # Direction the chip prefers to escape in when de-colliding:
+            # top-slot pushes up, bottom-slot pushes down. The centre slot
+            # (spatial when three families present) picks its direction
+            # from the first collision it hits so it doesn't oscillate.
+            push_sign = 1.0 if y_offset > 0 else (-1.0 if y_offset < 0 else 0.0)
             for _ in range(_CHIP_NUDGE_MAX_ITERS):
                 collided = False
                 first_hit_side = 0.0
@@ -289,18 +288,14 @@ def render_graph(
                         and abs(anchor[1] - py) < _CHIP_MIN_SEP_Y
                     ):
                         collided = True
-                        proj = float(
-                            (anchor[0] - px) * perp[0]
-                            + (anchor[1] - py) * perp[1]
-                        )
-                        first_hit_side = 1.0 if proj >= 0 else -1.0
+                        first_hit_side = 1.0 if anchor[1] >= py else -1.0
                         break
                 if not collided:
                     break
                 step_sign = push_sign if push_sign != 0.0 else first_hit_side
                 if step_sign == 0.0:
                     step_sign = 1.0
-                anchor = anchor + perp * (_CHIP_NUDGE_STEP * step_sign)
+                anchor = anchor + np.array([0.0, _CHIP_NUDGE_STEP * step_sign])
             placed_chip_centers.append((float(anchor[0]), float(anchor[1])))
             style = _STALE_STYLE if is_stale else _FAMILY_STYLE[family]
             ax.text(
