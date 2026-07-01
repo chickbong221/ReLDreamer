@@ -1,20 +1,8 @@
 {
-  "_schema_version": 3,
+  "_schema_version": 4,
   "subtask": "pick",
   "target": "actor:013_apple",
   "members": {
-    "actor:003_cracker_box": {
-      "roles": [
-        "support"
-      ],
-      "interaction_types": [],
-      "kind": "actor",
-      "name": "env-7_003_cracker_box-0",
-      "support_rollouts": 4,
-      "supports": [
-        "actor:013_apple"
-      ]
-    },
     "actor:013_apple": {
       "roles": [
         "interacted"
@@ -37,27 +25,30 @@
       0.3333333333333333,
       0.6666666666666666
     ],
+    "support-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "contain-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
     "planar-distance": [
-      0.1197295800759922,
-      0.2394591601519844
+      0.009104950882873032,
+      0.018209901765746064
     ],
     "height-offset": [
-      -0.07961092789967855,
-      0.07961092789967855
+      -0.008882462978363035,
+      0.008882462978363035
     ]
   },
   "bin_stats_robust": {
-    "height_offset": 0.23883278369903566,
-    "planar_distance": 0.3591887402279766
+    "planar_distance": 0.027314852648619097,
+    "height_offset": 0.026647388935089108
   },
   "bin_stats_observed": {
-    "height_offset": 0.2621530294418335,
-    "planar_distance": 0.4584422003999924
-  },
-  "compat_norm": {
-    "pos": 0.1,
-    "orient": 1.5707963267948966,
-    "width": 0.04
+    "planar_distance": 0.0393858441209583,
+    "height_offset": 0.0340195894241333
   },
   "_n_successful_rollouts": 30
 }

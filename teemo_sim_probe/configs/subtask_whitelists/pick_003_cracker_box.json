@@ -1,5 +1,5 @@
 {
-  "_schema_version": 3,
+  "_schema_version": 4,
   "subtask": "pick",
   "target": "actor:003_cracker_box",
   "members": {
@@ -13,19 +13,7 @@
       ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 22
-    },
-    "actor:004_sugar_box": {
-      "roles": [
-        "support"
-      ],
-      "interaction_types": [],
-      "kind": "actor",
-      "name": "env-2_004_sugar_box-0",
-      "support_rollouts": 2,
-      "supports": [
-        "actor:003_cracker_box"
-      ]
+      "interaction_rollouts": 25
     }
   },
   "bin_edges": {
@@ -37,27 +25,30 @@
       0.3333333333333333,
       0.6666666666666666
     ],
+    "support-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "contain-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
     "planar-distance": [
-      0.039239401367076994,
-      0.07847880273415399
+      0.03801720495573275,
+      0.0760344099114655
     ],
     "height-offset": [
-      -0.03593728542327881,
-      0.03593728542327881
+      -0.03218843142191569,
+      0.03218843142191569
     ]
   },
   "bin_stats_robust": {
-    "height_offset": 0.10781185626983643,
-    "planar_distance": 0.11771820410123099
+    "planar_distance": 0.11405161486719825,
+    "height_offset": 0.09656529426574707
   },
   "bin_stats_observed": {
-    "height_offset": 0.4618796706199646,
-    "planar_distance": 0.6705152314167976
-  },
-  "compat_norm": {
-    "pos": 0.1,
-    "orient": 1.5707963267948966,
-    "width": 0.04
+    "planar_distance": 0.11893437749713351,
+    "height_offset": 0.11780107021331787
   },
   "_n_successful_rollouts": 30
 }

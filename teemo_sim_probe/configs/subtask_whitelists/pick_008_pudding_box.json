@@ -1,5 +1,5 @@
 {
-  "_schema_version": 3,
+  "_schema_version": 4,
   "subtask": "pick",
   "target": "actor:008_pudding_box",
   "members": {
@@ -9,11 +9,26 @@
       ],
       "interaction_types": [
         "contact",
-        "grasp"
+        "grasp",
+        "support"
       ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 24
+      "interaction_rollouts": 18
+    },
+    "actor:scs-[7]_frl_apartment_wall_cabinet_01": {
+      "roles": [
+        "support"
+      ],
+      "interaction_types": [
+        "support"
+      ],
+      "kind": "actor",
+      "name": "scs-[7]_frl_apartment_wall_cabinet_01-1",
+      "support_rollouts": 1,
+      "supports": [
+        "actor:008_pudding_box"
+      ]
     }
   },
   "bin_edges": {
@@ -25,27 +40,30 @@
       0.3333333333333333,
       0.6666666666666666
     ],
+    "support-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "contain-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
     "planar-distance": [
-      0.0090133484465001,
-      0.0180266968930002
+      0.011907173503433855,
+      0.02381434700686771
     ],
     "height-offset": [
-      -0.009155933062235515,
-      0.009155933062235515
+      -0.01212873458862304,
+      0.01212873458862304
     ]
   },
   "bin_stats_robust": {
-    "height_offset": 0.027467799186706544,
-    "planar_distance": 0.027040045339500298
+    "planar_distance": 0.035721520510301565,
+    "height_offset": 0.03638620376586912
   },
   "bin_stats_observed": {
-    "height_offset": 0.04454779624938965,
-    "planar_distance": 0.04144106330714006
-  },
-  "compat_norm": {
-    "pos": 0.1,
-    "orient": 1.5707963267948966,
-    "width": 0.04
+    "planar_distance": 0.3776726163274814,
+    "height_offset": 0.22020947933197021
   },
   "_n_successful_rollouts": 30
 }

@@ -1,5 +1,5 @@
 {
-  "_schema_version": 3,
+  "_schema_version": 4,
   "subtask": "pick",
   "target": "actor:024_bowl",
   "members": {
@@ -13,19 +13,7 @@
       ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 25
-    },
-    "link:scs-[2,3]_fridge-0/body": {
-      "roles": [
-        "support"
-      ],
-      "interaction_types": [],
-      "kind": "link",
-      "name": "body",
-      "support_rollouts": 5,
-      "supports": [
-        "actor:024_bowl"
-      ]
+      "interaction_rollouts": 24
     }
   },
   "bin_edges": {
@@ -37,27 +25,30 @@
       0.3333333333333333,
       0.6666666666666666
     ],
+    "support-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "contain-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
     "planar-distance": [
-      0.16900980873180438,
-      0.33801961746360876
+      0.023619448620026004,
+      0.04723889724005201
     ],
     "height-offset": [
-      -0.08255743185679118,
-      0.08255743185679118
+      -0.018192708492279053,
+      0.018192708492279053
     ]
   },
   "bin_stats_robust": {
-    "height_offset": 0.24767229557037354,
-    "planar_distance": 0.5070294261954131
+    "planar_distance": 0.07085834586007801,
+    "height_offset": 0.05457812547683716
   },
   "bin_stats_observed": {
-    "height_offset": 0.2746882438659668,
-    "planar_distance": 0.7381604938913707
-  },
-  "compat_norm": {
-    "pos": 0.1,
-    "orient": 1.5707963267948966,
-    "width": 0.04
+    "planar_distance": 0.07303265613633893,
+    "height_offset": 0.06829249858856201
   },
   "_n_successful_rollouts": 30
 }

@@ -1,5 +1,5 @@
 {
-  "_schema_version": 3,
+  "_schema_version": 4,
   "subtask": "pick",
   "target": "actor:009_gelatin_box",
   "members": {
@@ -25,27 +25,30 @@
       0.3333333333333333,
       0.6666666666666666
     ],
+    "support-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "contain-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
     "planar-distance": [
-      0.010110846280903881,
-      0.020221692561807763
+      0.010712498359216886,
+      0.021424996718433773
     ],
     "height-offset": [
-      -0.010659734408060709,
-      0.010659734408060709
+      -0.013845562934875488,
+      0.013845562934875488
     ]
   },
   "bin_stats_robust": {
-    "height_offset": 0.03197920322418213,
-    "planar_distance": 0.030332538842711646
+    "planar_distance": 0.03213749507765066,
+    "height_offset": 0.041536688804626465
   },
   "bin_stats_observed": {
-    "height_offset": 0.04342222213745117,
-    "planar_distance": 0.03483583287311427
-  },
-  "compat_norm": {
-    "pos": 0.1,
-    "orient": 1.5707963267948966,
-    "width": 0.04
+    "planar_distance": 0.03692123949878612,
+    "height_offset": 0.05079221725463867
   },
   "_n_successful_rollouts": 30
 }

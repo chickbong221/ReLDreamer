@@ -1,5 +1,5 @@
 {
-  "_schema_version": 3,
+  "_schema_version": 4,
   "subtask": "pick",
   "target": "actor:010_potted_meat_can",
   "members": {
@@ -9,20 +9,37 @@
       ],
       "interaction_types": [
         "contact",
-        "grasp"
+        "grasp",
+        "support"
       ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 27
+      "interaction_rollouts": 28
     },
-    "link:scs-[6,7]_fridge-0/body": {
+    "link:fridge-0/body": {
       "roles": [
         "support"
       ],
-      "interaction_types": [],
+      "interaction_types": [
+        "support"
+      ],
       "kind": "link",
       "name": "body",
-      "support_rollouts": 9,
+      "support_rollouts": 1,
+      "supports": [
+        "actor:010_potted_meat_can"
+      ]
+    },
+    "link:fridge-0/top_door": {
+      "roles": [
+        "support"
+      ],
+      "interaction_types": [
+        "support"
+      ],
+      "kind": "link",
+      "name": "top_door",
+      "support_rollouts": 2,
       "supports": [
         "actor:010_potted_meat_can"
       ]
@@ -37,27 +54,30 @@
       0.3333333333333333,
       0.6666666666666666
     ],
+    "support-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "contain-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
     "planar-distance": [
-      0.15547948199838826,
-      0.3109589639967765
+      0.016664375657457976,
+      0.03332875131491595
     ],
     "height-offset": [
-      -0.08689447244008382,
-      0.08689447244008382
+      -0.016668836275736492,
+      0.016668836275736492
     ]
   },
   "bin_stats_robust": {
-    "height_offset": 0.26068341732025146,
-    "planar_distance": 0.4664384459951648
+    "planar_distance": 0.04999312697237392,
+    "height_offset": 0.05000650882720947
   },
   "bin_stats_observed": {
-    "height_offset": 0.27559995651245117,
-    "planar_distance": 0.6422245340947458
+    "planar_distance": 0.42008437294984463,
+    "height_offset": 0.2691216468811035
   },
-  "compat_norm": {
-    "pos": 0.1,
-    "orient": 1.5707963267948966,
-    "width": 0.04
-  },
-  "_n_successful_rollouts": 30
+  "_n_successful_rollouts": 31
 }

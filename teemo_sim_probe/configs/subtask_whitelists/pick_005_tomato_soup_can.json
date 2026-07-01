@@ -1,5 +1,5 @@
 {
-  "_schema_version": 3,
+  "_schema_version": 4,
   "subtask": "pick",
   "target": "actor:005_tomato_soup_can",
   "members": {
@@ -13,7 +13,7 @@
       ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 25
+      "interaction_rollouts": 24
     }
   },
   "bin_edges": {
@@ -25,27 +25,30 @@
       0.3333333333333333,
       0.6666666666666666
     ],
+    "support-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "contain-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
     "planar-distance": [
-      0.011918685599346737,
-      0.023837371198693474
+      0.00962870490156964,
+      0.01925740980313928
     ],
     "height-offset": [
-      -0.015058755874633789,
-      0.015058755874633789
+      -0.014809636274973552,
+      0.014809636274973552
     ]
   },
   "bin_stats_robust": {
-    "height_offset": 0.04517626762390137,
-    "planar_distance": 0.03575605679804021
+    "planar_distance": 0.02888611470470892,
+    "height_offset": 0.044428908824920656
   },
   "bin_stats_observed": {
-    "height_offset": 0.05224049091339111,
-    "planar_distance": 0.04370845440844957
-  },
-  "compat_norm": {
-    "pos": 0.1,
-    "orient": 1.5707963267948966,
-    "width": 0.04
+    "planar_distance": 0.03458297690182677,
+    "height_offset": 0.047275543212890625
   },
   "_n_successful_rollouts": 30
 }

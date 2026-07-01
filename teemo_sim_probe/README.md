@@ -163,7 +163,7 @@ huggingface-cli download arth-shukla/mshab_checkpoints \
 #    Pass --no-skip-done after a schema bump to overwrite stale pkls.
 python -m teemo_sim_probe.tools.collect_robot_success_states \
     --ckpt-root mshab_checkpoints/rl \
-    --n-success 30 --num-envs 8
+    --n-success 30 --num-envs 8 --no-skip-done
 
 # 2. Mine the affordance asset.
 python -m teemo_sim_probe.tools.build_affordances \

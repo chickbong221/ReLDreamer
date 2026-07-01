@@ -1,5 +1,5 @@
 {
-  "_schema_version": 3,
+  "_schema_version": 4,
   "subtask": "pick",
   "target": "actor:004_sugar_box",
   "members": {
@@ -13,7 +13,7 @@
       ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 22
+      "interaction_rollouts": 25
     }
   },
   "bin_edges": {
@@ -25,27 +25,30 @@
       0.3333333333333333,
       0.6666666666666666
     ],
+    "support-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "contain-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
     "planar-distance": [
-      0.02222845501418778,
-      0.04445691002837556
+      0.023376055885822592,
+      0.046752111771645184
     ],
     "height-offset": [
-      -0.015635681152343758,
-      0.015635681152343758
+      -0.02014958063761393,
+      0.02014958063761393
     ]
   },
   "bin_stats_robust": {
-    "height_offset": 0.04690704345703127,
-    "planar_distance": 0.06668536504256334
+    "planar_distance": 0.07012816765746778,
+    "height_offset": 0.060448741912841795
   },
   "bin_stats_observed": {
-    "height_offset": 0.05641531944274902,
-    "planar_distance": 0.06874617549710911
-  },
-  "compat_norm": {
-    "pos": 0.1,
-    "orient": 1.5707963267948966,
-    "width": 0.04
+    "planar_distance": 0.07819229644094411,
+    "height_offset": 0.08746170997619629
   },
   "_n_successful_rollouts": 30
 }

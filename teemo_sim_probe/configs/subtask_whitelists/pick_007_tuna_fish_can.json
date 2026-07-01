@@ -1,5 +1,5 @@
 {
-  "_schema_version": 3,
+  "_schema_version": 4,
   "subtask": "pick",
   "target": "actor:007_tuna_fish_can",
   "members": {
@@ -9,20 +9,23 @@
       ],
       "interaction_types": [
         "contact",
-        "grasp"
+        "grasp",
+        "support"
       ],
       "kind": "actor",
       "name": "obj_0",
-      "interaction_rollouts": 24
+      "interaction_rollouts": 26
     },
-    "link:scs-[4,5]_fridge-0/body": {
+    "link:fridge-0/body": {
       "roles": [
         "support"
       ],
-      "interaction_types": [],
+      "interaction_types": [
+        "support"
+      ],
       "kind": "link",
       "name": "body",
-      "support_rollouts": 4,
+      "support_rollouts": 2,
       "supports": [
         "actor:007_tuna_fish_can"
       ]
@@ -37,27 +40,30 @@
       0.3333333333333333,
       0.6666666666666666
     ],
+    "support-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "contain-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
     "planar-distance": [
-      0.13051268653859394,
-      0.26102537307718787
+      0.008375958120270892,
+      0.016751916240541783
     ],
     "height-offset": [
-      -0.08557846546173097,
-      0.08557846546173097
+      -0.011316251754760745,
+      0.011316251754760745
     ]
   },
   "bin_stats_robust": {
-    "height_offset": 0.2567353963851929,
-    "planar_distance": 0.3915380596157818
+    "planar_distance": 0.025127874360812673,
+    "height_offset": 0.03394875526428223
   },
   "bin_stats_observed": {
-    "height_offset": 0.2721139192581177,
-    "planar_distance": 0.6872978429920362
-  },
-  "compat_norm": {
-    "pos": 0.1,
-    "orient": 1.5707963267948966,
-    "width": 0.04
+    "planar_distance": 0.39513142613676233,
+    "height_offset": 0.27776145935058594
   },
   "_n_successful_rollouts": 30
 }
