@@ -59,15 +59,21 @@ class NodeSelector:
         self, fresh: Dict[str, Node], frame: int
     ) -> Dict[str, Node]:
         """Inject frozen snapshots for E_domain entities seen within k_persist
-        frames that are missing from the current frame's visible set."""
-        if self.k_persist <= 0:
+        frames that are missing from the current frame's visible set.
+
+        ``k_persist == 0`` disables persistence entirely; ``k_persist < 0``
+        means "never evict" -- the node stays for the whole episode once seen.
+        """
+        if self.k_persist == 0:
             return fresh
         merged = dict(fresh)
         for ent_id, snap in self._history.items():
             if ent_id in merged:
                 continue
             last = self._last_seen.get(ent_id)
-            if last is None or (frame - last) > self.k_persist:
+            if last is None:
+                continue
+            if self.k_persist >= 0 and (frame - last) > self.k_persist:
                 continue
             merged[ent_id] = Node(
                 node_id=snap.node_id,
@@ -188,7 +194,9 @@ class NodeSelector:
         """Drop history entries whose age exceeds ``k_persist`` frames.
 
         An unselected node is not dropped immediately; only entries unseen
-        longer than the retention window expire.
+        longer than the retention window expire. ``k_persist < 0`` means
+        "never evict within an episode"; ``k_persist == 0`` disables
+        persistence and nothing is retained to evict.
         """
         if self.k_persist <= 0:
             return []

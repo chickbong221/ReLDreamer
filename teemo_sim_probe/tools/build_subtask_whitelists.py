@@ -87,6 +87,7 @@ class _WhitelistBuilder:
     def absorb(self, rollout: Dict[str, Any]) -> None:
         self.rollout_count += 1
         interacted_this_rollout: Set[str] = set()
+        ee_source_keys: Set[str] = set()
         for item in rollout.get("interacted", []) or []:
             if not isinstance(item, dict):
                 continue
@@ -102,8 +103,39 @@ class _WhitelistBuilder:
             if bool(item.get("grasped")):
                 self.interaction_types[key].add(INTERACTION_GRASP)
             interacted_this_rollout.add(key)
+            # Only ee-direct (real ee force or an active grasp) entries can
+            # propagate one-hop through an obj-obj contact below. Entries
+            # already elevated by the collector have max_ee_force=0 and no
+            # grasped flag, so they can't propagate further.
+            if (
+                float(item.get("max_ee_force", 0.0) or 0.0) > 0.0
+                or bool(item.get("grasped"))
+            ):
+                ee_source_keys.add(key)
         for key in interacted_this_rollout:
             self.interaction_count[key] += 1
+
+        # One-hop elevation via obj-obj contact. Mirrors the collector rule;
+        # also a safety net for pkls collected before elevation was wired in.
+        # Elevated entries pick up the ``contact`` interaction type but not
+        # ``grasp``; supporters of elevated entities are admitted below.
+        for ev in rollout.get("obj_contacts", []) or []:
+            if not isinstance(ev, dict):
+                continue
+            a_key = normalize_asset_key(ev.get("a_key"))
+            b_key = normalize_asset_key(ev.get("b_key"))
+            for src, dst in ((a_key, b_key), (b_key, a_key)):
+                if (
+                    src in ee_source_keys
+                    and dst
+                    and dst not in interacted_this_rollout
+                ):
+                    self.roles[dst].add("interacted")
+                    self.interaction_types[dst].add(INTERACTION_CONTACT)
+                    self.kinds.setdefault(dst, "other")
+                    self.names.setdefault(dst, dst)
+                    interacted_this_rollout.add(dst)
+                    self.interaction_count[dst] += 1
 
         # One hop only: supporters are kept only when they directly support an
         # entity that was actually contacted in this successful rollout.  The

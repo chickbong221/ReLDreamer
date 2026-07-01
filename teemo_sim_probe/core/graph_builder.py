@@ -127,9 +127,10 @@ class GraphBuilder:
             camera_override=camera_override,
         )
 
-        # Only currently visible nodes; no persistence merge here.
-        # Instance-level filter on interacted actors drops sibling instances
-        # (e.g. another bowl) that share the canonical category but were never touched.
+        # Whitelist admission first, then episode-scoped persistence: a node
+        # that was ever seen (post-whitelist) and is still admissible stays as
+        # a frozen snapshot for the rest of the episode. Non-whitelisted
+        # entities are never persisted.
         active_target_node_id: Optional[str] = None
         if state.active_obj is not None:
             try:
@@ -139,6 +140,7 @@ class GraphBuilder:
         nodes = self.selector.apply_whitelist(
             nodes, active_target_node_id=active_target_node_id,
         )
+        nodes = self.selector.merge_persistent(nodes, frame)
 
         for nid, n in nodes.items():
             if n.node_type == "ee":

@@ -61,7 +61,7 @@ _SCHEMA_VERSION = 6
 _OBJ_CONTACT_SAMPLE_CAP = 1024
 _EPS_FORCE_DEFAULT = 0.05
 _MIN_VERTICAL_FORCE_RATIO_DEFAULT = 0.5
-_OBSERVE_STRIDE_DEFAULT = 5
+_OBSERVE_STRIDE_DEFAULT = 1
 _DEFAULT_TEMPORAL_K = 5
 # Reject the first few ticks after a reset so we never sample the spawned-but-
 # settling state or, worse, the just-autoreset state of an env whose previous
@@ -480,9 +480,18 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
                     max_ee_force=force, grasped=True,
                 )
 
+        # Obj-obj contact event sampling. Also one-hop elevates the other
+        # endpoint into ``_episode_interacted`` when one side was ee-touched
+        # or grasped, so the supporter pass below picks up its direct
+        # supporter too (e.g. knife -> onion elevates onion; onion's cutting
+        # board is then admitted as a supporter). Runs before the supporter
+        # pass so elevated entities become roots this tick.
+        self._sample_obj_obj_contacts(env_idx, entity_by_key)
+
         # Support evidence may be visible before robot-object contact. Buffer
-        # interacted entities plus the active target; the whitelist miner later
-        # admits only supporters of interacted roots.
+        # interacted entities (including one-hop-elevated) plus the active
+        # target; the whitelist miner later admits only supporters of
+        # interacted roots.
         roots = dict(self._episode_entities[env_idx])
         if physics_target_ent is not None:
             roots[target_key] = physics_target_ent
@@ -512,27 +521,26 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
                 subjects.setdefault(supporter_key, ent)
         self._update_bin_stats(env_idx, subjects, ee_xyz)
 
-        # Obj-obj contact event sampling. Skip pairs already accounted for by
-        # the support pass; the miner uses these to derive ``contact_components``
-        # (anchor + outward normal) per object for obj-obj contact-compatibility.
-        self._sample_obj_obj_contacts(env_idx, entity_by_key)
-
     def _sample_obj_obj_contacts(
         self, env_idx: int, entity_by_key: Dict[str, Any],
     ) -> None:
+        """Record obj-obj contact events and one-hop lift the other endpoint
+        into ``_episode_interacted`` when one side is ee-touched or grasped.
+
+        Elevation runs even when the sample bucket is full so a late-in-episode
+        contact still promotes membership; the bucket cap only bounds the
+        affordance-mining sample pool, not the whitelist role graph.
+        """
         bucket = self._episode_obj_contacts[env_idx]
-        if len(bucket) >= _OBJ_CONTACT_SAMPLE_CAP:
-            return
         support_pairs = {
             frozenset({supporter, supported})
             for (supporter, supported) in self._episode_supports[env_idx]
         }
         scene = self._base_env.scene
+        interacted = self._episode_interacted[env_idx]
         keys = list(entity_by_key.keys())
         for i in range(len(keys)):
             for j in range(i + 1, len(keys)):
-                if len(bucket) >= _OBJ_CONTACT_SAMPLE_CAP:
-                    return
                 a_key, b_key = keys[i], keys[j]
                 if frozenset({a_key, b_key}) in support_pairs:
                     continue
@@ -547,16 +555,35 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
                 b_pose = _entity_pose7(b, env_idx)
                 if a_pose is None or b_pose is None:
                     continue
-                bucket.append({
-                    "a_key": a_key,
-                    "b_key": b_key,
-                    "a_pose": a_pose,
-                    "b_pose": b_pose,
-                    "force_vector": [
-                        float(vector[0]), float(vector[1]), float(vector[2]),
-                    ],
-                    "force": force,
-                })
+                if len(bucket) < _OBJ_CONTACT_SAMPLE_CAP:
+                    bucket.append({
+                        "a_key": a_key,
+                        "b_key": b_key,
+                        "a_pose": a_pose,
+                        "b_pose": b_pose,
+                        "force_vector": [
+                            float(vector[0]), float(vector[1]), float(vector[2]),
+                        ],
+                        "force": force,
+                    })
+                # One-hop elevation. Only entries with real ee force or an
+                # active grasp count as the "source" side, so elevated records
+                # (max_ee_force=0, no grasped flag) can never propagate further.
+                a_is_source = self._is_ee_source(interacted.get(a_key))
+                b_is_source = self._is_ee_source(interacted.get(b_key))
+                if a_is_source and b_key not in interacted:
+                    self._mark_interacted(env_idx, b_key, b, max_ee_force=0.0)
+                if b_is_source and a_key not in interacted:
+                    self._mark_interacted(env_idx, a_key, a, max_ee_force=0.0)
+
+    @staticmethod
+    def _is_ee_source(rec: Optional[Dict[str, Any]]) -> bool:
+        if rec is None:
+            return False
+        return (
+            float(rec.get("max_ee_force", 0.0)) > 0.0
+            or bool(rec.get("grasped"))
+        )
 
     def _observe_direct_supporters(
         self,

@@ -185,6 +185,46 @@ python -m teemo_sim_probe.run_mshab_probe \
 python -m unittest discover teemo_sim_probe/tests
 ```
 
+### Quick test loop: pick/024_bowl only
+
+Use this to iterate on the collector without re-running every object. The
+`--obj` filter restricts collection to one YCB id, so the pkl only covers
+024_bowl. Whitelist mining is scoped to whatever pkls exist under the
+success-states dir, so it will emit `pick_024_bowl.json` and skip the rest.
+
+```bash
+export MS_ASSET_DIR=/root/.maniskill
+
+# Wipe the stale 024_bowl pkl only, so unrelated pkls are preserved.
+rm -f "$MS_ASSET_DIR/data/robot_success_states/fetch/pick/024_bowl.pkl"
+
+# 1. Collect just the bowl.
+python -m teemo_sim_probe.tools.collect_robot_success_states \
+    --ckpt-root mshab_checkpoints/rl \
+    --subtask pick --obj 024_bowl \
+    --n-success 30 --num-envs 8 --no-skip-done
+
+# 2. Sanity-check what the collector actually wrote.
+python -m teemo_sim_probe.tools.dump_bowl_supports
+
+# 3. Re-mine whitelists (also re-emits pick_024_bowl.json).
+python -m teemo_sim_probe.tools.build_subtask_whitelists \
+    --success-states-dir "$MS_ASSET_DIR/data/robot_success_states" \
+    --out-dir teemo_sim_probe/configs/subtask_whitelists
+
+# 4. Optional: re-mine affordances if you also want the bowl's support/contact
+#    components refreshed.
+python -m teemo_sim_probe.tools.build_affordances \
+    --success-states-dir "$MS_ASSET_DIR/data/robot_success_states" \
+    --robot fetch --subtask pick \
+    --out teemo_sim_probe/configs/affordances.json
+
+# 5. Run the probe against the bowl checkpoint.
+python -m teemo_sim_probe.run_mshab_probe \
+    --ckpt-dir mshab_checkpoints/rl/set_table/pick/024_bowl \
+    --steps 200 --save-every 2 --video
+```
+
 After a schema bump (currently rollout `v6` / whitelist `v4` / affordances
 `v3`), re-run steps 1 → 2 → 3. The runtime fails loud at episode start when
 no matching whitelist exists for `(subtask, target)`.
