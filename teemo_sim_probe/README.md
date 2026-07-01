@@ -161,8 +161,10 @@ huggingface-cli download arth-shukla/mshab_checkpoints \
 
 # 1. Collect successful rollouts (one .pkl per object).
 #    Pass --no-skip-done after a schema bump to overwrite stale pkls.
+#    --subtask/--obj scopes to pick/024_bowl; drop them to collect all objects.
 python -m teemo_sim_probe.tools.collect_robot_success_states \
     --ckpt-root mshab_checkpoints/rl \
+    --subtask pick --obj 024_bowl \
     --n-success 30 --num-envs 8 --no-skip-done
 
 # 2. Mine the affordance asset.
