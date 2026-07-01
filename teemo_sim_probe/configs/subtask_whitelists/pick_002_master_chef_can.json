@@ -9,26 +9,11 @@
       ],
       "interaction_types": [
         "contact",
-        "grasp",
-        "support"
+        "grasp"
       ],
       "kind": "actor",
       "name": "obj_0",
       "interaction_rollouts": 30
-    },
-    "link:chestOfDrawers_01-0/drawer_topR": {
-      "roles": [
-        "support"
-      ],
-      "interaction_types": [
-        "support"
-      ],
-      "kind": "link",
-      "name": "drawer_topR",
-      "support_rollouts": 1,
-      "supports": [
-        "actor:002_master_chef_can"
-      ]
     }
   },
   "bin_edges": {
@@ -49,37 +34,37 @@
       0.6666666666666666
     ],
     "planar-distance": [
-      0.17780775977083385,
-      0.3556155195416677
+      0.23865396728862723,
+      0.47730793457725446
     ],
     "height-offset": [
-      -0.05720008412996928,
-      0.05720008412996928
+      -0.05939135551452642,
+      0.05939135551452642
     ],
     "planar-distance-change": [
-      -0.434068955100828,
-      -0.14468965170027598,
-      0.14468965170027598,
-      0.434068955100828
+      -0.5545518281178751,
+      -0.18485060937262504,
+      0.18485060937262504,
+      0.5545518281178751
     ],
     "height-offset-change": [
-      -0.13523903310298918,
-      -0.04507967770099639,
-      0.04507967770099639,
-      0.13523903310298918
+      -0.15121707558631897,
+      -0.05040569186210632,
+      0.05040569186210632,
+      0.15121707558631897
     ]
   },
   "bin_stats_robust": {
-    "planar_distance": 0.5334232793125016,
-    "height_offset": 0.17160025238990784,
-    "planar_distance_change": 0.72344825850138,
-    "height_offset_change": 0.22539838850498195
+    "planar_distance": 0.7159619018658817,
+    "height_offset": 0.17817406654357926,
+    "planar_distance_change": 0.9242530468631251,
+    "height_offset_change": 0.2520284593105316
   },
   "bin_stats_observed": {
-    "planar_distance": 1.187591546540332,
-    "height_offset": 0.4010501652956009,
-    "planar_distance_change": 1.1700330195242898,
-    "height_offset_change": 0.34981007874011993
+    "planar_distance": 1.2370302992015545,
+    "height_offset": 0.35000336170196533,
+    "planar_distance_change": 1.1992895881976016,
+    "height_offset_change": 0.3232365846633911
   },
   "_n_successful_rollouts": 30
 }
