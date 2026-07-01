@@ -23,7 +23,8 @@
       "Bash(python3 -c \"import elements; import elements.when; import inspect; print\\(inspect.getsource\\(elements.when.Ratio\\)\\)\")",
       "Bash(python3 -c \"import elements; print\\(elements.__file__\\)\")",
       "Bash(grep -E \"\\\\.\\(md|txt|yaml|yml|toml|json\\)$\")",
-      "Bash(xargs cat *)"
+      "Bash(xargs cat *)",
+      "Bash(git *)"
     ]
   }
 }

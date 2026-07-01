@@ -217,10 +217,11 @@ class _WhitelistBuilder:
             members[key] = entry
 
         # Surface the missing-supporter regression loudly. A pick target that
-        # is interacted across every rollout but has zero supporters almost
-        # always means the receptacle is resting-contact-only and the force-
-        # based detector silenced it; the geometric fallback in the collector
-        # should have caught it.
+        # is interacted across every rollout but has zero supporters usually
+        # means the collector never observed the resting contact before the
+        # arm broke it -- widen the pre-grasp observation window (or lower
+        # _RESET_WARMUP_TICKS / observe_stride) so at least one tick lands
+        # while the target is still on its receptacle.
         has_supporter = any("support" in roles for roles in self.roles.values())
         if not has_supporter:
             interacted_targets = [
@@ -229,8 +230,9 @@ class _WhitelistBuilder:
             for k in interacted_targets:
                 log.warning(
                     "subtask=%s target=%s: '%s' is interacted across %d "
-                    "rollouts but no supporters were recorded; check the "
-                    "collector's geometric supporter detection",
+                    "rollouts but no supporters were recorded; the collector "
+                    "likely missed the resting contact window before the arm "
+                    "broke it",
                     self.subtask, self.target, k,
                     self.interaction_count.get(k, 0),
                 )

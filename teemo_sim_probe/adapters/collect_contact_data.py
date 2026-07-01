@@ -70,17 +70,6 @@ _RESET_WARMUP_TICKS = 3
 # Per-rollout sample buffer cap (per relation, per env). The miner takes a
 # robust quantile across these.
 _BIN_SAMPLE_CAP = 4096
-# Geometric supporter detection (used when PhysX GPU sleeping contacts hide
-# the resting bowl-on-drawer pair from pairwise force queries).
-#
-# SAPIEN articulation link frames sit at joint origins, not at visual centers,
-# so an actual supporter's center can be slightly *above* the supported
-# entity's center (negative dz here). We absorb that with a small negative
-# lower bound; the xy_gap is the strongest "directly under" signal so we
-# tighten that threshold and rank by it first.
-_GEOM_SUPPORT_DZ_LO = -0.15    # supporter-center may sit up to 15 cm above target center
-_GEOM_SUPPORT_DZ_HI = 0.5      # ... or up to 50 cm below
-_GEOM_SUPPORT_MAX_XY = 0.4     # require tight horizontal overlap
 
 
 def _to_np(x) -> np.ndarray:
@@ -578,107 +567,40 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
     ) -> None:
         supported_xyz = _entity_xyz(supported, env_idx)
         scene = self._base_env.scene
-        # Track the best geometric candidate so we register at most one
-        # synthetic supporter per (supported, rollout) when the force path
-        # fails. PhysX GPU silences pairwise forces on resting contacts, which
-        # is why a bowl sitting on a drawer at episode start would otherwise
-        # never be admitted as a supporter.
-        best_geom: Optional[Tuple[float, float, str, Any]] = None
         for supporter_key, supporter in candidates.items():
             if supporter_key == supported_key:
                 continue
-            supporter_xyz = _entity_xyz(supporter, env_idx)
             vector = self._pairwise_force(scene, supporter, supported, env_idx)
-            force = (
-                float(np.linalg.norm(vector)) if vector is not None else 0.0
-            )
-
-            if force > self.eps_force:
-                vertical_ratio = (
-                    abs(float(vector[2])) / force if force > 0 else 0.0
-                )
-                vertical_support = bool(
-                    vertical_ratio >= self.min_vertical_force_ratio
-                )
-                dz = (
-                    float(supported_xyz[2] - supporter_xyz[2])
-                    if (
-                        supporter_xyz is not None
-                        and supported_xyz is not None
-                    )
-                    else None
-                )
-                rec = {
-                    "supporter": _record(supporter, key=supporter_key),
-                    "supported_key": supported_key,
-                    "force": force,
-                    "vertical_force_ratio": vertical_ratio,
-                    "dz": dz,
-                    "vertical_support": vertical_support,
-                    "evidence": "force",
-                    "supporter_pose": _entity_pose7(supporter, env_idx),
-                    "supported_pose": _entity_pose7(supported, env_idx),
-                    "force_vector": [
-                        float(vector[0]), float(vector[1]), float(vector[2]),
-                    ],
-                }
-                self._merge_support(env_idx, supporter_key, supported_key, rec)
+            if vector is None:
                 continue
-
-            # Geometric fallback: candidate with strong xy overlap whose center
-            # is near the supported entity's center vertically. Used only when
-            # no force-based supporter was recorded for this (supported,
-            # rollout).
-            if supporter_xyz is None or supported_xyz is None:
+            force = float(np.linalg.norm(vector))
+            if force <= self.eps_force:
                 continue
-            dz = float(supported_xyz[2] - supporter_xyz[2])
-            xy_gap = float(
-                np.linalg.norm(supported_xyz[:2] - supporter_xyz[:2])
+            supporter_xyz = _entity_xyz(supporter, env_idx)
+            vertical_ratio = abs(float(vector[2])) / force
+            vertical_support = bool(
+                vertical_ratio >= self.min_vertical_force_ratio
             )
-            if (
-                _GEOM_SUPPORT_DZ_LO <= dz <= _GEOM_SUPPORT_DZ_HI
-                and xy_gap <= _GEOM_SUPPORT_MAX_XY
-            ):
-                # xy overlap is the dominant "directly under" signal -- link
-                # frames sit at joint origins so dz on its own is noisy.
-                rank = (xy_gap, abs(dz))
-                if best_geom is None or rank < (best_geom[0], best_geom[1]):
-                    best_geom = (xy_gap, abs(dz), supporter_key, supporter)
-
-        if best_geom is None:
-            return
-        xy_gap, abs_dz, supporter_key, supporter = best_geom
-        supporter_xyz = _entity_xyz(supporter, env_idx)
-        dz = (
-            float(supported_xyz[2] - supporter_xyz[2])
-            if supporter_xyz is not None and supported_xyz is not None
-            else None
-        )
-        # Only register the geometric candidate if no force-based supporter
-        # was already found for this supported root in any prior tick of the
-        # rollout. Real contact evidence always wins over the heuristic.
-        has_force_supporter = any(
-            other_supported == supported_key
-            and self._episode_supports[env_idx][(other_supporter, other_supported)]
-            .get("evidence") == "force"
-            for (other_supporter, other_supported) in self._episode_supports[env_idx]
-        )
-        if has_force_supporter:
-            return
-        rec = {
-            "supporter": _record(supporter, key=supporter_key),
-            "supported_key": supported_key,
-            "force": 0.0,
-            "vertical_force_ratio": 1.0,
-            "dz": dz,
-            "vertical_support": True,
-            "evidence": "geometric",
-            "geom_xy_gap": xy_gap,
-            "supporter_pose": _entity_pose7(supporter, env_idx),
-            "supported_pose": _entity_pose7(supported, env_idx),
-            "force_vector": [0.0, 0.0, 0.0],
-        }
-        self._merge_support(env_idx, supporter_key, supported_key, rec)
+            dz = (
+                float(supported_xyz[2] - supporter_xyz[2])
+                if supporter_xyz is not None and supported_xyz is not None
+                else None
+            )
+            rec = {
+                "supporter": _record(supporter, key=supporter_key),
+                "supported_key": supported_key,
+                "force": force,
+                "vertical_force_ratio": vertical_ratio,
+                "dz": dz,
+                "vertical_support": vertical_support,
+                "evidence": "force",
+                "supporter_pose": _entity_pose7(supporter, env_idx),
+                "supported_pose": _entity_pose7(supported, env_idx),
+                "force_vector": [
+                    float(vector[0]), float(vector[1]), float(vector[2]),
+                ],
+            }
+            self._merge_support(env_idx, supporter_key, supported_key, rec)
 
     def _merge_support(
         self,
@@ -692,15 +614,11 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         if prior is None:
             self._episode_supports[env_idx][pair] = rec
             return
-        # Force-based evidence outranks geometric. Within the same evidence
-        # tier, prefer vertical-support, then larger force.
         prior_rank = (
-            0 if prior.get("evidence") == "geometric" else 1,
             bool(prior.get("vertical_support", False)),
             float(prior.get("force", 0.0)),
         )
         new_rank = (
-            0 if rec.get("evidence") == "geometric" else 1,
             bool(rec.get("vertical_support", False)),
             float(rec.get("force", 0.0)),
         )
