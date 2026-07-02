@@ -1,0 +1,80 @@
+{
+  "_schema_version": 4,
+  "subtask": "close",
+  "target": "link:articulation-0/top_door",
+  "members": {
+    "link:articulation-0/top_door": {
+      "roles": [
+        "interacted"
+      ],
+      "interaction_types": [
+        "contact"
+      ],
+      "kind": "link",
+      "name": "top_door",
+      "interaction_rollouts": 27
+    },
+    "link:fridge-0/top_door": {
+      "roles": [
+        "interacted"
+      ],
+      "interaction_types": [
+        "contact"
+      ],
+      "kind": "link",
+      "name": "top_door",
+      "interaction_rollouts": 3
+    }
+  },
+  "bin_edges": {
+    "grasp-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "contact-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "support-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "contain-compatibility": [
+      0.3333333333333333,
+      0.6666666666666666
+    ],
+    "planar-distance": [
+      0.2584029734709247,
+      0.5168059469418494
+    ],
+    "height-offset": [
+      -0.08440156777699788,
+      0.08440156777699788
+    ],
+    "planar-distance-change": [
+      -0.09600690358421174,
+      -0.03200230119473725,
+      0.03200230119473725,
+      0.09600690358421174
+    ],
+    "height-offset-change": [
+      -0.03143895864486694,
+      -0.010479652881622314,
+      0.010479652881622314,
+      0.03143895864486694
+    ]
+  },
+  "bin_stats_robust": {
+    "planar_distance": 0.7752089204127741,
+    "height_offset": 0.25320470333099365,
+    "planar_distance_change": 0.16001150597368624,
+    "height_offset_change": 0.05239826440811157
+  },
+  "bin_stats_observed": {
+    "planar_distance": 0.9560480420649323,
+    "height_offset": 0.3074479103088379,
+    "planar_distance_change": 0.45958671420112557,
+    "height_offset_change": 0.10970520973205566
+  },
+  "_n_successful_rollouts": 30
+}

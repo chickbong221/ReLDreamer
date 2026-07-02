@@ -1,7 +1,7 @@
 {
   "_schema_version": 4,
-  "subtask": "pick",
-  "target": "actor:024_bowl",
+  "subtask": "open",
+  "target": "link:articulation-0/drawer3",
   "members": {
     "actor:007_tuna_fish_can": {
       "roles": [
@@ -31,29 +31,20 @@
         "link:kitchen_counter-0/body"
       ]
     },
-    "actor:024_bowl": {
+    "link:articulation-0/drawer3": {
       "roles": [
-        "interacted",
-        "support"
+        "interacted"
       ],
       "interaction_types": [
-        "contact",
-        "grasp",
-        "support"
+        "contact"
       ],
-      "kind": "actor",
-      "name": "obj_0",
-      "interaction_rollouts": 30,
-      "support_rollouts": 2,
-      "supports": [
-        "link:kitchen_counter-0/body",
-        "link:kitchen_counter-0/drawer3"
-      ]
+      "kind": "link",
+      "name": "drawer3",
+      "interaction_rollouts": 26
     },
     "link:kitchen_counter-0/body": {
       "roles": [
-        "interacted",
-        "support"
+        "interacted"
       ],
       "interaction_types": [
         "contact",
@@ -61,28 +52,18 @@
       ],
       "kind": "link",
       "name": "body",
-      "interaction_rollouts": 4,
-      "support_rollouts": 1,
-      "supports": [
-        "actor:024_bowl"
-      ]
+      "interaction_rollouts": 4
     },
     "link:kitchen_counter-0/drawer3": {
       "roles": [
-        "interacted",
-        "support"
+        "interacted"
       ],
       "interaction_types": [
-        "contact",
-        "support"
+        "contact"
       ],
       "kind": "link",
       "name": "drawer3",
-      "interaction_rollouts": 1,
-      "support_rollouts": 4,
-      "supports": [
-        "actor:024_bowl"
-      ]
+      "interaction_rollouts": 4
     }
   },
   "bin_edges": {
@@ -103,37 +84,37 @@
       0.6666666666666666
     ],
     "planar-distance": [
-      0.2514271809014003,
-      0.5028543618028006
+      0.19744176350485557,
+      0.39488352700971113
     ],
     "height-offset": [
-      -0.21008428732554119,
-      0.21008428732554119
+      -0.2372284491856893,
+      0.2372284491856893
     ],
     "planar-distance-change": [
-      -0.1880598389986487,
-      -0.06268661299954957,
-      0.06268661299954957,
-      0.1880598389986487
+      -0.11303417390827027,
+      -0.037678057969423424,
+      0.037678057969423424,
+      0.11303417390827027
     ],
     "height-offset-change": [
-      -0.1667129516601563,
-      -0.05557098388671876,
-      0.05557098388671876,
-      0.1667129516601563
+      -0.15617526412010202,
+      -0.05205842137336734,
+      0.05205842137336734,
+      0.15617526412010202
     ]
   },
   "bin_stats_robust": {
-    "planar_distance": 0.754281542704201,
-    "height_offset": 0.6302528619766236,
-    "planar_distance_change": 0.31343306499774787,
-    "height_offset_change": 0.2778549194335938
+    "planar_distance": 0.5923252905145667,
+    "height_offset": 0.7116853475570679,
+    "planar_distance_change": 0.18839028984711712,
+    "height_offset_change": 0.2602921068668367
   },
   "bin_stats_observed": {
-    "planar_distance": 1.3304426294333735,
-    "height_offset": 0.7719287872314453,
-    "planar_distance_change": 0.3566036830258416,
-    "height_offset_change": 0.32312971353530884
+    "planar_distance": 0.9496449851855648,
+    "height_offset": 0.777645468711853,
+    "planar_distance_change": 0.34881687292403296,
+    "height_offset_change": 0.32126808166503906
   },
   "_n_successful_rollouts": 30
 }
