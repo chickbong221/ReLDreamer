@@ -1,0 +1,244 @@
+{
+  "frame": 3,
+  "env_id": "PickCube-v1",
+  "camera": "base_camera",
+  "nodes": [
+    {
+      "node_id": "ee",
+      "node_type": "ee",
+      "name": "end_effector",
+      "visible": true,
+      "segmentation_ids": [
+        12,
+        14
+      ],
+      "pixel_area": 48,
+      "pose_world": [
+        -0.02081775665283203,
+        0.07024627178907394,
+        0.1801673173904419,
+        -0.010992863215506077,
+        0.9972752928733826,
+        0.07154210656881332,
+        -0.014242125675082207
+      ],
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "attributes": {}
+    },
+    {
+      "node_id": "actor:table-workspace",
+      "node_type": "object",
+      "name": "table-workspace",
+      "visible": true,
+      "segmentation_ids": [
+        16
+      ],
+      "pixel_area": 42994,
+      "pose_world": [
+        -0.11999999731779099,
+        0.0,
+        -0.9196429252624512,
+        0.7071067690849304,
+        0.0,
+        0.0,
+        0.7071067690849304
+      ],
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "attributes": {
+        "is_actor": true,
+        "is_link": false,
+        "is_articulation_link": false
+      }
+    },
+    {
+      "node_id": "actor:ground",
+      "node_type": "object",
+      "name": "ground",
+      "visible": true,
+      "segmentation_ids": [
+        17
+      ],
+      "pixel_area": 15468,
+      "pose_world": [
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "attributes": {
+        "is_actor": true,
+        "is_link": false,
+        "is_articulation_link": false
+      }
+    },
+    {
+      "node_id": "actor:cube",
+      "node_type": "object",
+      "name": "cube",
+      "visible": true,
+      "segmentation_ids": [
+        18
+      ],
+      "pixel_area": 91,
+      "pose_world": [
+        -0.020144212990999222,
+        0.003273490583524108,
+        0.01999993436038494,
+        0.09772322326898575,
+        9.51082165556727e-06,
+        1.0648568604665343e-06,
+        0.9952136278152466
+      ],
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "attributes": {
+        "is_actor": true,
+        "is_link": false,
+        "is_articulation_link": false
+      }
+    }
+  ],
+  "edges": [
+    {
+      "src": "ee",
+      "dst": "actor:table-workspace",
+      "relation": "planar-distance",
+      "label": "medium",
+      "raw_value": 0.12153869985970017,
+      "temporal": false,
+      "masked": false
+    },
+    {
+      "src": "ee",
+      "dst": "actor:table-workspace",
+      "relation": "height-offset",
+      "label": "far-above",
+      "raw_value": 1.099810242652893,
+      "temporal": false,
+      "masked": false
+    },
+    {
+      "src": "ee",
+      "dst": "actor:table-workspace",
+      "relation": "contact",
+      "label": "no-contact",
+      "raw_value": 0.0,
+      "temporal": false,
+      "masked": true
+    },
+    {
+      "src": "ee",
+      "dst": "actor:ground",
+      "relation": "planar-distance",
+      "label": "near",
+      "raw_value": 0.07326607463431474,
+      "temporal": false,
+      "masked": false
+    },
+    {
+      "src": "ee",
+      "dst": "actor:ground",
+      "relation": "height-offset",
+      "label": "far-above",
+      "raw_value": 0.1801673173904419,
+      "temporal": false,
+      "masked": false
+    },
+    {
+      "src": "ee",
+      "dst": "actor:ground",
+      "relation": "contact",
+      "label": "no-contact",
+      "raw_value": 0.0,
+      "temporal": false,
+      "masked": true
+    },
+    {
+      "src": "ee",
+      "dst": "actor:cube",
+      "relation": "planar-distance",
+      "label": "near",
+      "raw_value": 0.06697616802617812,
+      "temporal": false,
+      "masked": false
+    },
+    {
+      "src": "ee",
+      "dst": "actor:cube",
+      "relation": "height-offset",
+      "label": "far-above",
+      "raw_value": 0.16016738303005695,
+      "temporal": false,
+      "masked": false
+    },
+    {
+      "src": "ee",
+      "dst": "actor:cube",
+      "relation": "contact",
+      "label": "no-contact",
+      "raw_value": 0.0,
+      "temporal": false,
+      "masked": true
+    },
+    {
+      "src": "ee",
+      "dst": "actor:cube",
+      "relation": "grasp",
+      "label": "no-grasp",
+      "raw_value": 0.0,
+      "temporal": false,
+      "masked": true
+    },
+    {
+      "src": "actor:table-workspace",
+      "dst": "actor:ground",
+      "relation": "contact",
+      "label": "no-contact",
+      "raw_value": 0.0,
+      "temporal": false,
+      "masked": true
+    },
+    {
+      "src": "actor:table-workspace",
+      "dst": "actor:cube",
+      "relation": "contact",
+      "label": "contact",
+      "raw_value": 0.6274712085723877,
+      "temporal": false,
+      "masked": false
+    },
+    {
+      "src": "actor:cube",
+      "dst": "actor:table-workspace",
+      "relation": "support",
+      "label": "support",
+      "raw_value": 0.6274712085723877,
+      "temporal": false,
+      "masked": false
+    },
+    {
+      "src": "actor:ground",
+      "dst": "actor:cube",
+      "relation": "contact",
+      "label": "no-contact",
+      "raw_value": 0.0,
+      "temporal": false,
+      "masked": true
+    }
+  ],
+  "meta": {
+    "is_mshab": false,
+    "active_subtask": null
+  }
+}

@@ -1,0 +1,370 @@
+{
+  "frame": 48,
+  "env_id": "PickCube-v1",
+  "camera": "base_camera",
+  "nodes": [
+    {
+      "node_id": "ee",
+      "node_type": "ee",
+      "name": "end_effector",
+      "visible": true,
+      "segmentation_ids": [
+        12,
+        14
+      ],
+      "pixel_area": 84,
+      "pose_world": [
+        0.0534139946103096,
+        0.07952794432640076,
+        0.21120427548885345,
+        -0.014744624495506287,
+        0.9948452115058899,
+        -0.005669803824275732,
+        0.10016701370477676
+      ],
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "attributes": {}
+    },
+    {
+      "node_id": "actor:table-workspace",
+      "node_type": "object",
+      "name": "table-workspace",
+      "visible": true,
+      "segmentation_ids": [
+        16
+      ],
+      "pixel_area": 42089,
+      "pose_world": [
+        -0.11999999731779099,
+        0.0,
+        -0.9196429252624512,
+        0.7071067690849304,
+        0.0,
+        0.0,
+        0.7071067690849304
+      ],
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "attributes": {
+        "is_actor": true,
+        "is_link": false,
+        "is_articulation_link": false
+      }
+    },
+    {
+      "node_id": "actor:ground",
+      "node_type": "object",
+      "name": "ground",
+      "visible": true,
+      "segmentation_ids": [
+        17
+      ],
+      "pixel_area": 14886,
+      "pose_world": [
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "attributes": {
+        "is_actor": true,
+        "is_link": false,
+        "is_articulation_link": false
+      }
+    },
+    {
+      "node_id": "actor:cube",
+      "node_type": "object",
+      "name": "cube",
+      "visible": true,
+      "segmentation_ids": [
+        18
+      ],
+      "pixel_area": 91,
+      "pose_world": [
+        -0.020144211128354073,
+        0.003273489885032177,
+        0.01999993436038494,
+        0.09772323071956635,
+        9.50695903156884e-06,
+        1.0610085610096576e-06,
+        0.9952136278152466
+      ],
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "attributes": {
+        "is_actor": true,
+        "is_link": false,
+        "is_articulation_link": false
+      }
+    }
+  ],
+  "edges": [
+    {
+      "src": "ee",
+      "dst": "actor:table-workspace",
+      "relation": "planar-distance",
+      "label": "medium",
+      "raw_value": 0.19078025716835176,
+      "temporal": false,
+      "masked": false
+    },
+    {
+      "src": "ee",
+      "dst": "actor:table-workspace",
+      "relation": "height-offset",
+      "label": "far-above",
+      "raw_value": 1.1308472007513046,
+      "temporal": false,
+      "masked": false
+    },
+    {
+      "src": "ee",
+      "dst": "actor:table-workspace",
+      "relation": "contact",
+      "label": "no-contact",
+      "raw_value": 0.0,
+      "temporal": false,
+      "masked": true
+    },
+    {
+      "src": "ee",
+      "dst": "actor:ground",
+      "relation": "planar-distance",
+      "label": "medium",
+      "raw_value": 0.09580056758189526,
+      "temporal": false,
+      "masked": false
+    },
+    {
+      "src": "ee",
+      "dst": "actor:ground",
+      "relation": "height-offset",
+      "label": "far-above",
+      "raw_value": 0.21120427548885345,
+      "temporal": false,
+      "masked": false
+    },
+    {
+      "src": "ee",
+      "dst": "actor:ground",
+      "relation": "contact",
+      "label": "no-contact",
+      "raw_value": 0.0,
+      "temporal": false,
+      "masked": true
+    },
+    {
+      "src": "ee",
+      "dst": "actor:cube",
+      "relation": "planar-distance",
+      "label": "medium",
+      "raw_value": 0.10595070294076547,
+      "temporal": false,
+      "masked": false
+    },
+    {
+      "src": "ee",
+      "dst": "actor:cube",
+      "relation": "height-offset",
+      "label": "far-above",
+      "raw_value": 0.1912043411284685,
+      "temporal": false,
+      "masked": false
+    },
+    {
+      "src": "ee",
+      "dst": "actor:cube",
+      "relation": "contact",
+      "label": "no-contact",
+      "raw_value": 0.0,
+      "temporal": false,
+      "masked": true
+    },
+    {
+      "src": "ee",
+      "dst": "actor:cube",
+      "relation": "grasp",
+      "label": "no-grasp",
+      "raw_value": 0.0,
+      "temporal": false,
+      "masked": true
+    },
+    {
+      "src": "actor:table-workspace",
+      "dst": "actor:ground",
+      "relation": "contact",
+      "label": "no-contact",
+      "raw_value": 0.0,
+      "temporal": false,
+      "masked": true
+    },
+    {
+      "src": "actor:table-workspace",
+      "dst": "actor:cube",
+      "relation": "contact",
+      "label": "contact",
+      "raw_value": 0.627471387386322,
+      "temporal": false,
+      "masked": false
+    },
+    {
+      "src": "actor:cube",
+      "dst": "actor:table-workspace",
+      "relation": "support",
+      "label": "support",
+      "raw_value": 0.627471387386322,
+      "temporal": false,
+      "masked": false
+    },
+    {
+      "src": "actor:ground",
+      "dst": "actor:cube",
+      "relation": "contact",
+      "label": "no-contact",
+      "raw_value": 0.0,
+      "temporal": false,
+      "masked": true
+    },
+    {
+      "src": "ee",
+      "dst": "actor:table-workspace",
+      "relation": "planar_distance_change",
+      "label": "stable-distance",
+      "raw_value": 0.005456471718485151,
+      "temporal": true,
+      "masked": false
+    },
+    {
+      "src": "ee",
+      "dst": "actor:table-workspace",
+      "relation": "height_offset_change",
+      "label": "move-up-slow",
+      "raw_value": 0.020106837153434753,
+      "temporal": true,
+      "masked": false
+    },
+    {
+      "src": "ee",
+      "dst": "actor:ground",
+      "relation": "planar_distance_change",
+      "label": "recede-slow",
+      "raw_value": 0.02557989503701677,
+      "temporal": true,
+      "masked": false
+    },
+    {
+      "src": "ee",
+      "dst": "actor:ground",
+      "relation": "height_offset_change",
+      "label": "move-up-slow",
+      "raw_value": 0.020106837153434753,
+      "temporal": true,
+      "masked": false
+    },
+    {
+      "src": "ee",
+      "dst": "actor:cube",
+      "relation": "planar_distance_change",
+      "label": "recede-slow",
+      "raw_value": 0.01843515550049042,
+      "temporal": true,
+      "masked": false
+    },
+    {
+      "src": "ee",
+      "dst": "actor:cube",
+      "relation": "height_offset_change",
+      "label": "move-up-slow",
+      "raw_value": 0.020106757059693336,
+      "temporal": true,
+      "masked": false
+    },
+    {
+      "src": "ee",
+      "dst": "actor:table-workspace",
+      "relation": "contact-transition",
+      "label": "maintain-no-contact",
+      "raw_value": 0.0,
+      "temporal": true,
+      "masked": true
+    },
+    {
+      "src": "ee",
+      "dst": "actor:ground",
+      "relation": "contact-transition",
+      "label": "maintain-no-contact",
+      "raw_value": 0.0,
+      "temporal": true,
+      "masked": true
+    },
+    {
+      "src": "ee",
+      "dst": "actor:cube",
+      "relation": "contact-transition",
+      "label": "maintain-no-contact",
+      "raw_value": 0.0,
+      "temporal": true,
+      "masked": true
+    },
+    {
+      "src": "ee",
+      "dst": "actor:cube",
+      "relation": "grasp-transition",
+      "label": "maintain-no-grasp",
+      "raw_value": 0.0,
+      "temporal": true,
+      "masked": true
+    },
+    {
+      "src": "actor:table-workspace",
+      "dst": "actor:ground",
+      "relation": "contact-transition",
+      "label": "maintain-no-contact",
+      "raw_value": 0.0,
+      "temporal": true,
+      "masked": true
+    },
+    {
+      "src": "actor:table-workspace",
+      "dst": "actor:cube",
+      "relation": "contact-transition",
+      "label": "maintain-contact",
+      "raw_value": 1.0,
+      "temporal": true,
+      "masked": false
+    },
+    {
+      "src": "actor:cube",
+      "dst": "actor:table-workspace",
+      "relation": "support-transition",
+      "label": "maintain-support",
+      "raw_value": 1.0,
+      "temporal": true,
+      "masked": false
+    },
+    {
+      "src": "actor:ground",
+      "dst": "actor:cube",
+      "relation": "contact-transition",
+      "label": "maintain-no-contact",
+      "raw_value": 0.0,
+      "temporal": true,
+      "masked": true
+    }
+  ],
+  "meta": {
+    "is_mshab": false,
+    "active_subtask": null
+  }
+}
