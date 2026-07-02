@@ -132,6 +132,23 @@ def _record(ent, *, key: Optional[str] = None) -> Optional[Dict[str, str]]:
     }
 
 
+def _subtask_target_id(subtask) -> str:
+    # CloseSubtask carries only ``articulation_id``; pick / place / open / navigate
+    # all carry ``obj_id`` (open also has ``articulation_id`` via
+    # ArticulationConfig, and we prefer obj_id there to keep pickle naming
+    # consistent with the existing pick/open pipeline).
+    obj_id = getattr(subtask, "obj_id", None)
+    if obj_id:
+        return obj_id
+    art_id = getattr(subtask, "articulation_id", None)
+    if art_id:
+        return art_id
+    raise AttributeError(
+        f"{type(subtask).__name__} has neither obj_id nor articulation_id; "
+        "cannot derive a canonical target key"
+    )
+
+
 class FetchCollectContactDataWrapper(gym.Wrapper):
     """Collect successful-rollout interactions without modifying MS-HAB."""
 
@@ -156,7 +173,7 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         if not plans or not all(len(tp.subtasks) == 1 for tp in plans):
             raise ValueError("interaction collection requires single-subtask plans")
         canonical_ids = {
-            canonical_affordance_key(tp.subtasks[0].obj_id)
+            canonical_affordance_key(_subtask_target_id(tp.subtasks[0]))
             for tp in plans
         }
         if len(canonical_ids) != 1:

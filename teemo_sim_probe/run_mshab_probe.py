@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import tempfile
 
 import numpy as np
 
@@ -33,7 +34,7 @@ from .viz.overlay import render_overlay
 from .viz.graph_draw import render_graph
 from .viz.video_writer import write_video
 from .viz.palette import ColorMap
-from .viz.eval_view import render_eval_view, save_image, SuccessTracker
+from .viz.eval_view import SuccessTracker
 from .adapters.policy_loader import load_policy, detect_algo
 from .adapters.privileged_state import get_privileged_state
 
@@ -209,90 +210,90 @@ def main():
     colormaps = {cam: ColorMap() for cam in cameras}
 
     success = SuccessTracker(env_idx=0)
-    # collect saved frame paths per camera for optional video
+    # Overlay/graph PNGs feed the video encoder but aren't final outputs.
+    # Stage them in a temp dir so only the mp4s land in ``args.out``.
     overlay_paths = {cam: [] for cam in cameras}
     graph_paths = {cam: [] for cam in cameras}
+    video_tmpdir = tempfile.TemporaryDirectory() if args.video else None
+    video_stage = video_tmpdir.name if video_tmpdir is not None else None
 
-    obs = eval_obs
-    info = {}
-    just_reset = True       # first iter is the start of an episode
-    for frame in range(args.steps):
-        save_now = (frame % args.save_every == 0) or (frame == args.steps - 1)
-        for cam in cameras:
-            seg, depth, rgb_sensor = read_unwrapped_sensor(
-                venv, cam, env_idx=0
-            )
-            if args.backdrop == "rgb" and rgb_sensor is not None:
-                backdrop = rgb_sensor
-            elif args.backdrop == "depth-gray" and depth is not None:
-                backdrop = depth_to_gray_rgb(depth)
-            elif depth is not None:
-                backdrop = depth_to_color_rgb(depth)
-            else:
-                backdrop = None
-
-            # Selection, persistence and temporal history advance every env
-            # step. Rendering frequency is an output concern only.
-            graph, masks, cam_name, rgb = builders[cam].step(
-                obs, frame,
-                episode_boundary=just_reset,
-                seg_override=seg, rgb_override=backdrop,
-                camera_override=cam,
-            )
-
-            if save_now:
-                graph.save(os.path.join(args.out, f"graph_{cam}_{frame:04d}.json"))
-                op = render_overlay(
-                    rgb, graph, masks,
-                    os.path.join(args.out, f"overlay_{cam}_{frame:04d}.png"),
-                    colormap=colormaps[cam], target_inches=args.overlay_size,
+    try:
+        obs = eval_obs
+        info = {}
+        just_reset = True       # first iter is the start of an episode
+        for frame in range(args.steps):
+            save_now = (frame % args.save_every == 0) or (frame == args.steps - 1)
+            for cam in cameras:
+                seg, depth, rgb_sensor = read_unwrapped_sensor(
+                    venv, cam, env_idx=0
                 )
-                gp = render_graph(
-                    graph, os.path.join(args.out, f"graph_{cam}_{frame:04d}.png"),
-                    colormap=colormaps[cam],
+                if args.backdrop == "rgb" and rgb_sensor is not None:
+                    backdrop = rgb_sensor
+                elif args.backdrop == "depth-gray" and depth is not None:
+                    backdrop = depth_to_gray_rgb(depth)
+                elif depth is not None:
+                    backdrop = depth_to_color_rgb(depth)
+                else:
+                    backdrop = None
+
+                # Selection, persistence and temporal history advance every env
+                # step. Rendering frequency is an output concern only.
+                graph, masks, cam_name, rgb = builders[cam].step(
+                    obs, frame,
+                    episode_boundary=just_reset,
+                    seg_override=seg, rgb_override=backdrop,
+                    camera_override=cam,
                 )
-                overlay_paths[cam].append(op)
-                graph_paths[cam].append(gp)
 
-        if save_now:
-            # Third-person evaluation-camera frame.
-            if args.eval_view:
-                ev = render_eval_view(venv, env_idx=0)
-                if ev is not None:
-                    save_image(ev, os.path.join(
-                        args.out, f"eval_view_{frame:04d}.png"))
+                if save_now:
+                    graph.save(os.path.join(args.out, f"graph_{cam}_{frame:04d}.json"))
+                    if args.video:
+                        op = render_overlay(
+                            rgb, graph, masks,
+                            os.path.join(video_stage, f"overlay_{cam}_{frame:04d}.png"),
+                            colormap=colormaps[cam], target_inches=args.overlay_size,
+                        )
+                        gp = render_graph(
+                            graph, os.path.join(video_stage, f"graph_{cam}_{frame:04d}.png"),
+                            colormap=colormaps[cam],
+                        )
+                        overlay_paths[cam].append(op)
+                        graph_paths[cam].append(gp)
 
-            if frame == 0:
+            if save_now and frame == 0:
                 _print_mshab_summary(
                     venv, cameras[0]
                 )
 
-        action = policy.act(obs)
-        obs, reward, terminated, truncated, info = venv.step(action)
-        success.update(info, frame)
-        # ManiSkillVectorEnv auto-resets internally on done; mark the next frame
-        # as a fresh episode for the builders.
-        import torch as _torch
-        done_t = _torch.logical_or(
-            _as_torch(terminated, device=_torch.device("cpu"), dtype=_torch.bool),
-            _as_torch(truncated, device=_torch.device("cpu"), dtype=_torch.bool),
-        )
-        just_reset = bool(done_t[0].item()) if done_t.numel() > 0 else False
+            action = policy.act(obs)
+            obs, reward, terminated, truncated, info = venv.step(action)
+            success.update(info, frame)
+            # ManiSkillVectorEnv auto-resets internally on done; mark the next frame
+            # as a fresh episode for the builders.
+            import torch as _torch
+            done_t = _torch.logical_or(
+                _as_torch(terminated, device=_torch.device("cpu"), dtype=_torch.bool),
+                _as_torch(truncated, device=_torch.device("cpu"), dtype=_torch.bool),
+            )
+            just_reset = bool(done_t[0].item()) if done_t.numel() > 0 else False
 
-    # success_once line figure + csv.
-    success.save_plot(os.path.join(args.out, "success_once.png"),
-                      title=f"{env_id} success_once")
-    success.save_csv(os.path.join(args.out, "success_once.csv"))
-    print(f"[success] ever_succeeded={success.success_once[-1] if success.success_once else 0}")
+        # success_once line figure + csv.
+        success.save_plot(os.path.join(args.out, "success_once.png"),
+                          title=f"{env_id} success_once")
+        success.save_csv(os.path.join(args.out, "success_once.csv"))
+        print(f"[success] ever_succeeded={success.success_once[-1] if success.success_once else 0}")
 
-    if args.video:
-        for cam in cameras:
-            if overlay_paths[cam]:
-                vid = write_video(
-                    overlay_paths[cam], graph_paths[cam],
-                    os.path.join(args.out, f"probe_{cam}.mp4"), fps=2,
-                )
-                print(f"video[{cam}]:", vid)
+        if args.video:
+            for cam in cameras:
+                if overlay_paths[cam]:
+                    vid = write_video(
+                        overlay_paths[cam], graph_paths[cam],
+                        os.path.join(args.out, f"probe_{cam}.mp4"), fps=2,
+                    )
+                    print(f"video[{cam}]:", vid)
+    finally:
+        if video_tmpdir is not None:
+            video_tmpdir.cleanup()
 
     venv.close()
     print(f"wrote {args.steps} frames to {args.out}")

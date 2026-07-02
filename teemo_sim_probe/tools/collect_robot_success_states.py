@@ -202,9 +202,14 @@ def _commit_successes_at_script_level(venv, collect, info, committed_mask):
 
     for env_idx in np.where(newly)[0].tolist():
         ptr = int(min(ptrs[env_idx], len(base_env.task_plan) - 1))
-        if ptr >= len(base_env.subtask_objs):
-            continue
-        target = base_env.subtask_objs[ptr]
+        # Close subtasks have no target actor (``subtask_objs[ptr] is None``);
+        # the interaction target is the articulation instead. Fall back to
+        # ``subtask_articulations[ptr]`` so its pose gets recorded.
+        target = None
+        if ptr < len(base_env.subtask_objs):
+            target = base_env.subtask_objs[ptr]
+        if target is None and ptr < len(base_env.subtask_articulations):
+            target = base_env.subtask_articulations[ptr]
         if target is None or getattr(target, "pose", None) is None:
             continue
         obj_rel_all = _to_np((base_inv * target.pose).raw_pose)
