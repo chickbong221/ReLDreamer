@@ -63,9 +63,9 @@ defaults:
   run:
     total_steps: 1_000_000
     log_every: 5_000
-    eval_every: 50_000
+    eval_every: 100_000
     eval_steps: 50                 # rollout length per eval env
-    save_every: 200_000
+    save_every: 200_000_000
 
   logger:
     outputs: [wandb]

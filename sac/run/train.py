@@ -39,6 +39,16 @@ def _build_replay(sample_obs, action_shape, num_envs, cfg, device):
     )
 
 
+def _format_console_metrics(metrics: dict) -> str:
+    parts = []
+    for key, value in metrics.items():
+        if isinstance(value, (int, np.integer)):
+            parts.append(f"{key}: {int(value)}")
+        elif isinstance(value, (float, np.floating)):
+            parts.append(f"{key}: {float(value):.4g}")
+    return ", ".join(parts)
+
+
 # --------------------------------------------------------------------------- #
 # Logging
 # --------------------------------------------------------------------------- #
@@ -169,6 +179,7 @@ def train(config: dict) -> None:
 
     global_step = 0
     last_log = -log_every
+    last_console = -log_every
     last_eval = -eval_every
     last_save = -save_every
     learning_has_started = False
@@ -176,6 +187,7 @@ def train(config: dict) -> None:
 
     print(f"[sac] task={task} obs_mode={obs_mode} num_envs={num_envs} "
           f"buffer={agent_cfg['buffer_size']} device={device}")
+    print("[sac] Start training loop", flush=True)
 
     while global_step < total_steps:
         # ----- collect a training_freq block --------------------------------
@@ -243,6 +255,26 @@ def train(config: dict) -> None:
                         cumulative[f"train/{key}"] += float(arr.mean().item())
                         cumulative[f"train/{key}_n"] += 1.0
         rollout_t = time.perf_counter() - rollout_t
+        steps_in_block = num_envs * steps_per_env_block
+
+        if global_step - last_console >= log_every:
+            last_console = global_step
+            console_metrics = {
+                "step": global_step,
+                "total": total_steps,
+                "replay": len(replay),
+            }
+            if rollout_t > 0:
+                console_metrics["fps/rollout"] = steps_in_block / rollout_t
+            for key, total in list(cumulative.items()):
+                if key.endswith("_n"):
+                    continue
+                n = cumulative.get(f"{key}_n", 0.0)
+                if n > 0:
+                    console_metrics[key] = total / n
+            phase = "collect" if global_step < learning_starts else "train"
+            print(f"[sac] {phase} | {_format_console_metrics(console_metrics)}",
+                  flush=True)
 
         # ----- updates -------------------------------------------------------
         if global_step < learning_starts:
@@ -258,7 +290,6 @@ def train(config: dict) -> None:
         # ----- logging -------------------------------------------------------
         if global_step - last_log >= log_every and last_metrics is not None:
             last_log = global_step
-            steps_in_block = num_envs * steps_per_env_block
             logger.scalar("losses/qf_loss", last_metrics.qf_loss, global_step)
             logger.scalar("losses/qf1_value", last_metrics.qf1_value, global_step)
             logger.scalar("losses/qf2_value", last_metrics.qf2_value, global_step)
@@ -278,14 +309,30 @@ def train(config: dict) -> None:
                 if n > 0:
                     logger.scalar(key, total / n, global_step)
             cumulative.clear()
+            print("[sac] update | " + _format_console_metrics({
+                "step": global_step,
+                "qf_loss": last_metrics.qf_loss,
+                "actor_loss": last_metrics.actor_loss,
+                "alpha": last_metrics.alpha,
+                "update_s": update_t,
+            }), flush=True)
 
         # ----- eval ----------------------------------------------------------
         if global_step - last_eval >= eval_every:
             last_eval = global_step
+            print(f"[sac] eval start | step: {global_step}, "
+                  f"eval_steps: {eval_steps}, num_eval_envs: {num_eval_envs}",
+                  flush=True)
             metrics = _evaluate(agent, eval_envs, eval_obs, obs_mode, device,
                                  num_steps=eval_steps, graph_obs=graph_eval)
             for key, value in metrics.items():
                 logger.scalar(f"eval/{key}", value, global_step)
+            shown = _format_console_metrics({
+                **metrics,
+                "step": global_step,
+            })
+            print(f"Eval metrics | {shown or f'step: {global_step}'}",
+                  flush=True)
 
         # ----- save ----------------------------------------------------------
         if global_step - last_save >= save_every:
