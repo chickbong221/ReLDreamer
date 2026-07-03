@@ -159,7 +159,7 @@ pick_bowl:
     maniskill:
       obs_mode: depth
       num_envs: 189
-      num_eval_envs: 189
+      num_eval_envs: 63
       mshab_task: set_table
       mshab_obj: 024_bowl
       mshab_split: train
@@ -171,7 +171,7 @@ pick_bowl:
     gamma: 0.9
     tau: 0.005                    # mshab critic_tau
     batch_size: 512
-    buffer_size: 1_000_000
+    buffer_size: 500_000
     learning_starts: 5_000        # mshab init_steps
     alpha: 0.1                    # mshab init_temperature
     policy_frequency: 2           # mshab actor_update_freq

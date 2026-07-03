@@ -12,7 +12,7 @@
       ],
       "kind": "actor",
       "name": "env-7_007_tuna_fish_can-0",
-      "support_rollouts": 4,
+      "support_rollouts": 3,
       "supports": [
         "link:kitchen_counter-0/body"
       ]
@@ -26,7 +26,7 @@
       ],
       "kind": "actor",
       "name": "env-7_008_pudding_box-0",
-      "support_rollouts": 4,
+      "support_rollouts": 3,
       "supports": [
         "link:kitchen_counter-0/body"
       ]
@@ -44,7 +44,7 @@
       "kind": "actor",
       "name": "obj_0",
       "interaction_rollouts": 30,
-      "support_rollouts": 2,
+      "support_rollouts": 4,
       "supports": [
         "link:kitchen_counter-0/body",
         "link:kitchen_counter-0/drawer3"
@@ -61,8 +61,8 @@
       ],
       "kind": "link",
       "name": "body",
-      "interaction_rollouts": 4,
-      "support_rollouts": 1,
+      "interaction_rollouts": 3,
+      "support_rollouts": 2,
       "supports": [
         "actor:024_bowl"
       ]
@@ -78,7 +78,7 @@
       ],
       "kind": "link",
       "name": "drawer3",
-      "interaction_rollouts": 1,
+      "interaction_rollouts": 3,
       "support_rollouts": 4,
       "supports": [
         "actor:024_bowl"
@@ -103,37 +103,37 @@
       0.6666666666666666
     ],
     "planar-distance": [
-      0.2514271809014003,
-      0.5028543618028006
+      0.25076949109722585,
+      0.5015389821944517
     ],
     "height-offset": [
-      -0.21008428732554119,
-      0.21008428732554119
+      -0.20431886514027917,
+      0.20431886514027917
     ],
     "planar-distance-change": [
-      -0.1880598389986487,
-      -0.06268661299954957,
-      0.06268661299954957,
-      0.1880598389986487
+      -0.18558437037475053,
+      -0.061861456791583516,
+      0.061861456791583516,
+      0.18558437037475053
     ],
     "height-offset-change": [
-      -0.1667129516601563,
-      -0.05557098388671876,
-      0.05557098388671876,
-      0.1667129516601563
+      -0.1616747832298279,
+      -0.053891594409942636,
+      0.053891594409942636,
+      0.1616747832298279
     ]
   },
   "bin_stats_robust": {
-    "planar_distance": 0.754281542704201,
-    "height_offset": 0.6302528619766236,
-    "planar_distance_change": 0.31343306499774787,
-    "height_offset_change": 0.2778549194335938
+    "planar_distance": 0.7523084732916776,
+    "height_offset": 0.6129565954208375,
+    "planar_distance_change": 0.30930728395791757,
+    "height_offset_change": 0.26945797204971317
   },
   "bin_stats_observed": {
-    "planar_distance": 1.3304426294333735,
-    "height_offset": 0.7719287872314453,
-    "planar_distance_change": 0.3566036830258416,
-    "height_offset_change": 0.32312971353530884
+    "planar_distance": 1.4453800575711424,
+    "height_offset": 0.7711166143417358,
+    "planar_distance_change": 0.3582122314114011,
+    "height_offset_change": 0.3303462266921997
   },
   "_n_successful_rollouts": 30
 }
