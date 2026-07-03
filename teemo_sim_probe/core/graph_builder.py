@@ -23,6 +23,11 @@ from .slot_manager import SlotManager
 from .whitelist import load_whitelist, resolve_whitelist_path
 from ..adapters.privileged_state import get_privileged_state
 
+# Only physical-state relations survive on a frozen node. Spatial and
+# compatibility edges would replay stale geometry, so we drop them.
+_STALE_REPLAY_RELATIONS = frozenset({"contact", "grasp", "support", "contain"})
+
+
 class GraphBuilder:
     def __init__(
         self,
@@ -221,6 +226,8 @@ class GraphBuilder:
                 del self._edge_history[key]
         for edge in graph.edges:
             if edge.temporal or edge.stale:
+                continue
+            if edge.relation not in _STALE_REPLAY_RELATIONS:
                 continue
             if edge.src in fresh_ids and edge.dst in fresh_ids:
                 key = (edge.src, edge.dst, edge.relation)

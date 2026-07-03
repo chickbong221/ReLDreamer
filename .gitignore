@@ -12,4 +12,5 @@ BEHAVIOR-1K/
 # teemo_sim_probe/outputs/*
 # !teemo_sim_probe/outputs/.gitkeep
 mshab_checkpoints/
+sg2im/
 ;
