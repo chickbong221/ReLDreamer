@@ -8,7 +8,7 @@
 
 defaults:
 
-  logdir: /mnt/data/tuannl/sac_logdir/{timestamp}
+  logdir: logdir/{timestamp}       # relative -> resolved against sac/ in main.py
   replica: 0
   replicas: 1
   task: maniskill_PickCube-v1
@@ -66,11 +66,11 @@ defaults:
     save_every: 200_000
 
   logger:
-    outputs: [jsonl, tensorboard]   # add 'wandb' to enable
-    wandb_project: ''
-    wandb_entity: ''
-    wandb_group: ''
-    wandb_name: ''
+    outputs: [wandb]
+    wandb_project: RelRL
+    wandb_entity: letuanhf-hanoi-university-of-science-and-technology
+    wandb_group: na
+    wandb_name: 'sac-mshab'
 
   graph:
     enabled: False
@@ -170,3 +170,5 @@ pick_bowl:
   graph:
     profile: tabletop
     camera: fetch_hand
+  logger:
+    wandb_name: 'sac-set_table-pick-024_bowl-rgb'

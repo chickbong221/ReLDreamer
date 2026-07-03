@@ -100,9 +100,12 @@ def load_config(argv: List[str]) -> dict:
     for key, value in overrides:
         _set_dotted(config, key, _coerce(value))
 
-    # Resolve {timestamp} in logdir.
+    # Resolve {timestamp} in logdir. Relative paths land inside sac/.
     ts = time.strftime("%Y%m%d_%H%M%S")
-    config["logdir"] = str(config["logdir"]).format(timestamp=ts)
+    logdir = os.path.expanduser(str(config["logdir"]).format(timestamp=ts))
+    if not os.path.isabs(logdir):
+        logdir = str(HERE / logdir)
+    config["logdir"] = logdir
     os.makedirs(config["logdir"], exist_ok=True)
 
     # Snapshot the resolved config alongside the checkpoints.
