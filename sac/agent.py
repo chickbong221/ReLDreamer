@@ -18,8 +18,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .graph_encoder import GraphEncoder, has_graph_obs
 from .nets import (
     EncoderObsWrapper,
+    MultiObsEncoder,
     PlainConv,
     infer_image_channels,
     infer_image_size,
@@ -173,18 +175,30 @@ class SACAgent:
         rgb_key = "rgb" if "rgb" in sample_obs else None
         depth_key = "depth" if "depth" in sample_obs else None
         has_pixels = rgb_key is not None or depth_key is not None
+        has_graph = has_graph_obs(sample_obs)
 
+        sub_encoders = {}
         if has_pixels:
             in_c = infer_image_channels(sample_obs, rgb_key, depth_key)
             img_size = infer_image_size(sample_obs, rgb_key, depth_key)
-            encoder = EncoderObsWrapper(
+            sub_encoders["pixels"] = EncoderObsWrapper(
                 PlainConv(in_channels=in_c,
                           out_dim=int(cfg["encoder"]["out_dim"]),
                           image_size=img_size),
                 rgb_key=rgb_key, depth_key=depth_key,
             )
-        else:
-            encoder = None
+        if has_graph:
+            gcfg = cfg["encoder"].get("graph", {})
+            sub_encoders["graph"] = GraphEncoder(
+                node_vocab_size=int(gcfg["node_vocab_size"]),
+                edge_vocab_size=int(gcfg["edge_vocab_size"]),
+                embed_dim=int(gcfg.get("embed_dim", 64)),
+                hidden_dim=int(gcfg.get("hidden_dim", 256)),
+                out_dim=int(gcfg.get("out_dim", 128)),
+                num_layers=int(gcfg.get("num_layers", 2)),
+            )
+
+        encoder = MultiObsEncoder(sub_encoders) if sub_encoders else None
 
         state_dim = int(sample_obs["state"].shape[1])
         mlp_hidden = tuple(cfg["encoder"]["mlp_hidden"])

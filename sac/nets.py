@@ -119,6 +119,28 @@ class EncoderObsWrapper(nn.Module):
         return self.encoder(img)
 
 
+class MultiObsEncoder(nn.Module):
+    """Concatenate features from independent sub-encoders.
+
+    Each sub-encoder consumes the same obs dict and returns (B, D_i). Output
+    is the concat along dim=1; ``out_dim`` is the sum of children's dims.
+    """
+
+    def __init__(self, encoders: Dict[str, nn.Module]):
+        super().__init__()
+        if not encoders:
+            raise ValueError("MultiObsEncoder requires at least one sub-encoder")
+        self.encoders = nn.ModuleDict(encoders)
+
+    @property
+    def out_dim(self) -> int:
+        return sum(int(e.out_dim) for e in self.encoders.values())
+
+    def forward(self, obs: Dict[str, torch.Tensor]) -> torch.Tensor:
+        parts = [e(obs) for e in self.encoders.values()]
+        return parts[0] if len(parts) == 1 else torch.cat(parts, dim=1)
+
+
 def infer_image_channels(sample_obs: Dict[str, torch.Tensor],
                           rgb_key: Optional[str],
                           depth_key: Optional[str]) -> int:

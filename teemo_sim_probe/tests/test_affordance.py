@@ -391,41 +391,31 @@ class PersistenceStrippingTests(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
-# Temporal anchor-bound reset (now on grasp-compatibility)
+# Temporal affordance history
 # --------------------------------------------------------------------------- #
-class TemporalAnchorBoundResetTests(unittest.TestCase):
+class TemporalAffordanceHistoryTests(unittest.TestCase):
     KEY = ("ee", "actor:024_bowl", "grasp-compatibility")
 
-    def _push(self, buf, frame, value, a_star=0):
+    def _push(self, buf, frame, value):
         ee = _ee()
         node = _obj_node()
-        if a_star is not None:
-            node.attributes["affordance_a_star"] = a_star
         graph = Graph(frame, "env", "cam", nodes=[ee, node], edges=[
             Edge("ee", node.node_id, "grasp-compatibility",
                  "partial-match", float(value)),
         ])
         buf.update(graph)
 
-    def test_history_appends_when_a_star_stable(self):
+    def test_history_appends_across_frames(self):
         buf = TemporalBuffer(K=3)
-        self._push(buf, 0, 0.10, a_star=0)
-        self._push(buf, 1, 0.08, a_star=0)
-        self._push(buf, 2, 0.05, a_star=0)
+        self._push(buf, 0, 0.10)
+        self._push(buf, 1, 0.08)
+        self._push(buf, 2, 0.05)
         self.assertEqual(len(buf._values[self.KEY]), 3)
-
-    def test_history_resets_on_a_star_switch(self):
-        buf = TemporalBuffer(K=3)
-        self._push(buf, 0, 0.10, a_star=0)
-        self._push(buf, 1, 0.08, a_star=0)
-        self._push(buf, 2, 0.05, a_star=1)
-        self.assertEqual(len(buf._values[self.KEY]), 1)
-        self.assertAlmostEqual(buf._values[self.KEY][0], 0.05)
 
     def test_history_drops_on_edge_disappearance(self):
         buf = TemporalBuffer(K=3)
-        self._push(buf, 0, 0.10, a_star=0)
-        self._push(buf, 1, 0.08, a_star=0)
+        self._push(buf, 0, 0.10)
+        self._push(buf, 1, 0.08)
         ee = _ee()
         node = _obj_node()
         graph = Graph(2, "env", "cam", nodes=[ee, node], edges=[])

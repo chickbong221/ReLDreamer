@@ -23,11 +23,18 @@ import numpy as np
 import torch
 
 
-def build_env(task: str, cfg: dict, *, is_eval: bool = False, seed: int = 0):
+def build_env(
+    task: str, cfg: dict, *, is_eval: bool = False, seed: int = 0,
+    graph_enabled: bool = False,
+):
     """Construct a ManiSkillVectorEnv for the requested obs_mode / suite.
 
     ``task`` is the ManiSkill env id (e.g. ``PickCube-v1`` or
     ``PickSubtaskTrain-v0``). ``cfg`` is the ``env.maniskill`` config block.
+
+    When ``graph_enabled`` is True the underlying env's obs_mode is widened to
+    include segmentation so the graph pipeline can read masks via
+    ``env.unwrapped.get_obs()``; the policy-facing obs is unaffected.
     """
     import gymnasium as gym
     import mani_skill.envs  # noqa: F401  registers tasks
@@ -38,6 +45,9 @@ def build_env(task: str, cfg: dict, *, is_eval: bool = False, seed: int = 0):
     from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 
     obs_mode = str(cfg["obs_mode"])
+    underlying_obs_mode = (
+        "rgb+depth+segmentation" if graph_enabled else obs_mode
+    )
     num_envs = int(cfg["num_eval_envs"] if is_eval else cfg["num_envs"])
     image_size = int(cfg["image_size"])
     sim_backend = str(cfg["sim_backend"])
@@ -48,7 +58,7 @@ def build_env(task: str, cfg: dict, *, is_eval: bool = False, seed: int = 0):
 
     make_kwargs: Dict[str, object] = dict(
         id=task,
-        obs_mode=obs_mode,
+        obs_mode=underlying_obs_mode,
         num_envs=num_envs,
         sim_backend=sim_backend,
         sensor_configs=dict(width=image_size, height=image_size),

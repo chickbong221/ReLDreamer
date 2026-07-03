@@ -72,6 +72,21 @@ defaults:
     wandb_group: ''
     wandb_name: ''
 
+  graph:
+    enabled: False
+    profile: tabletop              # teemo_sim_probe profile (thresholds.yaml)
+    thresholds_path: null          # override teemo thresholds.yaml (null = default)
+    whitelist_dir: null            # override teemo whitelists.dir (null = default)
+    camera: fetch_hand             # camera name for segmentation reads
+    n_slots: 10                    # object slots; N_max = n_slots + 1 (+1 ee)
+    k_persist: 5                   # persistence horizon
+    k_soft: 5.0                    # alpha = exp(-tau / k_soft)
+    e_max: 256                     # edge cap after priority truncation
+    embed_dim: 64
+    hidden_dim: 256
+    out_dim: 128
+    num_layers: 2
+
 # ----------------------------------------------------------------------- #
 # Presets
 # ----------------------------------------------------------------------- #
@@ -110,3 +125,25 @@ mshab:
     buffer_size: 1_000_000
   run:
     total_steps: 50_000_000
+
+mshab_graph:
+  env:
+    maniskill:
+      obs_mode: rgb
+      num_envs: 16
+      mshab_task: pick
+      mshab_split: train
+      mshab_obj: all
+      max_episode_steps: 100
+      eval_max_episode_steps: 200
+      reward_mode: normalized_dense
+  agent:
+    gamma: 0.9
+    batch_size: 512
+    buffer_size: 500_000          # graph tensors inflate per-transition storage
+  run:
+    total_steps: 50_000_000
+  graph:
+    enabled: True
+    profile: tabletop
+    camera: fetch_hand

@@ -18,6 +18,7 @@ import torch
 
 from ..agent import SACAgent
 from ..envs import action_box, adapt_obs, build_env
+from ..graph_env import build_graph_obs
 from ..replay import ReplayBuffer, TensorSpec, build_obs_spec
 
 
@@ -96,24 +97,47 @@ def train(config: dict) -> None:
     env_cfg = dict(config["env"]["maniskill"])
     agent_cfg = dict(config["agent"])
     run_cfg = dict(config["run"])
+    graph_cfg = dict(config.get("graph", {}))
     obs_mode = str(env_cfg["obs_mode"])
+    graph_enabled = bool(graph_cfg.get("enabled", False))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     _seed_everything(int(config["seed"]))
 
     # --- env ----------------------------------------------------------------
-    envs = build_env(task, env_cfg, is_eval=False, seed=int(config["seed"]))
-    eval_envs = build_env(task, env_cfg, is_eval=True, seed=int(config["seed"]) + 1)
+    envs = build_env(task, env_cfg, is_eval=False, seed=int(config["seed"]),
+                     graph_enabled=graph_enabled)
+    eval_envs = build_env(task, env_cfg, is_eval=True, seed=int(config["seed"]) + 1,
+                          graph_enabled=graph_enabled)
     action_shape, action_low, action_high = action_box(envs)
     num_envs = int(env_cfg["num_envs"])
+    num_eval_envs = int(env_cfg["num_eval_envs"])
+
+    graph_train = build_graph_obs(envs, graph_cfg, num_envs=num_envs)
+    graph_eval = build_graph_obs(eval_envs, graph_cfg, num_envs=num_eval_envs)
 
     # --- initial obs (also serves as sample for spec discovery) -------------
     obs_raw, _ = envs.reset(seed=int(config["seed"]))
     obs = adapt_obs(obs_raw, obs_mode, device)
+    if graph_train is not None:
+        obs.update(graph_train.reset(device))
     eval_obs_raw, _ = eval_envs.reset(seed=int(config["seed"]) + 1)
     eval_obs = adapt_obs(eval_obs_raw, obs_mode, device)
+    if graph_eval is not None:
+        eval_obs.update(graph_eval.reset(device))
 
     # --- agent + replay -----------------------------------------------------
+    if graph_train is not None:
+        agent_cfg.setdefault("encoder", {})
+        agent_cfg["encoder"]["graph"] = {
+            "node_vocab_size": len(graph_train.node_vocab),
+            "edge_vocab_size": len(graph_train.edge_vocab),
+            "embed_dim": graph_cfg.get("embed_dim", 64),
+            "hidden_dim": graph_cfg.get("hidden_dim", 256),
+            "out_dim": graph_cfg.get("out_dim", 128),
+            "num_layers": graph_cfg.get("num_layers", 2),
+        }
+
     agent = SACAgent(
         sample_obs=obs,
         action_shape=action_shape,
@@ -175,12 +199,16 @@ def train(config: dict) -> None:
 
             next_obs_raw, reward, terminated, truncated, info = envs.step(act)
             next_obs = adapt_obs(next_obs_raw, obs_mode, device)
+            done = (terminated | truncated)
+            if graph_train is not None:
+                next_obs.update(graph_train.step(done, device))
 
             # Real next-obs uses final_observation on done envs so the Q-target
             # bootstraps off the actual final state, not the auto-reset state.
+            # Graph keys are exempt: the builder is stateful, so we cannot
+            # rewind it to the pre-reset frame.
             real_next_obs = {k: v.clone() for k, v in next_obs.items()}
             bootstrap = str(agent_cfg["bootstrap_at_done"])
-            done = (terminated | truncated)
             if bootstrap == "always":
                 need_final = done
                 stop_bootstrap = torch.zeros_like(terminated, dtype=torch.bool)
@@ -262,7 +290,7 @@ def train(config: dict) -> None:
         if global_step - last_eval >= eval_every:
             last_eval = global_step
             metrics = _evaluate(agent, eval_envs, eval_obs, obs_mode, device,
-                                 num_steps=eval_steps)
+                                 num_steps=eval_steps, graph_obs=graph_eval)
             for key, value in metrics.items():
                 logger.scalar(f"eval/{key}", value, global_step)
 
@@ -289,15 +317,20 @@ def train(config: dict) -> None:
 # Eval
 # --------------------------------------------------------------------------- #
 @torch.no_grad()
-def _evaluate(agent, eval_envs, eval_obs, obs_mode, device, *, num_steps: int):
+def _evaluate(agent, eval_envs, eval_obs, obs_mode, device, *, num_steps: int,
+               graph_obs=None):
     metrics = defaultdict(list)
     obs = eval_obs
     obs_raw, _ = eval_envs.reset()
     obs = adapt_obs(obs_raw, obs_mode, device)
+    if graph_obs is not None:
+        obs.update(graph_obs.reset(device))
     for _ in range(num_steps):
         act = agent.act(obs, deterministic=True)
         obs_raw, _, terminated, truncated, info = eval_envs.step(act)
         obs = adapt_obs(obs_raw, obs_mode, device)
+        if graph_obs is not None:
+            obs.update(graph_obs.step(terminated | truncated, device))
         if "final_info" in info and "episode" in info["final_info"]:
             ep = info["final_info"]["episode"]
             mask = info.get("_final_info", terminated | truncated)
