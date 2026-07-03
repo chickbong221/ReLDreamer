@@ -25,12 +25,20 @@ def make_mlp(
     mlp_channels: List[int],
     act_builder=nn.ReLU,
     last_act: bool = True,
+    layer_norm: bool = False,
 ) -> nn.Sequential:
+    """Linear -> [LayerNorm] -> act, repeated. LayerNorm sits before the activation
+    (mshab critic pattern); the final layer skips LayerNorm since we want raw
+    logits/Q-values there.
+    """
     c_in = in_channels
     layers: List[nn.Module] = []
     for idx, c_out in enumerate(mlp_channels):
         layers.append(nn.Linear(c_in, c_out))
-        if last_act or idx < len(mlp_channels) - 1:
+        is_last = idx == len(mlp_channels) - 1
+        if layer_norm and not is_last:
+            layers.append(nn.LayerNorm(c_out))
+        if last_act or not is_last:
             layers.append(act_builder())
         c_in = c_out
     return nn.Sequential(*layers)

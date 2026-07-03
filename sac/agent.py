@@ -10,6 +10,7 @@ critics share it. State-only mode skips the encoder entirely.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Dict, Mapping, Optional, Tuple
 
@@ -29,10 +30,6 @@ from .nets import (
 )
 
 
-LOG_STD_MIN = -5.0
-LOG_STD_MAX = 2.0
-
-
 # --------------------------------------------------------------------------- #
 # Actor / Critic
 # --------------------------------------------------------------------------- #
@@ -47,9 +44,13 @@ class Actor(nn.Module):
         action_high: np.ndarray,
         encoder: Optional[EncoderObsWrapper],
         mlp_hidden=(512, 256),
+        log_std_min: float = -5.0,
+        log_std_max: float = 2.0,
     ):
         super().__init__()
         self.encoder = encoder
+        self.log_std_min = float(log_std_min)
+        self.log_std_max = float(log_std_max)
         in_dim = state_dim + (encoder.out_dim if encoder is not None else 0)
         self.trunk = make_mlp(in_dim, list(mlp_hidden), last_act=True)
         self.fc_mean = nn.Linear(mlp_hidden[-1], int(np.prod(action_shape)))
@@ -77,7 +78,7 @@ class Actor(nn.Module):
         mean = self.fc_mean(h)
         log_std = self.fc_logstd(h)
         log_std = torch.tanh(log_std)
-        log_std = LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (log_std + 1.0)
+        log_std = self.log_std_min + 0.5 * (self.log_std_max - self.log_std_min) * (log_std + 1.0)
         return mean, log_std, visual
 
     @torch.no_grad()
@@ -109,12 +110,16 @@ class SoftQNetwork(nn.Module):
         state_dim: int,
         encoder: Optional[EncoderObsWrapper],
         mlp_hidden=(512, 256),
+        layer_norm: bool = False,
     ):
         super().__init__()
         self.encoder = encoder
         act_dim = int(np.prod(action_shape))
         in_dim = state_dim + act_dim + (encoder.out_dim if encoder is not None else 0)
-        self.mlp = make_mlp(in_dim, list(mlp_hidden) + [1], last_act=False)
+        self.mlp = make_mlp(
+            in_dim, list(mlp_hidden) + [1],
+            last_act=False, layer_norm=layer_norm,
+        )
 
     def forward(
         self,
@@ -206,23 +211,40 @@ class SACAgent:
         self.actor = Actor(
             action_shape, state_dim, action_low, action_high,
             encoder=encoder, mlp_hidden=mlp_hidden,
+            log_std_min=float(cfg.get("log_std_min", -5.0)),
+            log_std_max=float(cfg.get("log_std_max", 2.0)),
         ).to(device)
 
-        # Critics share the actor's encoder (None in state-only mode).
-        crit_encoder = self.actor.encoder
-        self.qf1 = SoftQNetwork(action_shape, state_dim, crit_encoder, mlp_hidden).to(device)
-        self.qf2 = SoftQNetwork(action_shape, state_dim, crit_encoder, mlp_hidden).to(device)
-        self.qf1_target = SoftQNetwork(action_shape, state_dim, crit_encoder, mlp_hidden).to(device)
-        self.qf2_target = SoftQNetwork(action_shape, state_dim, crit_encoder, mlp_hidden).to(device)
-        self.qf1_target.load_state_dict(self.qf1.state_dict())
-        self.qf2_target.load_state_dict(self.qf2.state_dict())
+        # Online encoder is shared between actor and critics (matches mshab's
+        # shared_cnns). Target critics get a separate deepcopy that only ever
+        # updates via EMA -- mshab constructs a distinct target_cnns for the
+        # same reason (mshab/agents/sac/agent.py:49-115).
+        online_encoder = self.actor.encoder
+        target_encoder: Optional[nn.Module] = (
+            deepcopy(online_encoder) if online_encoder is not None else None
+        )
+        if target_encoder is not None:
+            for p in target_encoder.parameters():
+                p.requires_grad_(False)
+        self.target_encoder = target_encoder
 
-        # Optimizers: critics carry the shared-encoder grads; actor optimizer
-        # only updates the actor head (the encoder receives grads through the
-        # critic optimizer when shared, matching the ManiSkill baseline).
+        critic_ln = bool(cfg["encoder"].get("critic_layer_norm", False))
+        self.qf1 = SoftQNetwork(action_shape, state_dim, online_encoder, mlp_hidden, layer_norm=critic_ln).to(device)
+        self.qf2 = SoftQNetwork(action_shape, state_dim, online_encoder, mlp_hidden, layer_norm=critic_ln).to(device)
+        self.qf1_target = SoftQNetwork(action_shape, state_dim, target_encoder, mlp_hidden, layer_norm=critic_ln).to(device)
+        self.qf2_target = SoftQNetwork(action_shape, state_dim, target_encoder, mlp_hidden, layer_norm=critic_ln).to(device)
+        # Copy only the Q-head weights; the encoders were already synced by
+        # the deepcopy above (and copying would overwrite target_encoder with
+        # online weights again -- correct, but redundant).
+        self.qf1_target.mlp.load_state_dict(self.qf1.mlp.state_dict())
+        self.qf2_target.mlp.load_state_dict(self.qf2.mlp.state_dict())
+
+        # Both online encoder and both Q mlps flow through q_optim. Actor
+        # optim also touches the online encoder (mshab/train_sac.py:296) --
+        # the same shared CNN sits in both optimizers by design.
         q_params = list(self.qf1.mlp.parameters()) + list(self.qf2.mlp.parameters())
-        if crit_encoder is not None:
-            q_params += list(crit_encoder.parameters())
+        if online_encoder is not None:
+            q_params += list(online_encoder.parameters())
         self.q_optim = torch.optim.Adam(q_params, lr=float(cfg["q_lr"]))
         self.actor_optim = torch.optim.Adam(
             self.actor.parameters(), lr=float(cfg["policy_lr"]),
@@ -269,9 +291,13 @@ class SACAgent:
 
         # ---- critic ---------------------------------------------------- #
         with torch.no_grad():
-            next_a, next_logpi, _, next_visual = self.actor.get_action(next_obs)
-            qf1_next = self.qf1_target(next_obs, next_a, next_visual).view(-1)
-            qf2_next = self.qf2_target(next_obs, next_a, next_visual).view(-1)
+            next_a, next_logpi, _, _ = self.actor.get_action(next_obs)
+            target_visual = (
+                self.target_encoder(next_obs)
+                if self.target_encoder is not None else None
+            )
+            qf1_next = self.qf1_target(next_obs, next_a, target_visual).view(-1)
+            qf2_next = self.qf2_target(next_obs, next_a, target_visual).view(-1)
             min_qf_next = torch.min(qf1_next, qf2_next) - self.alpha * next_logpi.view(-1)
             target_q = rewards + (1.0 - dones) * self.gamma * min_qf_next
 
@@ -318,10 +344,16 @@ class SACAgent:
         # ---- target soft update --------------------------------------- #
         if self._global_update % self.target_network_frequency == 0:
             with torch.no_grad():
-                for p, tp in zip(self.qf1.parameters(), self.qf1_target.parameters()):
+                for p, tp in zip(self.qf1.mlp.parameters(),
+                                  self.qf1_target.mlp.parameters()):
                     tp.data.mul_(1.0 - self.tau).add_(self.tau * p.data)
-                for p, tp in zip(self.qf2.parameters(), self.qf2_target.parameters()):
+                for p, tp in zip(self.qf2.mlp.parameters(),
+                                  self.qf2_target.mlp.parameters()):
                     tp.data.mul_(1.0 - self.tau).add_(self.tau * p.data)
+                if self.target_encoder is not None:
+                    for p, tp in zip(self.actor.encoder.parameters(),
+                                      self.target_encoder.parameters()):
+                        tp.data.mul_(1.0 - self.tau).add_(self.tau * p.data)
 
         self._global_update += 1
 

@@ -32,10 +32,13 @@ defaults:
     training_freq: 64              # env steps per gradient block
     utd: 0.5                       # gradient updates per env step
     bootstrap_at_done: always      # 'always' | 'truncated' | 'never'
+    log_std_min: -5.0
+    log_std_max: 2.0
     encoder:
       out_dim: 256
       mlp_hidden: [512, 256]
       detach_critic_encoder: False  # detach encoder grad through critic only
+      critic_layer_norm: False       # LayerNorm inside critic hidden layers
 
   env:
     maniskill:
@@ -166,12 +169,21 @@ pick_bowl:
       reward_mode: normalized_dense
   agent:
     gamma: 0.9
+    tau: 0.005                    # mshab critic_tau
     batch_size: 512
     buffer_size: 1_000_000
+    learning_starts: 5_000        # mshab init_steps
+    alpha: 0.1                    # mshab init_temperature
+    policy_frequency: 2           # mshab actor_update_freq
+    target_network_frequency: 2   # mshab critic_target_update_freq
+    log_std_min: -20.0            # mshab actor_log_std_min
+    encoder:
+      mlp_hidden: [256, 256, 256] # mshab actor/critic hidden_dims
+      critic_layer_norm: True     # mshab critic_layer_norm
   run:
     total_steps: 50_000_000
   graph:
-    profile: tabletop
+    profile: room_scale
     camera: fetch_head
   logger:
     wandb_name: 'sac-set_table-pick-024_bowl-depth'
