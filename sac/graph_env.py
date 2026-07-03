@@ -4,12 +4,16 @@ Owns one ``GraphBuilder`` per parallel env and turns each per-env ``Graph``
 into a fixed-shape batched tensor dict that slots straight into the replay
 buffer next to ``rgb`` / ``state``.
 
-Segmentation is read via ``read_unwrapped_sensor`` so the policy obs can stay
-as flat RGB while the graph pipeline still gets the segmentation map.
+Segmentation is sliced from ``env.unwrapped._last_obs`` (set by the underlying
+env's ``step`` / ``reset``) rather than re-fetched per env. Calling
+``env.unwrapped.get_obs()`` would rerun ``get_info`` -> MS-HAB ``evaluate``,
+which mutates ``subtask_pointer`` / ``subtask_steps_left`` / cumulative force,
+and would also re-render + CUDA-sync once per env.
 """
 
 from __future__ import annotations
 
+from copy import copy as _shallow_copy
 from typing import Dict, Optional
 
 import numpy as np
@@ -24,7 +28,6 @@ from teemo_sim_probe.adapters.graph_vocab import (
 )
 from teemo_sim_probe.configs.loader import load_config as load_teemo_config
 from teemo_sim_probe.core.graph_builder import GraphBuilder
-from teemo_sim_probe.core.mask_extractor import read_unwrapped_sensor
 
 
 class GraphObsBuilder:
@@ -51,10 +54,19 @@ class GraphObsBuilder:
         self.e_max = int(e_max)
         self.k_soft = float(k_soft)
         self.camera = camera
-        self.builders = [
-            GraphBuilder(env, teemo_cfg, env_idx=i, env_id=f"env{i}", camera=camera)
-            for i in range(self.num_envs)
-        ]
+        # Each builder gets its own shallow copy of the outer cfg dict with a
+        # fresh ``_affordance_selection_cache``. ``bin_edges`` /
+        # ``interaction_types`` are rewritten wholesale by the whitelist bind,
+        # so a shallow copy already isolates those; the selection cache is
+        # mutated in place and would otherwise leak component picks across
+        # envs (node ids canonicalize across parallel scenes).
+        self.builders = []
+        for i in range(self.num_envs):
+            cfg_i = _shallow_copy(teemo_cfg)
+            cfg_i["_affordance_selection_cache"] = {}
+            self.builders.append(
+                GraphBuilder(env, cfg_i, env_idx=i, env_id=f"env{i}", camera=camera)
+            )
         self._frames = np.zeros(self.num_envs, dtype=np.int64)
 
     @property
@@ -71,16 +83,15 @@ class GraphObsBuilder:
             "graph_edge_valid":   (self.e_max,),
         }
 
-    def _pack_one(self, env_idx: int, episode_boundary: bool) -> Dict[str, np.ndarray]:
-        seg, _depth, rgb = read_unwrapped_sensor(
-            self.env, self.camera, env_idx=env_idx,
-        )
+    def _pack_one(
+        self, env_idx: int, episode_boundary: bool, seg_i: np.ndarray,
+    ) -> Dict[str, np.ndarray]:
         graph, _, _, _ = self.builders[env_idx].step(
             {},
             int(self._frames[env_idx]),
             episode_boundary=episode_boundary,
-            seg_override=seg,
-            rgb_override=rgb,
+            seg_override=seg_i,
+            rgb_override=None,
             camera_override=self.camera,
         )
         self._frames[env_idx] += 1
@@ -89,6 +100,17 @@ class GraphObsBuilder:
             n_max=self.n_max, e_max=self.e_max, k_soft=self.k_soft,
         )
 
+    def _read_batched_seg(self) -> np.ndarray:
+        """Return segmentation for every env as ``[N, H, W]`` int64.
+
+        Reads ``env.unwrapped._last_obs`` (populated by the underlying env's
+        ``step`` / ``reset``) so we neither re-render nor re-invoke
+        ``get_info`` -> MS-HAB ``evaluate``.
+        """
+        last_obs = self.env.unwrapped._last_obs
+        seg = last_obs["sensor_data"][self.camera]["segmentation"].squeeze(-1)
+        return seg.detach().cpu().numpy()
+
     def step(
         self, done_mask: Optional[torch.Tensor], device: torch.device,
     ) -> Dict[str, torch.Tensor]:
@@ -96,7 +118,11 @@ class GraphObsBuilder:
             done_np = done_mask.detach().cpu().numpy().astype(bool).reshape(-1)
         else:
             done_np = np.zeros(self.num_envs, dtype=bool)
-        packed = [self._pack_one(i, bool(done_np[i])) for i in range(self.num_envs)]
+        seg_all = self._read_batched_seg()
+        packed = [
+            self._pack_one(i, bool(done_np[i]), seg_all[i])
+            for i in range(self.num_envs)
+        ]
         out: Dict[str, torch.Tensor] = {}
         for k in GRAPH_KEYS:
             arr = np.stack([p[k] for p in packed], axis=0)
