@@ -101,11 +101,13 @@ class GraphObsBuilder:
         )
 
     def _read_batched_seg(self) -> np.ndarray:
-        """Return segmentation for every env as ``[N, H, W]`` int64.
+        """Return segmentation for every env as ``[N, H, W]``.
 
         Reads ``env.unwrapped._last_obs`` (populated by the underlying env's
         ``step`` / ``reset``) so we neither re-render nor re-invoke
-        ``get_info`` -> MS-HAB ``evaluate``.
+        ``get_info`` -> MS-HAB ``evaluate``. Source dtype is kept (int32 on
+        current ManiSkill); downstream (``np.unique``, ``seg == seg_id``) is
+        dtype-agnostic.
         """
         last_obs = self.env.unwrapped._last_obs
         seg = last_obs["sensor_data"][self.camera]["segmentation"].squeeze(-1)
