@@ -147,27 +147,31 @@ mshab_graph:
     profile: tabletop
     camera: fetch_hand
 
-# set_table / pick / 024_bowl -- RGB, 300K replay. Add --graph.enabled True
-# to attach the oracle scene graph (requires teemo assets, see README).
+# set_table / pick / 024_bowl -- mirrors mshab/configs/sac_pick.yml (depth,
+# both cameras, head stationary, 189 envs, 1M replay, batch 512) minus its
+# frame stacking. Add --graph.enabled True to attach the oracle scene graph
+# (requires teemo assets, see README).
 pick_bowl:
   env:
     maniskill:
-      obs_mode: rgb
-      num_envs: 16
+      obs_mode: depth
+      num_envs: 189
+      num_eval_envs: 189
       mshab_task: set_table
       mshab_obj: 024_bowl
       mshab_split: train
+      mshab_stationary_head: True
       max_episode_steps: 100
       eval_max_episode_steps: 200
       reward_mode: normalized_dense
   agent:
     gamma: 0.9
     batch_size: 512
-    buffer_size: 300_000
+    buffer_size: 1_000_000
   run:
     total_steps: 50_000_000
   graph:
     profile: tabletop
-    camera: fetch_hand
+    camera: fetch_head
   logger:
-    wandb_name: 'sac-set_table-pick-024_bowl-rgb'
+    wandb_name: 'sac-set_table-pick-024_bowl-depth'

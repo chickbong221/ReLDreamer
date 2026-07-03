@@ -1,10 +1,12 @@
 # SAC on MS-HAB `set_table` / `pick` / `024_bowl`
 
-Vectorized SAC training on the bowl-pick subtask of `set_table`. RGB input,
-300K replay. Two variants:
+Vectorized SAC training on the bowl-pick subtask of `set_table`. Mirrors
+`mshab/configs/sac_pick.yml`: depth input from both `fetch_head` (stationary)
+and `fetch_hand` (moves with gripper), 189 parallel envs, batch 512, 1M
+replay. No frame stacking. Two variants:
 
-- **plain**: RGB only.
-- **graph**: RGB + oracle scene graph (needs teemo assets mined first).
+- **plain**: depth only.
+- **graph**: depth + oracle scene graph (needs teemo assets mined first).
 
 ## Pipeline
 
@@ -16,7 +18,7 @@ Vectorized SAC training on the bowl-pick subtask of `set_table`. RGB input,
   2. sac.main --configs pick_bowl [--graph.enabled True]
 ```
 
-## Run — plain RGB
+## Run — plain depth
 
 ```
 python -m sac.main \
@@ -24,7 +26,7 @@ python -m sac.main \
     --task maniskill_PickSubtaskTrain-v0
 ```
 
-## Run — RGB + oracle graph
+## Run — depth + oracle graph
 
 Mine the teemo assets once (bowl target on set_table):
 
@@ -59,10 +61,10 @@ python -m sac.main \
 ## Common overrides
 
 ```
---agent.buffer_size 500_000        # bigger replay
---env.maniskill.num_envs 8         # fewer parallel envs
+--env.maniskill.num_envs 32        # fewer parallel envs if 189 is too heavy
+--agent.buffer_size 300_000        # smaller replay
 --run.total_steps 10_000_000       # shorter run
---graph.camera fetch_head          # top-down camera for graph
+--graph.camera fetch_hand          # switch graph seg to the hand camera
 ```
 
 Full CLI dotted keys map onto `configs.yaml`.
