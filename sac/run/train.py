@@ -11,7 +11,6 @@ from __future__ import annotations
 import os
 import time
 from collections import defaultdict
-from typing import Dict, Mapping
 
 import numpy as np
 import torch
@@ -19,7 +18,7 @@ import torch
 from ..agent import SACAgent
 from ..envs import action_box, adapt_obs, build_env
 from ..graph_env import build_graph_obs
-from ..replay import ReplayBuffer, TensorSpec, build_obs_spec
+from ..replay import ReplayBuffer, build_obs_spec
 
 
 def _seed_everything(seed: int) -> None:
@@ -29,19 +28,13 @@ def _seed_everything(seed: int) -> None:
     torch.manual_seed(seed)
 
 
-def _to_device_dict(d: Mapping[str, torch.Tensor], device) -> Dict[str, torch.Tensor]:
-    return {k: v.to(device, non_blocking=True) for k, v in d.items()}
-
-
 def _build_replay(sample_obs, action_shape, num_envs, cfg, device):
     spec = build_obs_spec(sample_obs)
-    storage_device = torch.device(cfg["agent"]["buffer_device"])
     return ReplayBuffer(
         obs_spec=spec,
         action_shape=action_shape,
         num_envs=num_envs,
         buffer_size=int(cfg["agent"]["buffer_size"]),
-        storage_device=storage_device,
         sample_device=device,
     )
 
@@ -229,8 +222,8 @@ def train(config: dict) -> None:
                         real_next_obs[k][need_final] = final_adapt[k][need_final]
 
             replay.add(
-                obs=_to_device_dict(obs, replay.storage_device),
-                next_obs=_to_device_dict(real_next_obs, replay.storage_device),
+                obs=obs,
+                next_obs=real_next_obs,
                 action=act,
                 reward=reward.to(device).float(),
                 done=stop_bootstrap.to(device).float(),

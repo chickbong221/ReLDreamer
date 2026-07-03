@@ -1,15 +1,13 @@
 """Flat circular replay buffer with dict-obs support.
 
-Storage layout: per-env circular slot index. The buffer holds
-(obs, action, reward, next_obs, done) tuples; obs / next_obs are dicts of
-per-key tensors. Sampling draws B independent (slot, env) indices uniformly.
+Storage lives on CPU RAM. Sampling transfers each batch to ``sample_device``
+via a pinned non-blocking copy. Random single-transition sampling makes
+GPU-resident storage a poor fit (10 GB of RGB+graph at buffer_size=300K would
+OOM most cards) and disk-backed storage a worse one (no locality for uniform
+sampling).
 
 Capacity is measured in transitions. ``per_env_buffer_size`` is
 ``buffer_size // num_envs`` so each parallel env owns an equal slice.
-
-Lifted with minor cleanup from ManiSkill's `examples/baselines/sac/sac_rgbd.py`
-(`DictArray` + `ReplayBuffer`); the user's design call was to stay close to
-that reference for drop-in actor/critic compatibility.
 """
 
 from __future__ import annotations
@@ -38,15 +36,13 @@ def _torch_dtype_for(dtype) -> torch.dtype:
 class DictArray:
     """Tensor-of-dicts container, keyed by str -> Tensor of shape (T, N, *)."""
 
-    def __init__(self, buffer_shape, spec: Mapping[str, "TensorSpec"],
-                  device=None):
+    def __init__(self, buffer_shape, spec: Mapping[str, "TensorSpec"]):
         self.buffer_shape = tuple(buffer_shape)
         self.data: Dict[str, torch.Tensor] = {}
         for k, v in spec.items():
             self.data[k] = torch.zeros(
                 self.buffer_shape + tuple(v.shape),
                 dtype=_torch_dtype_for(v.dtype),
-                device=device,
             )
 
     def __getitem__(self, index):
@@ -78,7 +74,10 @@ class ReplayBufferSample:
 
 
 class ReplayBuffer:
-    """Flat circular buffer for SAC. Per-env stripes; uniform sampling."""
+    """Flat circular buffer for SAC. Per-env stripes; uniform sampling.
+
+    Storage is always CPU; samples are transferred to ``sample_device``.
+    """
 
     def __init__(
         self,
@@ -86,7 +85,6 @@ class ReplayBuffer:
         action_shape,
         num_envs: int,
         buffer_size: int,
-        storage_device: torch.device,
         sample_device: torch.device,
     ):
         self.num_envs = int(num_envs)
@@ -94,26 +92,23 @@ class ReplayBuffer:
         if self.per_env_buffer_size < 1:
             raise ValueError(
                 f"buffer_size={buffer_size} too small for num_envs={num_envs}")
-        self.storage_device = storage_device
         self.sample_device = sample_device
         self.pos = 0
         self.full = False
 
         shape = (self.per_env_buffer_size, self.num_envs)
-        self.obs = DictArray(shape, obs_spec, device=storage_device)
-        self.next_obs = DictArray(shape, obs_spec, device=storage_device)
-        self.actions = torch.zeros(
-            shape + tuple(action_shape), dtype=torch.float32, device=storage_device)
-        self.rewards = torch.zeros(shape, dtype=torch.float32, device=storage_device)
-        self.dones = torch.zeros(shape, dtype=torch.float32, device=storage_device)
+        self.obs = DictArray(shape, obs_spec)
+        self.next_obs = DictArray(shape, obs_spec)
+        self.actions = torch.zeros(shape + tuple(action_shape), dtype=torch.float32)
+        self.rewards = torch.zeros(shape, dtype=torch.float32)
+        self.dones = torch.zeros(shape, dtype=torch.float32)
 
     def __len__(self) -> int:
         return (self.per_env_buffer_size if self.full else self.pos) * self.num_envs
 
-    def _to_storage(self, t: torch.Tensor) -> torch.Tensor:
-        if self.storage_device == torch.device("cpu"):
-            return t.detach().cpu()
-        return t.detach().to(self.storage_device, non_blocking=True)
+    @staticmethod
+    def _to_cpu(t: torch.Tensor) -> torch.Tensor:
+        return t.detach().cpu()
 
     def add(
         self,
@@ -125,12 +120,12 @@ class ReplayBuffer:
     ) -> None:
         slot = self.pos
         for k, v in obs.items():
-            self.obs.data[k][slot] = self._to_storage(v)
+            self.obs.data[k][slot] = self._to_cpu(v)
         for k, v in next_obs.items():
-            self.next_obs.data[k][slot] = self._to_storage(v)
-        self.actions[slot] = self._to_storage(action)
-        self.rewards[slot] = self._to_storage(reward.float())
-        self.dones[slot] = self._to_storage(done.float())
+            self.next_obs.data[k][slot] = self._to_cpu(v)
+        self.actions[slot] = self._to_cpu(action)
+        self.rewards[slot] = self._to_cpu(reward.float())
+        self.dones[slot] = self._to_cpu(done.float())
 
         self.pos += 1
         if self.pos == self.per_env_buffer_size:
