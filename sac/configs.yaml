@@ -1,70 +1,72 @@
-# SAC trainer config. Mirrors dreamerv3/configs.yaml structure:
-#   defaults -> base values
-#   <preset name> -> additive overrides selected via --configs <name>
-#
-# CLI: python -m sac.main --task maniskill_PickCube-v1 --configs maniskill_rgb
-#      python -m sac.main --task maniskill_PickSubtaskTrain-v0 --configs mshab
-#                          --env.maniskill.mshab_task pick
+# SAC trainer config. defaults + named presets selected via --configs <name>.
+# CLI: python -m sac.main --configs pick_bowl --task maniskill_PickSubtaskTrain-v0
 
 defaults:
 
-  logdir: logdir/{timestamp}       # relative -> resolved against sac/ in main.py
+  logdir: logdir/{timestamp}
   replica: 0
   replicas: 1
-  task: maniskill_PickCube-v1
+  task: maniskill_PickSubtaskTrain-v0
   seed: 1
   script: train
 
   agent:
-    gamma: 0.8
-    tau: 0.01
-    batch_size: 1024
-    buffer_size: 1_000_000
-    learning_starts: 4_000
-    policy_lr: 3e-4
-    q_lr: 3e-4
-    alpha_lr: 3e-4
-    alpha: 0.2
-    autotune: True                 # learn entropy temperature
-    target_entropy: auto           # 'auto' = -prod(act_shape); or a float
-    policy_frequency: 1
-    target_network_frequency: 1
-    training_freq: 64              # env steps per gradient block
-    utd: 0.5                       # gradient updates per env step
-    bootstrap_at_done: always      # 'always' | 'truncated' | 'never'
-    log_std_min: -5.0
+    gamma: 0.9
+    batch_size: 512
+    buffer_size: 500_000
+    init_steps: 5_000
+    init_temperature: 0.1
+
+    actor_lr: 3.0e-4
+    critic_lr: 3.0e-4
+    alpha_lr: 3.0e-4
+    actor_beta: 0.9
+    critic_beta: 0.9
+    alpha_beta: 0.9
+
+    actor_hidden_dims: [256, 256, 256]
+    actor_update_freq: 2
+    log_std_min: -20.0
     log_std_max: 2.0
-    encoder:
-      out_dim: 256
-      mlp_hidden: [512, 256]
-      detach_critic_encoder: False  # detach encoder grad through critic only
-      critic_layer_norm: False       # LayerNorm inside critic hidden layers
+
+    critic_hidden_dims: [256, 256, 256]
+    critic_layer_norm: True
+    critic_dropout: null
+    critic_tau: 0.005
+    critic_encoder_tau: 0.005
+    critic_target_update_freq: 2
+
+    cnn_features: [32, 64, 128, 256]
+    cnn_filters: [3, 3, 3, 3]
+    cnn_strides: [2, 2, 2, 2]
+    cnn_padding: valid
+    encoder_pixels_feature_dim: 50
+    encoder_state_feature_dim: 50
 
   env:
     maniskill:
       num_envs: 16
       num_eval_envs: 16
-      obs_mode: state              # 'state' | 'rgb' | 'depth'
-      include_state: True          # also concat proprio state to encoder out
       sim_backend: gpu
       control_mode: pd_joint_delta_pos
-      image_size: 64
-      reconfiguration_freq: 0      # 0 = never; 1 = every reset
+      image_size: 128
+      frame_stack: 3
+      reconfiguration_freq: 0
       eval_reconfiguration_freq: 1
       reward_mode: normalized_dense
-      # MS-HAB only (ignored otherwise):
-      mshab_task: none             # 'none' | 'pick' | 'place' | 'open' | 'close'
+      mshab_task: pick
       mshab_split: train
       mshab_obj: all
       mshab_stationary_head: True
-      max_episode_steps: 0         # 0 = registered default
-      eval_max_episode_steps: 0    # 0 = reuse max_episode_steps
+      max_episode_steps: 100
+      eval_max_episode_steps: 200
+      robot_force_mult: 0.001
+      robot_force_penalty_min: 0.2
 
   run:
-    total_steps: 1_000_000
-    log_every: 5_000
+    total_steps: 50_000_000
+    log_every: 10_000
     eval_every: 100_000
-    eval_steps: 50                 # rollout length per eval env
     save_every: 200_000_000
 
   logger:
@@ -76,14 +78,14 @@ defaults:
 
   graph:
     enabled: False
-    profile: tabletop              # teemo_sim_probe profile (thresholds.yaml)
-    thresholds_path: null          # override teemo thresholds.yaml (null = default)
-    whitelist_dir: null            # override teemo whitelists.dir (null = default)
-    camera: fetch_hand             # camera name for segmentation reads
-    n_slots: 10                    # object slots; N_max = n_slots + 1 (+1 ee)
-    k_persist: 5                   # persistence horizon
-    k_soft: 5.0                    # alpha = exp(-tau / k_soft)
-    e_max: 256                     # edge cap after priority truncation
+    profile: tabletop
+    thresholds_path: null
+    whitelist_dir: null
+    camera: fetch_head
+    n_slots: 10
+    k_persist: 5
+    k_soft: 5.0
+    e_max: 256
     embed_dim: 64
     hidden_dim: 256
     out_dim: 128
@@ -93,95 +95,13 @@ defaults:
 # Presets
 # ----------------------------------------------------------------------- #
 
-maniskill_state:
-  env:
-    maniskill:
-      obs_mode: state
-      num_envs: 16
-  agent:
-    batch_size: 1024
-
-maniskill_rgb:
-  env:
-    maniskill:
-      obs_mode: rgb
-      num_envs: 16
-      image_size: 64
-  agent:
-    batch_size: 512               # CNN encoder makes RGB updates heavier
-
-mshab:
-  env:
-    maniskill:
-      obs_mode: depth
-      num_envs: 16
-      mshab_task: pick
-      mshab_split: train
-      mshab_obj: all
-      max_episode_steps: 100
-      eval_max_episode_steps: 200
-      reward_mode: normalized_dense
-  agent:
-    gamma: 0.9                    # matches mshab/train_sac.py
-    batch_size: 512
-    buffer_size: 1_000_000
-  run:
-    total_steps: 50_000_000
-
-mshab_graph:
-  env:
-    maniskill:
-      obs_mode: rgb
-      num_envs: 16
-      mshab_task: pick
-      mshab_split: train
-      mshab_obj: all
-      max_episode_steps: 100
-      eval_max_episode_steps: 200
-      reward_mode: normalized_dense
-  agent:
-    gamma: 0.9
-    batch_size: 512
-    buffer_size: 500_000          # graph tensors inflate per-transition storage
-  run:
-    total_steps: 50_000_000
-  graph:
-    enabled: True
-    profile: tabletop
-    camera: fetch_hand
-
-# set_table / pick / 024_bowl -- mirrors mshab/configs/sac_pick.yml (depth,
-# both cameras, head stationary, 189 envs, 1M replay, batch 512) minus its
-# frame stacking. Add --graph.enabled True to attach the oracle scene graph
-# (requires teemo assets, see README).
 pick_bowl:
   env:
     maniskill:
-      obs_mode: depth
       num_envs: 189
       num_eval_envs: 63
       mshab_task: set_table
       mshab_obj: 024_bowl
-      mshab_split: train
-      mshab_stationary_head: True
-      max_episode_steps: 100
-      eval_max_episode_steps: 200
-      reward_mode: normalized_dense
-  agent:
-    gamma: 0.9
-    tau: 0.005                    # mshab critic_tau
-    batch_size: 512
-    buffer_size: 500_000
-    learning_starts: 5_000        # mshab init_steps
-    alpha: 0.1                    # mshab init_temperature
-    policy_frequency: 2           # mshab actor_update_freq
-    target_network_frequency: 2   # mshab critic_target_update_freq
-    log_std_min: -20.0            # mshab actor_log_std_min
-    encoder:
-      mlp_hidden: [256, 256, 256] # mshab actor/critic hidden_dims
-      critic_layer_norm: True     # mshab critic_layer_norm
-  run:
-    total_steps: 50_000_000
   graph:
     profile: room_scale
     camera: fetch_head

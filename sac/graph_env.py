@@ -68,10 +68,13 @@ class GraphObsBuilder:
                 GraphBuilder(env, cfg_i, env_idx=i, env_id=f"env{i}", camera=camera)
             )
         self._frames = np.zeros(self.num_envs, dtype=np.int64)
+        self.record_env0 = False
+        self.last_env0_graph = None
+        self.last_env0_masks = None
 
     @property
     def obs_spec_shapes(self) -> Dict[str, tuple]:
-        """Per-env shapes for build_obs_spec. Includes dtypes via dummy zeros."""
+        """Per-env shapes for each graph key, consumed by the replay buffer."""
         return {
             "graph_node_ids":     (self.n_max,),
             "graph_node_valid":   (self.n_max,),
@@ -86,7 +89,7 @@ class GraphObsBuilder:
     def _pack_one(
         self, env_idx: int, episode_boundary: bool, seg_i: np.ndarray,
     ) -> Dict[str, np.ndarray]:
-        graph, _, _, _ = self.builders[env_idx].step(
+        graph, masks, _, _ = self.builders[env_idx].step(
             {},
             int(self._frames[env_idx]),
             episode_boundary=episode_boundary,
@@ -94,11 +97,18 @@ class GraphObsBuilder:
             rgb_override=None,
             camera_override=self.camera,
         )
+        if env_idx == 0 and self.record_env0:
+            self.last_env0_graph = graph
+            self.last_env0_masks = masks
         self._frames[env_idx] += 1
         return pack_graph(
             graph, self.node_vocab, self.edge_vocab,
             n_max=self.n_max, e_max=self.e_max, k_soft=self.k_soft,
         )
+
+    def read_rgb_env0(self) -> np.ndarray:
+        rgb = self.env.unwrapped._last_obs["sensor_data"][self.camera]["rgb"][0]
+        return rgb.detach().cpu().numpy().astype(np.uint8)
 
     def _read_batched_seg(self) -> np.ndarray:
         """Return segmentation for every env as ``[N, H, W]``.

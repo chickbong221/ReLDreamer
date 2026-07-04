@@ -1,24 +1,30 @@
-"""SAC training loop.
+"""SAC training loop ported from mshab/train_sac.py.
 
-Single-process driver over a GPU-vectorized ManiSkill/MS-HAB env. One
-``training_freq`` env-step block is interleaved with ``training_freq * utd``
-gradient updates, then logging/eval/save checkpoints fire at their own
-cadences.
+One iteration = one env-step block of ``num_envs`` steps + one gradient
+update. On the first crossing of ``init_steps`` the update runs
+``init_steps`` times in one shot (mshab burn-in).
+
+Eval runs a full ``eval_max_episode_steps``-length sweep across all eval envs.
+When graph is enabled and wandb is on, env-0's first eval episode is rendered
+as an overlay|graph mp4 and pushed to wandb.
 """
 
 from __future__ import annotations
 
+import math
 import os
-import time
-from collections import defaultdict
+import tempfile
+from typing import Dict, Optional
+
+from gymnasium import spaces
 
 import numpy as np
 import torch
 
-from ..agent import SACAgent
+from ..agent import SACAgent, UpdateMetrics
 from ..envs import action_box, adapt_obs, build_env
 from ..graph_env import build_graph_obs
-from ..replay import ReplayBuffer, build_obs_spec
+from ..replay import PixelStateBatchReplayBuffer
 
 
 def _seed_everything(seed: int) -> None:
@@ -28,30 +34,6 @@ def _seed_everything(seed: int) -> None:
     torch.manual_seed(seed)
 
 
-def _build_replay(sample_obs, action_shape, num_envs, cfg, device):
-    spec = build_obs_spec(sample_obs)
-    return ReplayBuffer(
-        obs_spec=spec,
-        action_shape=action_shape,
-        num_envs=num_envs,
-        buffer_size=int(cfg["agent"]["buffer_size"]),
-        sample_device=device,
-    )
-
-
-def _format_console_metrics(metrics: dict) -> str:
-    parts = []
-    for key, value in metrics.items():
-        if isinstance(value, (int, np.integer)):
-            parts.append(f"{key}: {int(value)}")
-        elif isinstance(value, (float, np.floating)):
-            parts.append(f"{key}: {float(value):.4g}")
-    return ", ".join(parts)
-
-
-# --------------------------------------------------------------------------- #
-# Logging
-# --------------------------------------------------------------------------- #
 class Logger:
     def __init__(self, logdir: str, outputs):
         self.logdir = logdir
@@ -59,99 +41,115 @@ class Logger:
         os.makedirs(logdir, exist_ok=True)
         self.tb = None
         self.jsonl_path = None
+        self.wandb = None
         if "tensorboard" in self.outputs:
             from torch.utils.tensorboard import SummaryWriter
             self.tb = SummaryWriter(logdir)
         if "jsonl" in self.outputs:
             self.jsonl_path = os.path.join(logdir, "metrics.jsonl")
-        self.wandb = None
         if "wandb" in self.outputs:
             import wandb
             self.wandb = wandb
 
     def scalar(self, tag: str, value, step: int) -> None:
-        if isinstance(value, torch.Tensor):
-            value = float(value.detach().cpu().item())
-        else:
-            value = float(value)
+        v = float(value.detach().cpu().item()) if isinstance(value, torch.Tensor) else float(value)
         if self.tb is not None:
-            self.tb.add_scalar(tag, value, step)
+            self.tb.add_scalar(tag, v, step)
         if self.wandb is not None:
-            self.wandb.log({tag: value}, step=step)
+            self.wandb.log({tag: v}, step=step)
         if self.jsonl_path is not None:
             import json
             with open(self.jsonl_path, "a") as f:
-                f.write(json.dumps({"step": step, "tag": tag, "value": value}) + "\n")
+                f.write(json.dumps({"step": step, "tag": tag, "value": v}) + "\n")
+
+    def video(self, tag: str, path: str, step: int) -> None:
+        if self.wandb is not None:
+            self.wandb.log({tag: self.wandb.Video(str(path))}, step=step)
 
     def close(self):
         if self.tb is not None:
             self.tb.close()
 
 
-# --------------------------------------------------------------------------- #
-# Train entrypoint
-# --------------------------------------------------------------------------- #
 def train(config: dict) -> None:
     suite, task = config["task"].split("_", 1)
     if suite != "maniskill":
         raise NotImplementedError(
-            f"sac.run.train only supports the 'maniskill' suite (got {suite!r}). "
-            "MS-HAB envs are reached via task='maniskill_<SubtaskTrain>'.")
+            f"sac.run.train only supports 'maniskill' (got {suite!r})."
+        )
+
     env_cfg = dict(config["env"]["maniskill"])
     agent_cfg = dict(config["agent"])
     run_cfg = dict(config["run"])
-    graph_cfg = dict(config.get("graph", {}))
-    obs_mode = str(env_cfg["obs_mode"])
-    graph_enabled = bool(graph_cfg.get("enabled", False))
+    graph_raw = dict(config.get("graph", {}))
+    graph_enabled = bool(graph_raw.get("enabled", False))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     _seed_everything(int(config["seed"]))
 
-    # --- env ----------------------------------------------------------------
     envs = build_env(task, env_cfg, is_eval=False, seed=int(config["seed"]),
                      graph_enabled=graph_enabled)
     eval_envs = build_env(task, env_cfg, is_eval=True, seed=int(config["seed"]) + 1,
                           graph_enabled=graph_enabled)
-    action_shape, action_low, action_high = action_box(envs)
+    action_shape, _, _ = action_box(envs)
     num_envs = int(env_cfg["num_envs"])
     num_eval_envs = int(env_cfg["num_eval_envs"])
 
-    graph_train = build_graph_obs(envs, graph_cfg, num_envs=num_envs)
-    graph_eval = build_graph_obs(eval_envs, graph_cfg, num_envs=num_eval_envs)
+    graph_train = build_graph_obs(envs, graph_raw, num_envs=num_envs)
+    graph_eval = build_graph_obs(eval_envs, graph_raw, num_envs=num_eval_envs)
 
-    # --- initial obs (also serves as sample for spec discovery) -------------
-    obs_raw, _ = envs.reset(seed=int(config["seed"]))
-    obs = adapt_obs(obs_raw, obs_mode, device)
-    if graph_train is not None:
-        obs.update(graph_train.reset(device))
-    eval_obs_raw, _ = eval_envs.reset(seed=int(config["seed"]) + 1)
-    eval_obs = adapt_obs(eval_obs_raw, obs_mode, device)
-    if graph_eval is not None:
-        eval_obs.update(graph_eval.reset(device))
+    raw_obs, _ = envs.reset(seed=int(config["seed"]))
+    obs = adapt_obs(raw_obs, device)
+    graph_obs = graph_train.reset(device) if graph_train is not None else None
+    eval_envs.reset(seed=int(config["seed"]) + 1)
 
-    # --- agent + replay -----------------------------------------------------
-    if graph_train is not None:
-        agent_cfg.setdefault("encoder", {})
-        agent_cfg["encoder"]["graph"] = {
-            "node_vocab_size": len(graph_train.node_vocab),
-            "edge_vocab_size": len(graph_train.edge_vocab),
-            "embed_dim": graph_cfg.get("embed_dim", 64),
-            "hidden_dim": graph_cfg.get("hidden_dim", 256),
-            "out_dim": graph_cfg.get("out_dim", 128),
-            "num_layers": graph_cfg.get("num_layers", 2),
-        }
+    replay_pixels_space, agent_pixels_space = _pixels_obs_spaces(obs["pixels"])
+    state_dim = int(obs["state"].shape[1])
+
+    graph_agent_cfg: Optional[dict] = None
+    if graph_enabled:
+        graph_agent_cfg = dict(
+            node_vocab_size=len(graph_train.node_vocab),
+            edge_vocab_size=len(graph_train.edge_vocab),
+            embed_dim=int(graph_raw.get("embed_dim", 64)),
+            hidden_dim=int(graph_raw.get("hidden_dim", 256)),
+            out_dim=int(graph_raw.get("out_dim", 128)),
+            num_layers=int(graph_raw.get("num_layers", 2)),
+        )
 
     agent = SACAgent(
-        sample_obs=obs,
+        pixels_obs_space=agent_pixels_space,
+        state_dim=state_dim,
         action_shape=action_shape,
-        action_low=action_low,
-        action_high=action_high,
         cfg=agent_cfg,
+        graph_cfg=graph_agent_cfg,
         device=device,
     )
-    replay = _build_replay(obs, action_shape, num_envs, config, device)
 
-    # --- logging ------------------------------------------------------------
+    horizon = int(env_cfg["max_episode_steps"])
+    buffer_cfg = int(agent_cfg["buffer_size"])
+    capacity = (buffer_cfg // (num_envs * horizon)) * (num_envs * horizon)
+    assert capacity > 0, (
+        f"buffer_size={buffer_cfg} too small for num_envs*horizon={num_envs*horizon}"
+    )
+    replay_horizon = horizon - 1
+    replay_size = (capacity // horizon) * replay_horizon
+
+    graph_shapes = graph_dtypes = None
+    if graph_enabled:
+        graph_shapes = graph_train.obs_spec_shapes
+        graph_dtypes = {k: v.detach().cpu().numpy().dtype for k, v in graph_obs.items()}
+    replay = PixelStateBatchReplayBuffer(
+        pixels_obs_space=replay_pixels_space,
+        state_obs_dim=state_dim,
+        act_dim=int(np.prod(action_shape)),
+        size=replay_size,
+        horizon=replay_horizon,
+        num_envs=num_envs,
+        graph_shapes=graph_shapes,
+        graph_dtypes=graph_dtypes,
+    )
+
     logger = Logger(config["logdir"], config["logger"]["outputs"])
     if "wandb" in config["logger"]["outputs"]:
         import wandb
@@ -165,218 +163,210 @@ def train(config: dict) -> None:
             resume="allow",
         )
 
-    # --- training loop ------------------------------------------------------
     total_steps = int(run_cfg["total_steps"])
-    learning_starts = int(agent_cfg["learning_starts"])
-    training_freq = int(agent_cfg["training_freq"])
-    utd = float(agent_cfg["utd"])
-    grad_steps_per_block = max(1, int(training_freq * utd))
-    steps_per_env_block = max(1, training_freq // num_envs)
+    init_steps = int(agent_cfg["init_steps"])
     log_every = int(run_cfg["log_every"])
     eval_every = int(run_cfg["eval_every"])
     save_every = int(run_cfg["save_every"])
-    eval_steps = int(run_cfg["eval_steps"])
+    eval_max_steps = int(env_cfg["eval_max_episode_steps"])
+    batch_size = int(agent_cfg["batch_size"])
 
     global_step = 0
     last_log = -log_every
-    last_console = -log_every
     last_eval = -eval_every
-    last_save = -save_every
-    learning_has_started = False
-    cumulative = defaultdict(float)
+    last_save = 0
+    num_iterations = math.ceil(total_steps / num_envs)
 
-    print(f"[sac] task={task} obs_mode={obs_mode} num_envs={num_envs} "
-          f"buffer={agent_cfg['buffer_size']} device={device}")
-    print("[sac] Start training loop", flush=True)
+    print(f"[sac] task={task} num_envs={num_envs} horizon={horizon} "
+          f"buffer(cap)={capacity} buffer(trans)={replay_size} device={device}",
+          flush=True)
 
-    while global_step < total_steps:
-        # ----- collect a training_freq block --------------------------------
-        rollout_t = time.perf_counter()
-        for _ in range(steps_per_env_block):
-            if not learning_has_started:
-                act = (
-                    2.0 * torch.rand(envs.action_space.shape,
-                                     dtype=torch.float32, device=device) - 1.0
-                )
-            else:
-                act = agent.act(obs, deterministic=False)
-            act = act.detach()
+    for iteration in range(num_iterations):
+        if global_step >= total_steps:
+            break
 
-            next_obs_raw, reward, terminated, truncated, info = envs.step(act)
-            next_obs = adapt_obs(next_obs_raw, obs_mode, device)
-            done = (terminated | truncated)
-            if graph_train is not None:
-                next_obs.update(graph_train.step(done, device))
+        if len(replay) < init_steps:
+            act = 2.0 * torch.rand(envs.action_space.shape,
+                                    dtype=torch.float32, device=device) - 1.0
+        else:
+            act = agent.act(obs["pixels"], obs["state"], graph_obs, deterministic=False)
 
-            # Real next-obs uses final_observation on done envs so the Q-target
-            # bootstraps off the actual final state, not the auto-reset state.
-            # Graph keys are exempt: the builder is stateful, so we cannot
-            # rewind it to the pre-reset frame.
-            real_next_obs = {k: v.clone() for k, v in next_obs.items()}
-            bootstrap = str(agent_cfg["bootstrap_at_done"])
-            if bootstrap == "always":
-                need_final = done
-                stop_bootstrap = torch.zeros_like(terminated, dtype=torch.bool)
-            elif bootstrap == "truncated":
-                need_final = truncated & (~terminated)
-                stop_bootstrap = terminated
-            elif bootstrap == "never":
-                need_final = done
-                stop_bootstrap = done
-            else:
-                raise ValueError(f"Unknown bootstrap_at_done={bootstrap!r}")
+        next_raw, rew, term, trunc, _ = envs.step(act)
+        next_obs = adapt_obs(next_raw, device)
+        done = term | trunc
+        graph_next = graph_train.step(done, device) if graph_train is not None else None
 
-            if "final_observation" in info and need_final.any():
-                final_raw = info["final_observation"]
-                final_adapt = adapt_obs(final_raw, obs_mode, device)
-                for k in real_next_obs:
-                    if k in final_adapt:
-                        real_next_obs[k][need_final] = final_adapt[k][need_final]
+        trunc_any = bool(trunc.any().item())
+        replay.store_batch(
+            pixel_obs={k: v.detach().cpu().numpy().astype(np.uint16) for k, v in obs["pixels"].items()},
+            pixel_next_obs={k: v.detach().cpu().numpy().astype(np.uint16) for k, v in next_obs["pixels"].items()},
+            state_obs=obs["state"].detach().cpu().numpy(),
+            state_next_obs=next_obs["state"].detach().cpu().numpy(),
+            act=act.detach().cpu().numpy(),
+            rew=rew.detach().cpu().numpy(),
+            term=term.detach().cpu().numpy().astype(np.float32),
+            graph_obs=(
+                {k: v.detach().cpu().numpy() for k, v in graph_obs.items()}
+                if graph_obs is not None else None
+            ),
+            graph_next_obs=(
+                {k: v.detach().cpu().numpy() for k, v in graph_next.items()}
+                if graph_next is not None else None
+            ),
+            trunc_any=trunc_any,
+        )
 
-            replay.add(
-                obs=obs,
-                next_obs=real_next_obs,
-                action=act,
-                reward=reward.to(device).float(),
-                done=stop_bootstrap.to(device).float(),
+        obs, graph_obs = next_obs, graph_next
+        global_step += num_envs
+
+        loss_metrics: Optional[UpdateMetrics] = None
+        if len(replay) >= init_steps:
+            num_updates = init_steps if len(replay) == init_steps else 1
+            for _ in range(num_updates):
+                batch = _batch_to_tensors(replay.sample_batch(batch_size), device)
+                loss_metrics = agent.update(batch)
+
+        if global_step - last_log >= log_every:
+            last_log = global_step
+            if len(envs.return_queue) > 0:
+                _log_env_stats(logger, envs, "train", global_step)
+            if loss_metrics is not None:
+                _log_losses(logger, loss_metrics, global_step)
+            print(f"[sac] step={global_step}/{total_steps} replay={len(replay)}", flush=True)
+
+        if eval_every > 0 and global_step - last_eval >= eval_every:
+            last_eval = global_step
+            _run_eval(
+                agent, eval_envs, graph_eval, logger, device,
+                eval_max_steps=eval_max_steps,
+                step=global_step,
+                wandb_enabled="wandb" in config["logger"]["outputs"],
             )
 
-            obs = next_obs
-            global_step += num_envs
-
-            # Track per-block episode metrics from the env wrapper.
-            if "final_info" in info and "episode" in info["final_info"]:
-                mask = info.get("_final_info", done)
-                ep = info["final_info"]["episode"]
-                for key, val in ep.items():
-                    arr = val.detach().float().view(-1)
-                    arr = arr[mask.view(-1)] if mask is not None else arr
-                    if arr.numel() > 0:
-                        cumulative[f"train/{key}"] += float(arr.mean().item())
-                        cumulative[f"train/{key}_n"] += 1.0
-        rollout_t = time.perf_counter() - rollout_t
-        steps_in_block = num_envs * steps_per_env_block
-
-        if global_step - last_console >= log_every:
-            last_console = global_step
-            console_metrics = {
-                "step": global_step,
-                "total": total_steps,
-                "replay": len(replay),
-            }
-            if rollout_t > 0:
-                console_metrics["fps/rollout"] = steps_in_block / rollout_t
-            for key, total in list(cumulative.items()):
-                if key.endswith("_n"):
-                    continue
-                n = cumulative.get(f"{key}_n", 0.0)
-                if n > 0:
-                    console_metrics[key] = total / n
-            phase = "collect" if global_step < learning_starts else "train"
-            print(f"[sac] {phase} | {_format_console_metrics(console_metrics)}",
-                  flush=True)
-
-        # ----- updates -------------------------------------------------------
-        if global_step < learning_starts:
-            continue
-        learning_has_started = True
-        update_t = time.perf_counter()
-        last_metrics = None
-        for _ in range(grad_steps_per_block):
-            batch = replay.sample(int(agent_cfg["batch_size"]))
-            last_metrics = agent.update(batch)
-        update_t = time.perf_counter() - update_t
-
-        # ----- logging -------------------------------------------------------
-        if global_step - last_log >= log_every and last_metrics is not None:
-            last_log = global_step
-            logger.scalar("losses/qf_loss", last_metrics.qf_loss, global_step)
-            logger.scalar("losses/qf1_value", last_metrics.qf1_value, global_step)
-            logger.scalar("losses/qf2_value", last_metrics.qf2_value, global_step)
-            logger.scalar("losses/actor_loss", last_metrics.actor_loss, global_step)
-            logger.scalar("losses/alpha", last_metrics.alpha, global_step)
-            logger.scalar("losses/alpha_loss", last_metrics.alpha_loss, global_step)
-            logger.scalar("time/rollout_s", rollout_t, global_step)
-            logger.scalar("time/update_s", update_t, global_step)
-            if rollout_t > 0:
-                logger.scalar("time/rollout_fps",
-                              steps_in_block / rollout_t, global_step)
-            # Emit averaged episode metrics, then reset cumulative bins.
-            for key, total in list(cumulative.items()):
-                if key.endswith("_n"):
-                    continue
-                n = cumulative.get(f"{key}_n", 0.0)
-                if n > 0:
-                    logger.scalar(key, total / n, global_step)
-            cumulative.clear()
-            print("[sac] update | " + _format_console_metrics({
-                "step": global_step,
-                "qf_loss": last_metrics.qf_loss,
-                "actor_loss": last_metrics.actor_loss,
-                "alpha": last_metrics.alpha,
-                "update_s": update_t,
-            }), flush=True)
-
-        # ----- eval ----------------------------------------------------------
-        if global_step - last_eval >= eval_every:
-            last_eval = global_step
-            print(f"[sac] eval start | step: {global_step}, "
-                  f"eval_steps: {eval_steps}, num_eval_envs: {num_eval_envs}",
-                  flush=True)
-            metrics = _evaluate(agent, eval_envs, eval_obs, obs_mode, device,
-                                 num_steps=eval_steps, graph_obs=graph_eval)
-            for key, value in metrics.items():
-                logger.scalar(f"eval/{key}", value, global_step)
-            shown = _format_console_metrics({
-                **metrics,
-                "step": global_step,
-            })
-            print(f"Eval metrics | {shown or f'step: {global_step}'}",
-                  flush=True)
-
-        # ----- save ----------------------------------------------------------
-        if global_step - last_save >= save_every:
+        if save_every > 0 and global_step - last_save >= save_every:
             last_save = global_step
-            path = os.path.join(config["logdir"], f"ckpt_{global_step}.pt")
-            torch.save({"agent": agent.state_dict(),
-                         "global_step": global_step,
-                         "config": config}, path)
-            print(f"[sac] saved {path}")
+            torch.save(
+                {"agent": agent.state_dict(),
+                 "log_alpha": agent.log_alpha.detach()},
+                os.path.join(config["logdir"], "latest.pt"),
+            )
 
-    final_path = os.path.join(config["logdir"], "ckpt_final.pt")
-    torch.save({"agent": agent.state_dict(),
-                 "global_step": global_step,
-                 "config": config}, final_path)
-    print(f"[sac] saved {final_path}")
     logger.close()
-    envs.close()
-    eval_envs.close()
 
 
-# --------------------------------------------------------------------------- #
-# Eval
-# --------------------------------------------------------------------------- #
-@torch.no_grad()
-def _evaluate(agent, eval_envs, eval_obs, obs_mode, device, *, num_steps: int,
-               graph_obs=None):
-    metrics = defaultdict(list)
-    obs = eval_obs
-    obs_raw, _ = eval_envs.reset()
-    obs = adapt_obs(obs_raw, obs_mode, device)
-    if graph_obs is not None:
-        obs.update(graph_obs.reset(device))
-    for _ in range(num_steps):
-        act = agent.act(obs, deterministic=True)
-        obs_raw, _, terminated, truncated, info = eval_envs.step(act)
-        obs = adapt_obs(obs_raw, obs_mode, device)
-        if graph_obs is not None:
-            obs.update(graph_obs.step(terminated | truncated, device))
-        if "final_info" in info and "episode" in info["final_info"]:
-            ep = info["final_info"]["episode"]
-            mask = info.get("_final_info", terminated | truncated)
-            for key, val in ep.items():
-                arr = val.detach().float().view(-1)[mask.view(-1)]
-                if arr.numel() > 0:
-                    metrics[key].append(arr.mean().item())
-    out = {k: float(np.mean(v)) for k, v in metrics.items() if v}
+def _pixels_obs_spaces(pixels_obs: Dict[str, torch.Tensor]):
+    """Return (replay_space, agent_space).
+
+    replay: 4D per-camera (fs, C, H, W) so PixelStateBatchReplayBuffer can
+    materialize frame stacks at sample time.
+    agent: 3D per-camera (fs*C, H, W) for SharedCNN's Conv2d input.
+    """
+    replay_dict, agent_dict = {}, {}
+    for k, v in pixels_obs.items():
+        _, fs, c, h, w = v.shape
+        replay_dict[k] = spaces.Box(low=0, high=65535, shape=(fs, c, h, w), dtype=np.uint16)
+        agent_dict[k] = spaces.Box(low=0, high=65535, shape=(fs * c, h, w), dtype=np.uint16)
+    return spaces.Dict(replay_dict), spaces.Dict(agent_dict)
+
+
+def _batch_to_tensors(batch, device):
+    to_f = lambda x: torch.as_tensor(x, device=device, dtype=torch.float32)
+    out = dict(
+        pixel_obs={k: to_f(v) for k, v in batch["pixel_obs"].items()},
+        pixel_next_obs={k: to_f(v) for k, v in batch["pixel_next_obs"].items()},
+        state_obs=to_f(batch["state_obs"]),
+        state_next_obs=to_f(batch["state_next_obs"]),
+        act=to_f(batch["act"]),
+        rew=to_f(batch["rew"]),
+        term=to_f(batch["term"]),
+    )
+    if "graph_obs" in batch:
+        out["graph_obs"] = {k: torch.as_tensor(v, device=device) for k, v in batch["graph_obs"].items()}
+        out["graph_next_obs"] = {k: torch.as_tensor(v, device=device) for k, v in batch["graph_next_obs"].items()}
     return out
+
+
+def _log_env_stats(logger: Logger, env, key: str, step: int) -> None:
+    def _mean(queue) -> float:
+        vals = [x.detach().float() if isinstance(x, torch.Tensor) else torch.as_tensor(x).float()
+                 for x in queue]
+        return float(torch.stack(vals).mean().item()) if vals else 0.0
+    logger.scalar(f"{key}/return_per_step",
+                   _mean(env.return_queue) / env.max_episode_steps, step)
+    logger.scalar(f"{key}/success_once", _mean(env.success_once_queue), step)
+    logger.scalar(f"{key}/success_at_end", _mean(env.success_at_end_queue), step)
+    logger.scalar(f"{key}/len", _mean(env.length_queue), step)
+    env.reset_queues()
+
+
+def _log_losses(logger: Logger, m: UpdateMetrics, step: int) -> None:
+    logger.scalar("losses/critic_loss", m.critic_loss, step)
+    logger.scalar("losses/q1", m.q1, step)
+    logger.scalar("losses/q2", m.q2, step)
+    if m.actor_loss is not None:
+        logger.scalar("losses/actor_loss", m.actor_loss, step)
+        logger.scalar("losses/alpha_loss", m.alpha_loss, step)
+        logger.scalar("losses/entropy_mean", m.entropy_mean, step)
+    logger.scalar("alpha", m.alpha, step)
+    logger.scalar("log_alpha", m.log_alpha, step)
+    logger.scalar("target_entropy", m.target_entropy, step)
+
+
+def _run_eval(agent, eval_envs, graph_eval, logger, device, *,
+               eval_max_steps: int, step: int, wandb_enabled: bool) -> None:
+    do_video = graph_eval is not None and wandb_enabled
+    tmp_dir = None
+    overlay_paths, graph_paths = [], []
+    cmap = None
+    env0_done = False
+
+    if do_video:
+        from teemo_sim_probe.viz.palette import ColorMap
+        from teemo_sim_probe.viz.overlay import render_overlay
+        from teemo_sim_probe.viz.graph_draw import render_graph
+        graph_eval.record_env0 = True
+        tmp_dir = tempfile.TemporaryDirectory()
+        cmap = ColorMap()
+
+    eval_raw, _ = eval_envs.reset()
+    obs = adapt_obs(eval_raw, device)
+    graph_obs = graph_eval.reset(device) if graph_eval is not None else None
+
+    def _record_frame(t: int) -> None:
+        rgb0 = graph_eval.read_rgb_env0()
+        overlay_paths.append(render_overlay(
+            rgb0, graph_eval.last_env0_graph, graph_eval.last_env0_masks,
+            os.path.join(tmp_dir.name, f"overlay_{t:04d}.png"), colormap=cmap,
+        ))
+        graph_paths.append(render_graph(
+            graph_eval.last_env0_graph,
+            os.path.join(tmp_dir.name, f"graph_{t:04d}.png"), colormap=cmap,
+        ))
+
+    if do_video:
+        _record_frame(0)
+
+    for t in range(eval_max_steps):
+        with torch.no_grad():
+            act = agent.act(obs["pixels"], obs["state"], graph_obs, deterministic=True)
+        next_raw, _, term, trunc, _ = eval_envs.step(act)
+        obs = adapt_obs(next_raw, device)
+        done = term | trunc
+        if graph_eval is not None:
+            graph_obs = graph_eval.step(done, device)
+
+        if do_video and not env0_done:
+            _record_frame(t + 1)
+            if bool(done[0].item()):
+                env0_done = True
+
+    if len(eval_envs.return_queue) > 0:
+        _log_env_stats(logger, eval_envs, "eval", step)
+
+    if do_video:
+        from teemo_sim_probe.viz.video_writer import write_video
+        mp4 = os.path.join(tmp_dir.name, "eval.mp4")
+        write_video(overlay_paths, graph_paths, mp4, fps=5)
+        logger.video("eval/graph_video", mp4, step)
+        graph_eval.record_env0 = False
+        tmp_dir.cleanup()

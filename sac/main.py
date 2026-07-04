@@ -1,14 +1,10 @@
 """CLI entry for the SAC trainer.
 
-Examples:
-    python -m sac.main --configs maniskill_state --task maniskill_PickCube-v1
-    python -m sac.main --configs maniskill_rgb   --task maniskill_PickCube-v1
-    python -m sac.main --configs mshab           --task maniskill_PickSubtaskTrain-v0 \
-                       --env.maniskill.mshab_task pick
+Example:
+    python -m sac.main --configs pick_bowl --task maniskill_PickSubtaskTrain-v0
 
-The structure mirrors dreamerv3/main.py: a single configs.yaml with a
-``defaults`` block plus named presets selected by ``--configs <name>``, and
-arbitrary dotted overrides for individual keys.
+A single configs.yaml holds ``defaults`` + named presets selected by
+``--configs <name>``. Dotted overrides (``--graph.enabled True``) work too.
 """
 
 from __future__ import annotations

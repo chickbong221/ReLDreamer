@@ -1,170 +1,214 @@
-"""Network primitives for SAC.
-
-PlainConv lifted from ManiSkill's sac_rgbd baseline; MLP and EncoderObsWrapper
-adapted to the dict-obs schema we use here:
-
-    obs is a dict that always contains 'state' and optionally:
-      - 'rgb'   : uint8 [N, H, W, C_rgb]   (channels-last)
-      - 'depth' : float [N, H, W, C_depth] (channels-last; pre-normalized)
-
-Both image keys are channels-last to match how ManiSkill returns them; the
-encoder permutes to channels-first before the CNN.
+"""SAC modules ported from mshab/agents/sac. Encoder gains an optional graph
+branch: gradients from actor loss detach through it and the target encoder
+EMA covers it.
 """
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
-def make_mlp(
-    in_channels: int,
-    mlp_channels: List[int],
-    act_builder=nn.ReLU,
-    last_act: bool = True,
-    layer_norm: bool = False,
-) -> nn.Sequential:
-    """Linear -> [LayerNorm] -> act, repeated. LayerNorm sits before the activation
-    (mshab critic pattern); the final layer skips LayerNorm since we want raw
-    logits/Q-values there.
-    """
-    c_in = in_channels
-    layers: List[nn.Module] = []
-    for idx, c_out in enumerate(mlp_channels):
-        layers.append(nn.Linear(c_in, c_out))
-        is_last = idx == len(mlp_channels) - 1
-        if layer_norm and not is_last:
-            layers.append(nn.LayerNorm(c_out))
-        if last_act or not is_last:
-            layers.append(act_builder())
-        c_in = c_out
-    return nn.Sequential(*layers)
+def get_out_shape(in_shape, layers):
+    x = torch.randn(*in_shape).unsqueeze(0)
+    return int(np.prod(layers(x).shape))
 
 
-class PlainConv(nn.Module):
-    """Simple 5-block CNN used by the ManiSkill SAC baselines.
+def gaussian_logprob(noise, log_std):
+    residual = (-0.5 * noise.pow(2) - log_std).sum(-1, keepdim=True)
+    return residual - 0.5 * np.log(2 * np.pi) * noise.size(-1)
 
-    Accepts ``in_channels`` to handle RGB (3), depth (1), or stacked variants.
-    The MaxPool kernel adapts to image_size so the final feature is always
-    64 * 4 * 4 = 1024.
-    """
+
+def squash(mu, pi, log_pi):
+    mu = torch.tanh(mu)
+    if pi is not None:
+        pi = torch.tanh(pi)
+    if log_pi is not None:
+        log_pi -= torch.log(F.relu(1 - pi.pow(2)) + 1e-6).sum(-1, keepdim=True)
+    return mu, pi, log_pi
+
+
+def weight_init(m):
+    if isinstance(m, nn.Linear):
+        nn.init.orthogonal_(m.weight.data)
+        m.bias.data.fill_(0.0)
+    elif isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
+        assert m.weight.size(2) == m.weight.size(3)
+        m.weight.data.fill_(0.0)
+        m.bias.data.fill_(0.0)
+        mid = m.weight.size(2) // 2
+        gain = nn.init.calculate_gain("relu")
+        nn.init.orthogonal_(m.weight.data[:, :, mid, mid], gain)
+
+
+class Flatten(nn.Module):
+    def forward(self, x):
+        return x.view(x.size(0), -1)
+
+
+class RLProjection(nn.Module):
+    def __init__(self, in_dim, out_dim):
+        super().__init__()
+        self.projection = nn.Sequential(
+            nn.Linear(in_dim, out_dim), nn.LayerNorm(out_dim), nn.Tanh(),
+        )
+        self.out_dim = out_dim
+        self.apply(weight_init)
+
+    def forward(self, x):
+        return self.projection(x)
+
+
+class SharedCNN(nn.Module):
+    def __init__(self, pixel_obs_shape, features, filters, strides, padding):
+        super().__init__()
+        assert len(pixel_obs_shape) == 3
+        in_features = [pixel_obs_shape[0]] + list(features)
+        layers = []
+        for i, (in_f, out_f, k, s) in enumerate(
+            zip(in_features, features, filters, strides)
+        ):
+            layers.append(nn.Conv2d(in_f, out_f, k, s, padding=padding))
+            if i < len(filters) - 1:
+                layers.append(nn.ReLU())
+        layers.append(Flatten())
+        self.layers = nn.Sequential(*layers)
+        self.out_dim = get_out_shape(pixel_obs_shape, self.layers)
+        self.apply(weight_init)
+
+    def forward(self, pixels: torch.Tensor):
+        # Fold frame-stacked [B, fs, C, H, W] into channels.
+        if pixels.dim() == 5:
+            b, fs, d, h, w = pixels.shape
+            pixels = pixels.view(b, fs * d, h, w).contiguous()
+        return self.layers(pixels)
+
+
+class Encoder(nn.Module):
+    """Per-camera CNNs + state projection, with an optional graph branch."""
 
     def __init__(
         self,
-        in_channels: int = 3,
-        out_dim: int = 256,
-        image_size=(64, 64),
-        last_act: bool = True,
+        cnns: nn.ModuleDict,
+        pixels_projections: nn.ModuleDict,
+        state_projection: RLProjection,
+        graph_encoder: Optional[nn.Module] = None,
+        graph_projection: Optional[RLProjection] = None,
     ):
         super().__init__()
-        self.out_dim = out_dim
-        first_pool = 4 if image_size[0] == 128 and image_size[1] == 128 else 2
-        self.cnn = nn.Sequential(
-            nn.Conv2d(in_channels, 16, 3, padding=1), nn.ReLU(inplace=True),
-            nn.MaxPool2d(first_pool, first_pool),
-            nn.Conv2d(16, 32, 3, padding=1),           nn.ReLU(inplace=True),
-            nn.MaxPool2d(2, 2),
-            nn.Conv2d(32, 64, 3, padding=1),           nn.ReLU(inplace=True),
-            nn.MaxPool2d(2, 2),
-            nn.Conv2d(64, 64, 3, padding=1),           nn.ReLU(inplace=True),
-            nn.MaxPool2d(2, 2),
-            nn.Conv2d(64, 64, 1, padding=0),           nn.ReLU(inplace=True),
+        self.cnns = cnns
+        self.pixels_projections = pixels_projections
+        self.state_projection = state_projection
+        self.graph_encoder = graph_encoder
+        self.graph_projection = graph_projection
+        self.out_dim = (
+            sum(p.out_dim for p in pixels_projections.values())
+            + state_projection.out_dim
+            + (graph_projection.out_dim if graph_projection is not None else 0)
         )
-        self.fc = make_mlp(64 * 4 * 4, [out_dim], last_act=last_act)
-        self._init()
 
-    def _init(self) -> None:
-        for module in self.modules():
-            if isinstance(module, (nn.Linear, nn.Conv2d)) and module.bias is not None:
-                nn.init.zeros_(module.bias)
+    def forward(
+        self,
+        pixels: Dict[str, torch.Tensor],
+        state: torch.Tensor,
+        graph: Optional[Dict[str, torch.Tensor]] = None,
+        detach: bool = False,
+    ) -> torch.Tensor:
+        pencs = [(k, cnn(pixels[k])) for k, cnn in self.cnns.items()]
+        if detach:
+            pencs = [(k, p.detach()) for k, p in pencs]
+        parts = [self.pixels_projections[k](p) for k, p in pencs]
+        parts.append(self.state_projection(state))
+        if self.graph_encoder is not None:
+            g = self.graph_encoder(graph)
+            if detach:
+                g = g.detach()
+            parts.append(self.graph_projection(g))
+        return torch.cat(parts, dim=1)
 
-    def forward(self, image: torch.Tensor) -> torch.Tensor:
-        x = self.cnn(image)
-        x = x.flatten(1)
-        return self.fc(x)
 
-
-class EncoderObsWrapper(nn.Module):
-    """Wrap a CNN so it accepts the dict-obs format.
-
-    Handles:
-      - channels-last -> channels-first permute
-      - uint8 RGB normalization to [0, 1]
-      - optional depth concat (depth is already float [0, 1])
-
-    The encoder is intentionally state-agnostic: callers concat `obs['state']`
-    after embedding the pixels.
-    """
-
-    def __init__(self, encoder: PlainConv, rgb_key: Optional[str] = None,
-                 depth_key: Optional[str] = None):
+class Actor(nn.Module):
+    def __init__(self, encoder, action_dim, hidden_dims, log_std_min, log_std_max):
         super().__init__()
         self.encoder = encoder
-        self.rgb_key = rgb_key
-        self.depth_key = depth_key
+        in_dims = [encoder.out_dim] + list(hidden_dims)
+        out_dims = list(hidden_dims) + [2 * action_dim]
+        layers = []
+        for i, (i_, o_) in enumerate(zip(in_dims, out_dims)):
+            layers.append(nn.Linear(i_, o_))
+            if i < len(in_dims) - 1:
+                layers.append(nn.ReLU())
+        self.mlp = nn.Sequential(*layers)
+        self.log_std_min = float(log_std_min)
+        self.log_std_max = float(log_std_max)
+        self.apply(weight_init)
 
-    @property
-    def out_dim(self) -> int:
-        return self.encoder.out_dim
+    def forward(
+        self,
+        pixels: Dict[str, torch.Tensor],
+        state: torch.Tensor,
+        graph: Optional[Dict[str, torch.Tensor]] = None,
+        compute_pi: bool = True,
+        compute_log_pi: bool = True,
+        detach: bool = False,
+    ):
+        x = self.encoder(pixels, state, graph, detach=detach)
+        mu, log_std = self.mlp(x).chunk(2, dim=-1)
+        log_std = torch.tanh(log_std)
+        log_std = self.log_std_min + 0.5 * (self.log_std_max - self.log_std_min) * (
+            log_std + 1
+        )
 
-    def forward(self, obs: Dict[str, torch.Tensor]) -> torch.Tensor:
-        parts = []
-        if self.rgb_key is not None and self.rgb_key in obs:
-            rgb = obs[self.rgb_key].float() / 255.0
-            parts.append(rgb)
-        if self.depth_key is not None and self.depth_key in obs:
-            depth = obs[self.depth_key].float()
-            parts.append(depth)
-        if not parts:
-            raise ValueError(
-                f"EncoderObsWrapper expected one of {self.rgb_key!r} / "
-                f"{self.depth_key!r} in obs, got keys={list(obs.keys())}")
-        img = torch.cat(parts, dim=-1) if len(parts) > 1 else parts[0]
-        img = img.permute(0, 3, 1, 2).contiguous()       # NHWC -> NCHW
-        return self.encoder(img)
+        if compute_pi:
+            noise = torch.randn_like(mu)
+            pi = mu + noise * log_std.exp()
+        else:
+            pi, noise = None, None
+
+        log_pi = gaussian_logprob(noise, log_std) if compute_log_pi and noise is not None else None
+        mu, pi, log_pi = squash(mu, pi, log_pi)
+        return mu, pi, log_pi, log_std
 
 
-class MultiObsEncoder(nn.Module):
-    """Concatenate features from independent sub-encoders.
-
-    Each sub-encoder consumes the same obs dict and returns (B, D_i). Output
-    is the concat along dim=1; ``out_dim`` is the sum of children's dims.
-    """
-
-    def __init__(self, encoders: Dict[str, nn.Module]):
+class QFunction(nn.Module):
+    def __init__(self, obs_dim, action_dim, hidden_dims, layer_norm=False, dropout=None):
         super().__init__()
-        if not encoders:
-            raise ValueError("MultiObsEncoder requires at least one sub-encoder")
-        self.encoders = nn.ModuleDict(encoders)
+        in_dims = [obs_dim + action_dim] + list(hidden_dims)
+        out_dims = list(hidden_dims) + [1]
+        layers = []
+        for i, (i_, o_) in enumerate(zip(in_dims, out_dims)):
+            layers.append(nn.Linear(i_, o_))
+            if i < len(in_dims) - 1:
+                if dropout is not None and dropout > 0:
+                    layers.append(nn.Dropout(p=dropout))
+                if layer_norm:
+                    layers.append(nn.LayerNorm(o_))
+                layers.append(nn.ReLU())
+        self.mlp = nn.Sequential(*layers)
 
-    @property
-    def out_dim(self) -> int:
-        return sum(int(e.out_dim) for e in self.encoders.values())
-
-    def forward(self, obs: Dict[str, torch.Tensor]) -> torch.Tensor:
-        parts = [e(obs) for e in self.encoders.values()]
-        return parts[0] if len(parts) == 1 else torch.cat(parts, dim=1)
-
-
-def infer_image_channels(sample_obs: Dict[str, torch.Tensor],
-                          rgb_key: Optional[str],
-                          depth_key: Optional[str]) -> int:
-    """Total channels of the concatenated image input, given a sample batch."""
-    c = 0
-    if rgb_key is not None and rgb_key in sample_obs:
-        c += sample_obs[rgb_key].shape[-1]
-    if depth_key is not None and depth_key in sample_obs:
-        c += sample_obs[depth_key].shape[-1]
-    return c
+    def forward(self, obs, action):
+        return self.mlp(torch.cat([obs, action], dim=1))
 
 
-def infer_image_size(sample_obs: Dict[str, torch.Tensor],
-                      rgb_key: Optional[str],
-                      depth_key: Optional[str]):
-    for k in (rgb_key, depth_key):
-        if k is not None and k in sample_obs:
-            return tuple(sample_obs[k].shape[1:3])
-    raise ValueError("No image key found to infer image size")
+class Critic(nn.Module):
+    def __init__(self, encoder, action_dim, hidden_dims, layer_norm=False, dropout=None):
+        super().__init__()
+        self.encoder = encoder
+        self.Q1 = QFunction(encoder.out_dim, action_dim, hidden_dims, layer_norm, dropout)
+        self.Q2 = QFunction(encoder.out_dim, action_dim, hidden_dims, layer_norm, dropout)
+        self.apply(weight_init)
+
+    def forward(
+        self,
+        pixels: Dict[str, torch.Tensor],
+        state: torch.Tensor,
+        action: torch.Tensor,
+        graph: Optional[Dict[str, torch.Tensor]] = None,
+        detach: bool = False,
+    ):
+        x = self.encoder(pixels, state, graph, detach=detach)
+        return self.Q1(x, action), self.Q2(x, action)
