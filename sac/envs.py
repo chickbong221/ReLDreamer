@@ -26,7 +26,6 @@ def build_env(
         FetchDepthObservationWrapper,
         FrameStack,
     )
-    from mshab.envs.wrappers.vector import VectorRecordEpisodeStatistics
     import mshab.envs  # noqa: F401
     from mani_skill import ASSET_DIR
     from mshab.envs.planner import plan_data_from_file
@@ -91,10 +90,7 @@ def build_env(
         max_episode_steps=horizon,
         ignore_terminations=True,
     )
-    venv = VectorRecordEpisodeStatistics(
-        venv, max_episode_steps=horizon,
-    )
-    return venv
+    return _StatsWrapper(venv, max_episode_steps=horizon)
 
 
 def adapt_obs(raw: Mapping, device: torch.device) -> Dict[str, torch.Tensor]:
@@ -114,3 +110,61 @@ def adapt_obs(raw: Mapping, device: torch.device) -> Dict[str, torch.Tensor]:
 def action_box(env) -> Tuple[Tuple[int, ...], np.ndarray, np.ndarray]:
     space = env.single_action_space
     return tuple(space.shape), np.asarray(space.low), np.asarray(space.high)
+
+
+class _StatsWrapper:
+    """Track episode return / length / success per env and expose queues.
+
+    Replaces mshab's VectorRecordEpisodeStatistics, which depends on
+    gymnasium.vector.VectorEnvWrapper -- removed in gymnasium 1.x.
+    """
+
+    def __init__(self, env, max_episode_steps: int):
+        self.env = env
+        self.max_episode_steps = int(max_episode_steps)
+        self._device = env.unwrapped.device
+        self._returns = torch.zeros(env.num_envs, dtype=torch.float32, device=self._device)
+        self._lengths = torch.zeros(env.num_envs, dtype=torch.int32, device=self._device)
+        self._success_once = torch.zeros(env.num_envs, dtype=torch.bool, device=self._device)
+        self._success_at_end = torch.zeros(env.num_envs, dtype=torch.bool, device=self._device)
+        self.reset_queues()
+
+    def reset_queues(self) -> None:
+        self.return_queue = []
+        self.length_queue = []
+        self.success_once_queue = []
+        self.success_at_end_queue = []
+
+    def reset(self, *args, **kwargs):
+        obs, info = self.env.reset(*args, **kwargs)
+        self._returns.zero_()
+        self._lengths.zero_()
+        self._success_once.zero_()
+        self._success_at_end.zero_()
+        return obs, info
+
+    def step(self, action):
+        obs, rew, term, trunc, info = self.env.step(action)
+        self._returns += rew
+        self._lengths += 1
+        s = info.get("success")
+        if s is not None:
+            s = s.to(dtype=torch.bool, device=self._device) if isinstance(s, torch.Tensor) \
+                else torch.as_tensor(s, dtype=torch.bool, device=self._device)
+            self._success_at_end = s
+            self._success_once = self._success_once | s
+        dones = term | trunc
+        if dones.any():
+            idx = torch.where(dones)[0]
+            self.return_queue.extend(self._returns[idx].tolist())
+            self.length_queue.extend(self._lengths[idx].tolist())
+            self.success_once_queue.extend(self._success_once[idx].tolist())
+            self.success_at_end_queue.extend(self._success_at_end[idx].tolist())
+            self._returns[idx] = 0
+            self._lengths[idx] = 0
+            self._success_once[idx] = False
+            self._success_at_end[idx] = False
+        return obs, rew, term, trunc, info
+
+    def __getattr__(self, name: str):
+        return getattr(self.__dict__["env"], name)
