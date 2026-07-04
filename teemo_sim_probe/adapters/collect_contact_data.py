@@ -50,7 +50,11 @@ from teemo_sim_probe.core.entity_identity import (
     entity_name,
     stable_entity_key,
 )
-from teemo_sim_probe.adapters.privileged_state import get_privileged_state
+from teemo_sim_probe.adapters.privileged_state import (
+    entity_pose_world_array,
+    get_privileged_state,
+    per_env_segmentation_id_map,
+)
 
 if TYPE_CHECKING:
     from mshab.envs.sequential_task import SequentialTaskEnv
@@ -79,43 +83,21 @@ def _to_np(x) -> np.ndarray:
 
 
 def _entity_xyz(ent, env_idx: int) -> Optional[np.ndarray]:
-    pose = getattr(ent, "pose", None)
-    if pose is None:
+    arr = entity_pose_world_array(ent, env_idx)
+    if arr is None:
         return None
-    try:
-        p = _to_np(pose.p)
-    except Exception:
-        return None
-    if p.ndim == 2:
-        if env_idx >= p.shape[0]:
-            return None
-        p = p[env_idx]
-    p = np.asarray(p, dtype=float).reshape(-1)
+    p = np.asarray(arr[:3], dtype=float).reshape(-1)
     return p[:3] if p.size >= 3 and np.all(np.isfinite(p[:3])) else None
 
 
 def _entity_pose7(ent, env_idx: int) -> Optional[List[float]]:
     """Return ``[x, y, z, qw, qx, qy, qz]`` for ``ent`` at ``env_idx`` or None."""
-    pose = getattr(ent, "pose", None)
-    if pose is None:
-        return None
     try:
-        p = _to_np(pose.p)
-        q = _to_np(pose.q)
+        arr = entity_pose_world_array(ent, env_idx)
     except Exception:
         return None
-    if p.ndim == 2:
-        if env_idx >= p.shape[0]:
-            return None
-        p = p[env_idx]
-    if q.ndim == 2:
-        if env_idx >= q.shape[0]:
-            return None
-        q = q[env_idx]
-    arr = np.concatenate(
-        [np.asarray(p, dtype=float).reshape(-1)[:3],
-         np.asarray(q, dtype=float).reshape(-1)[:4]]
-    )
+    if arr is None:
+        return None
     if arr.shape[0] != 7 or not np.all(np.isfinite(arr)):
         return None
     return arr.tolist()
@@ -434,13 +416,19 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         names = {entity_name(link) for link in links}
         return links, names
 
-    def _scene_entities(self) -> List[Any]:
-        seg_map = dict(getattr(self._base_env, "segmentation_id_map", {}))
+    def _scene_entities(
+        self, env_idx: Optional[int] = None, seg_id_map: Optional[Dict[int, Any]] = None
+    ) -> List[Any]:
+        if seg_id_map is None:
+            if env_idx is not None:
+                seg_id_map = per_env_segmentation_id_map(self._base_env, env_idx)
+            else:
+                seg_id_map = dict(getattr(self._base_env, "segmentation_id_map", {}))
         robot_links, robot_names = self._robot_links()
         robot_ids = {id(link) for link in robot_links}
         entities: List[Any] = []
         seen = set()
-        for seg_id, ent in seg_map.items():
+        for seg_id, ent in seg_id_map.items():
             if not seg_id or ent is None:
                 continue
             if id(ent) in robot_ids or entity_name(ent) in robot_names:
@@ -551,9 +539,11 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
 
     def _observe_step(self, env_idx: int) -> None:
         scene = self._base_env.scene
-        entities = self._scene_entities()
         actual_state = get_privileged_state(
             self, env_idx, mshab_object_name="actual"
+        )
+        entities = self._scene_entities(
+            env_idx=env_idx, seg_id_map=actual_state.seg_id_map
         )
         target_ent, target_key = self._target(env_idx, actual_state)
         physics_target_ent = target_ent

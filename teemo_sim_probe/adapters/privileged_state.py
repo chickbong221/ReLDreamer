@@ -60,6 +60,10 @@ class PrivilegedState:
 
     # MS-HAB active manipulation handles for this env_idx (any may be None).
     active_obj: Optional[Any] = None
+    # Pre-resolution merged MS-HAB handles (span all envs). Physics queries
+    # can use these when the resolved per-env wrapper is not row-aligned.
+    active_obj_merged: Optional[Any] = None
+    active_handle_link_merged: Optional[Any] = None
     active_articulation: Optional[Any] = None
     active_handle_link: Optional[Any] = None
     active_subtask_type: Optional[str] = None
@@ -70,19 +74,30 @@ class PrivilegedState:
 
     # ----- queries the relation rules call ------------------------------- #
     def pairwise_force_vector(self, a: Any, b: Any) -> np.ndarray:
-        """World-frame contact-force vector between two entities."""
+        """World-frame contact-force vector between two entities for this env.
+
+        ManiSkill builds contact queries from ``zip(a._bodies, b._bodies)``.
+        MS-HAB can mix full-span robot links with per-env actors/links, so row
+        k is not necessarily env k. Slice to single-env views when needed.
+        """
         if a is None or b is None:
             return np.zeros(3, dtype=float)
+        ra = _obj_index_for_env(a, self.env_idx)
+        rb = _obj_index_for_env(b, self.env_idx)
+        if ra is None or rb is None:
+            return np.zeros(3, dtype=float)
+        if ra != rb:
+            a = _slice_view_for_env(a, self.env_idx)
+            b = _slice_view_for_env(b, self.env_idx)
+            if a is None or b is None:
+                return np.zeros(3, dtype=float)
+            ra = rb = 0
         forces = _to_np(self.scene.get_pairwise_contact_forces(a, b))
         if forces.ndim == 1:
             return forces.astype(float)
-        # ManiSkill builds the contact query from ``zip(a._bodies, b._bodies)``
-        # (mani_skill/envs/scene.py), so when one entity is a per-env wrapper
-        # with a single body the result is shape (1, 3) regardless of env_idx.
-        # That pair is also cross-scene (zero contact), so treat as no contact.
-        if self.env_idx >= forces.shape[0]:
+        if ra >= forces.shape[0]:
             return np.zeros(3, dtype=float)
-        return np.asarray(forces[self.env_idx], dtype=float)
+        return np.asarray(forces[ra], dtype=float)
 
     def pairwise_force(self, a: Any, b: Any) -> float:
         """Scalar contact-force magnitude between two entities for this env."""
@@ -96,13 +111,82 @@ class PrivilegedState:
         f2 = self.pairwise_force(self.agent.finger2_link, obj)
         return f1 + f2
 
-    def is_grasping(self, obj: Any, max_angle: int = 30) -> bool:
-        if obj is None or not hasattr(self.agent, "is_grasping"):
+    def _finger_open_dir(self, finger_link, sign: float) -> Optional[np.ndarray]:
+        """World-frame Fetch gripper-opening direction for this env."""
+        arr = entity_pose_world_array(finger_link, self.env_idx)
+        if arr is None:
+            return None
+        w, x, y, z = arr[3], arr[4], arr[5], arr[6]
+        ydir = np.array(
+            [
+                2.0 * (x * y - w * z),
+                1.0 - 2.0 * (x * x + z * z),
+                2.0 * (y * z + w * x),
+            ],
+            dtype=float,
+        )
+        return sign * ydir
+
+    def _is_grasping_manual(
+        self, obj: Any, max_angle: int, min_force: float = 0.5
+    ) -> bool:
+        """Per-env reimplementation of Fetch.is_grasping for sliced objects."""
+        f1 = getattr(self.agent, "finger1_link", None)
+        f2 = getattr(self.agent, "finger2_link", None)
+        if f1 is None or f2 is None:
             return False
+        lf = self.pairwise_force_vector(f1, obj)
+        rf = self.pairwise_force_vector(f2, obj)
+        lmag = float(np.linalg.norm(lf))
+        rmag = float(np.linalg.norm(rf))
+        if lmag < min_force or rmag < min_force:
+            return False
+        ld = self._finger_open_dir(f1, -1.0)
+        rd = self._finger_open_dir(f2, +1.0)
+        if ld is None or rd is None:
+            return False
+
+        def _angle_deg(d: np.ndarray, f: np.ndarray, fmag: float) -> float:
+            denom = float(np.linalg.norm(d)) * fmag + 1e-12
+            c = float(np.dot(d, f)) / denom
+            return float(np.degrees(np.arccos(np.clip(c, -1.0, 1.0))))
+
+        return (
+            _angle_deg(ld, lf, lmag) <= max_angle
+            and _angle_deg(rd, rf, rmag) <= max_angle
+        )
+
+    def is_grasping(self, obj: Any, max_angle: int = 30) -> bool:
+        """Env-consistent grasp predicate for full-span and per-env objects."""
+        if obj is None:
+            return False
+        if _obj_index_for_env(obj, self.env_idx) is None:
+            return False
+
+        num_envs = getattr(self.scene, "num_envs", None)
+        objs = getattr(obj, "_objs", None)
+        n_rows = len(objs) if objs is not None else 1
+
+        query = None
+        if num_envs is not None and n_rows == num_envs:
+            query = obj
+        elif self.active_obj_merged is not None:
+            try:
+                same = _entity_for_env(obj, self.env_idx) is _entity_for_env(
+                    self.active_obj_merged, self.env_idx
+                )
+            except Exception:
+                same = False
+            if same:
+                query = self.active_obj_merged
+
+        if query is None or not hasattr(self.agent, "is_grasping"):
+            return self._is_grasping_manual(obj, max_angle)
+
         try:
-            g = self.agent.is_grasping(obj, max_angle=max_angle)
+            g = self.agent.is_grasping(query, max_angle=max_angle)
         except TypeError:
-            g = self.agent.is_grasping(obj)
+            g = self.agent.is_grasping(query)
         g = _to_np(g).reshape(-1)
         if self.env_idx >= g.shape[0]:
             return False
@@ -116,6 +200,30 @@ def _to_np(x) -> np.ndarray:
     if hasattr(x, "detach"):
         x = x.detach().cpu().numpy()
     return np.asarray(x)
+
+
+def _scene_idxs_list(entity) -> Optional[List[int]]:
+    try:
+        s = entity._scene_idxs
+    except AttributeError:
+        return None
+    return s.tolist() if hasattr(s, "tolist") else list(s)
+
+
+def _obj_index_for_env(entity, env_idx: int) -> Optional[int]:
+    """Row of ``entity._objs`` that lives in parallel env ``env_idx``."""
+    if entity is None:
+        return None
+    s = _scene_idxs_list(entity)
+    if s is None:
+        objs = getattr(entity, "_objs", None)
+        if objs is None:
+            return 0
+        return env_idx if env_idx < len(objs) else None
+    try:
+        return s.index(env_idx)
+    except ValueError:
+        return None
 
 
 def get_tcp_pose(agent) -> Any:
@@ -226,6 +334,104 @@ def _entity_for_env(entity, env_idx: int):
         return entity
 
 
+def per_env_segmentation_id_map(env, env_idx: int) -> Dict[int, Any]:
+    """Segmentation-id -> Actor/Link map valid for one parallel env.
+
+    ManiSkill's global ``env.segmentation_id_map`` keys wrappers by
+    ``_objs[0].per_scene_id``. MS-HAB can load heterogeneous actors and
+    articulations across vector envs, so the same integer id can refer to
+    different entities in different sub-scenes.
+    """
+    scene = env.unwrapped.scene if hasattr(env, "unwrapped") else env.scene
+    cache = scene.__dict__.setdefault("_teemo_per_env_seg_maps", {})
+    cached = cache.get(env_idx)
+    if cached is not None:
+        return cached
+
+    res: Dict[int, Any] = {}
+    for actor in scene.actors.values():
+        if getattr(actor, "merged", False):
+            continue
+        row = _obj_index_for_env(actor, env_idx)
+        objs = getattr(actor, "_objs", None)
+        if row is None or not objs or row >= len(objs):
+            continue
+        res[int(objs[row].per_scene_id)] = actor
+
+    for art in scene.articulations.values():
+        if getattr(art, "merged", False):
+            continue
+        if _obj_index_for_env(art, env_idx) is None:
+            continue
+        for link in art.links:
+            row = _obj_index_for_env(link, env_idx)
+            objs = getattr(link, "_objs", None)
+            if row is None or not objs or row >= len(objs):
+                continue
+            res[int(objs[row].entity.per_scene_id)] = link
+
+    cache[env_idx] = res
+    return res
+
+
+def entity_pose_world_array(entity, env_idx: int) -> Optional[np.ndarray]:
+    """Pose row of ``entity`` for parallel env ``env_idx``.
+
+    ``pose.p`` rows follow ``entity._objs`` order, not global env order.
+    """
+    pose = getattr(entity, "pose", None)
+    if pose is None:
+        return None
+    row = _obj_index_for_env(entity, env_idx)
+    if row is None:
+        return None
+    p = _to_np(pose.p)
+    q = _to_np(pose.q)
+    if p.ndim == 2:
+        if row >= p.shape[0]:
+            return None
+        p = p[row]
+    if q.ndim == 2:
+        q = q[row] if row < q.shape[0] else q[0]
+    return np.concatenate([p, q]).astype(float)
+
+
+def _slice_view_for_env(entity, env_idx: int):
+    """Return a single-row Actor/Link view of ``entity`` scoped to ``env_idx``."""
+    objs = getattr(entity, "_objs", None)
+    if objs is None:
+        return entity
+    if len(objs) == 1:
+        return entity if _obj_index_for_env(entity, env_idx) is not None else None
+    row = _obj_index_for_env(entity, env_idx)
+    if row is None:
+        return None
+
+    scene = getattr(entity, "scene", None)
+    cache = scene.__dict__.setdefault("_teemo_sliced_views", {}) if scene else {}
+    key = (id(entity), env_idx)
+    hit = cache.get(key)
+    if hit is not None and hit[0] is entity:
+        return hit[1]
+
+    import torch
+    from mani_skill.utils.structs.actor import Actor
+    from mani_skill.utils.structs.link import Link
+
+    sidx = torch.tensor([env_idx], dtype=torch.int64)
+    if type(entity).__name__ == "Link":
+        view = Link.create([objs[row]], scene, sidx)
+        view.articulation = getattr(entity, "articulation", None)
+    else:
+        view = Actor.create_from_entities([objs[row]], scene, sidx)
+    try:
+        view.name = f"{getattr(entity, 'name', 'entity')}@{id(entity)}@env{env_idx}"
+    except Exception:
+        pass
+    cache[key] = (entity, view)
+    return view
+
+
 def _resolve_actual_entity(entity, seg_id_map: Dict[int, Any], env_idx: int):
     """Map an MS-HAB merged handle to its per-env segmentation wrapper.
 
@@ -295,8 +501,10 @@ def _active_mshab_handles(
     """
     out = dict(
         active_obj=None,
+        active_obj_merged=None,
         active_articulation=None,
         active_handle_link=None,
+        active_handle_link_merged=None,
         active_subtask_type=None,
         active_obj_id=None,
     )
@@ -348,6 +556,8 @@ def _active_mshab_handles(
         except Exception:
             out["active_handle_link"] = None
 
+    out["active_obj_merged"] = out["active_obj"]
+    out["active_handle_link_merged"] = out["active_handle_link"]
     if object_name == "actual":
         seg_id_map = seg_id_map or {}
         out["active_obj"] = _resolve_actual_entity(
@@ -387,7 +597,7 @@ def get_privileged_state(
         ee_links=get_ee_links(agent),
         tcp_pose_world=pose_to_world_array(get_tcp_pose(agent), env_idx),
         gripper_width=compute_gripper_width(agent, env_idx),
-        seg_id_map=dict(getattr(e, "segmentation_id_map", {})),
+        seg_id_map=per_env_segmentation_id_map(e, env_idx),
         robot_links=_robot_link_set(agent),
     )
 
@@ -399,8 +609,10 @@ def get_privileged_state(
             object_name=mshab_object_name,
         )
         state.active_obj = handles["active_obj"]
+        state.active_obj_merged = handles["active_obj_merged"]
         state.active_articulation = handles["active_articulation"]
         state.active_handle_link = handles["active_handle_link"]
+        state.active_handle_link_merged = handles["active_handle_link_merged"]
         state.active_subtask_type = handles["active_subtask_type"]
         state.active_obj_id = handles["active_obj_id"]
         if mshab_object_name == "merged":

@@ -323,7 +323,9 @@ def live_probe(
             physics_target = merged.active_obj or target_ent
 
             # Build entity_by_key exactly like the wrapper does.
-            entities = collect._scene_entities()
+            entities = collect._scene_entities(
+                env_idx=env_idx, seg_id_map=actual.seg_id_map
+            )
             entity_by_key: Dict[str, Any] = {}
             for e in entities:
                 k = stable_entity_key(e)

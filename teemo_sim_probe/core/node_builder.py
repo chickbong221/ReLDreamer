@@ -25,7 +25,10 @@ from .mask_extractor import (
     pick_camera,
     unique_seg_ids,
 )
-from ..adapters.privileged_state import PrivilegedState, pose_to_world_array
+from ..adapters.privileged_state import (
+    PrivilegedState,
+    entity_pose_world_array,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -83,12 +86,11 @@ def make_ee_node(state: PrivilegedState) -> Node:
 
 def make_object_node(entity, state: PrivilegedState) -> Node:
     pose_world = None
-    pose = getattr(entity, "pose", None)
-    if pose is not None:
-        try:
-            pose_world = list(pose_to_world_array(pose, state.env_idx))
-        except Exception:
-            pose_world = None
+    try:
+        arr = entity_pose_world_array(entity, state.env_idx)
+        pose_world = list(arr) if arr is not None else None
+    except Exception:
+        pose_world = None
     return Node(
         node_id=canonical_object_key(entity),
         node_type="object",

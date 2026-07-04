@@ -125,9 +125,11 @@ def main() -> int:
             continue
 
         # Mirror what _observe_step does internally.
-        entities = collect._scene_entities()
         actual_state = get_privileged_state(collect, env_idx, mshab_object_name="actual")
         merged_state = get_privileged_state(collect, env_idx, mshab_object_name="merged")
+        entities = collect._scene_entities(
+            env_idx=env_idx, seg_id_map=actual_state.seg_id_map
+        )
 
         target_ent = actual_state.active_obj
         physics_target_ent = merged_state.active_obj or target_ent
