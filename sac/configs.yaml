@@ -66,7 +66,7 @@ defaults:
   run:
     total_steps: 50_000_000
     log_every: 10_000
-    eval_every: 100_000
+    eval_every: 5_000_000
     save_every: 200_000_000
 
   logger:
@@ -98,7 +98,7 @@ defaults:
 pick_bowl:
   env:
     maniskill:
-      num_envs: 189
+      num_envs: 252
       num_eval_envs: 63
       mshab_task: set_table
       mshab_obj: 024_bowl
