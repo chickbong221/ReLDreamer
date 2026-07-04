@@ -98,7 +98,7 @@ defaults:
 pick_bowl:
   env:
     maniskill:
-      num_envs: 252
+      num_envs: 189
       num_eval_envs: 63
       mshab_task: set_table
       mshab_obj: 024_bowl
