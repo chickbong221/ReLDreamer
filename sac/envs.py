@@ -103,7 +103,7 @@ def adapt_obs(raw: Mapping, device: torch.device) -> Dict[str, torch.Tensor]:
     for k, v in pixels.items():
         if not isinstance(v, torch.Tensor):
             v = torch.as_tensor(np.asarray(v), device=device)
-        out_pixels[k] = v.to(device)
+        out_pixels[k] = v.to(device=device, dtype=torch.float32)
     return {"state": state.to(device).float(), "pixels": out_pixels}
 
 
