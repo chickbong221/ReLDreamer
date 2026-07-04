@@ -64,7 +64,9 @@ class Logger:
 
     def video(self, tag: str, path: str, step: int) -> None:
         if self.wandb is not None:
-            self.wandb.log({tag: self.wandb.Video(str(path))}, step=step)
+            self.wandb.log(
+                {tag: self.wandb.Video(str(path), format="mp4")}, step=step,
+            )
 
     def close(self):
         if self.tb is not None:
@@ -85,6 +87,8 @@ def train(config: dict) -> None:
     graph_enabled = bool(graph_raw.get("enabled", False))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.backends.cudnn.benchmark = True
+    torch.set_float32_matmul_precision("high")
     _seed_everything(int(config["seed"]))
 
     envs = build_env(task, env_cfg, is_eval=False, seed=int(config["seed"]),
