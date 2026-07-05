@@ -68,7 +68,7 @@ defaults:
   run:
     total_steps: 50_000_000
     log_every: 10_000
-    eval_every: 5_000_000
+    eval_every: 1_000_000
     save_every: 200_000_000
 
   logger:

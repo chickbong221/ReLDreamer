@@ -1,0 +1,503 @@
+{
+  "frame": 4,
+  "env_id": "PickSubtaskTrain-v0",
+  "camera": "fetch_hand",
+  "nodes": [
+    {
+      "node_id": "ee",
+      "node_type": "ee",
+      "name": "end_effector",
+      "visible": true,
+      "segmentation_ids": [
+        22,
+        23,
+        24
+      ],
+      "pixel_area": 2264,
+      "pose_world": [
+        -1.6208274364471436,
+        -0.727652370929718,
+        1.1686372756958008,
+        0.36836546659469604,
+        -0.5657200217247009,
+        0.447157621383667,
+        0.5867859125137329
+      ],
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "frozen_pose": false,
+      "slot_id": null,
+      "entity_id": null,
+      "valid_mask": true,
+      "reset_flag": false,
+      "attributes": {}
+    },
+    {
+      "node_id": "link:kitchen_counter-0/body",
+      "node_type": "object",
+      "name": "body",
+      "visible": true,
+      "segmentation_ids": [
+        56
+      ],
+      "pixel_area": 5907,
+      "pose_world": [
+        -1.9999998807907104,
+        -0.8699999451637268,
+        0.029999997466802597,
+        0.7071067690849304,
+        0.7071067690849304,
+        0.0,
+        0.0
+      ],
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "frozen_pose": false,
+      "slot_id": 0,
+      "entity_id": "link:kitchen_counter-0/body",
+      "valid_mask": true,
+      "reset_flag": false,
+      "attributes": {
+        "is_actor": false,
+        "is_link": true,
+        "is_articulation_link": true,
+        "entity_kind": "link",
+        "entity_key": "link:kitchen_counter-0/body",
+        "whitelist_key": "link:kitchen_counter-0/body",
+        "whitelist_roles": [
+          "interacted",
+          "support"
+        ],
+        "pair_type": "interactive_object"
+      }
+    },
+    {
+      "node_id": "actor:024_bowl-3",
+      "node_type": "object",
+      "name": "env-0_024_bowl-3",
+      "visible": true,
+      "segmentation_ids": [
+        94
+      ],
+      "pixel_area": 81,
+      "pose_world": [
+        -1.6869803667068481,
+        0.04668399691581726,
+        0.5146920680999756,
+        0.7338674664497375,
+        7.878136784711387e-06,
+        -1.0856555491045583e-05,
+        0.6792926788330078
+      ],
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "frozen_pose": false,
+      "slot_id": 1,
+      "entity_id": "actor:024_bowl-3",
+      "valid_mask": true,
+      "reset_flag": false,
+      "attributes": {
+        "is_actor": true,
+        "is_link": false,
+        "is_articulation_link": false,
+        "entity_kind": "actor",
+        "entity_key": "actor:024_bowl",
+        "whitelist_key": "actor:024_bowl",
+        "whitelist_roles": [
+          "interacted",
+          "support"
+        ],
+        "pair_type": "interactive_object"
+      }
+    },
+    {
+      "node_id": "link:kitchen_counter-0/drawer3",
+      "node_type": "object",
+      "name": "drawer3",
+      "visible": true,
+      "segmentation_ids": [
+        62
+      ],
+      "pixel_area": 1613,
+      "pose_world": [
+        -1.691532015800476,
+        0.13587194681167603,
+        0.5493999719619751,
+        0.7071067690849304,
+        0.7071067690849304,
+        0.0,
+        0.0
+      ],
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "frozen_pose": false,
+      "slot_id": 2,
+      "entity_id": "link:kitchen_counter-0/drawer3",
+      "valid_mask": true,
+      "reset_flag": false,
+      "attributes": {
+        "is_actor": false,
+        "is_link": true,
+        "is_articulation_link": true,
+        "entity_kind": "link",
+        "entity_key": "link:kitchen_counter-0/drawer3",
+        "whitelist_key": "link:kitchen_counter-0/drawer3",
+        "whitelist_roles": [
+          "interacted",
+          "support"
+        ],
+        "pair_type": "interactive_object"
+      }
+    },
+    {
+      "node_id": "actor:008_pudding_box-3",
+      "node_type": "object",
+      "name": "env-0_008_pudding_box-3",
+      "visible": false,
+      "segmentation_ids": [],
+      "pixel_area": 0,
+      "pose_world": [
+        -2.2996044158935547,
+        -1.5312321186065674,
+        0.874893069267273,
+        0.5349554419517517,
+        -0.006963752675801516,
+        0.004553327802568674,
+        0.8448393940925598
+      ],
+      "persistent": true,
+      "steps_since_seen": 1,
+      "source": "segmentation",
+      "frozen_pose": true,
+      "slot_id": 3,
+      "entity_id": "actor:008_pudding_box-3",
+      "valid_mask": true,
+      "reset_flag": false,
+      "attributes": {
+        "is_actor": true,
+        "is_link": false,
+        "is_articulation_link": false,
+        "entity_kind": "actor",
+        "entity_key": "actor:008_pudding_box",
+        "whitelist_key": "actor:008_pudding_box",
+        "whitelist_roles": [
+          "support"
+        ],
+        "pair_type": "static_object"
+      }
+    },
+    {
+      "node_id": "actor:008_pudding_box-2",
+      "node_type": "object",
+      "name": "env-0_008_pudding_box-2",
+      "visible": false,
+      "segmentation_ids": [],
+      "pixel_area": 0,
+      "pose_world": [
+        -2.09731388092041,
+        -1.9074608087539673,
+        0.8748930096626282,
+        0.23512449860572815,
+        -0.008050049655139446,
+        0.0020834519527852535,
+        0.971929669380188
+      ],
+      "persistent": true,
+      "steps_since_seen": 1,
+      "source": "segmentation",
+      "frozen_pose": true,
+      "slot_id": 4,
+      "entity_id": "actor:008_pudding_box-2",
+      "valid_mask": true,
+      "reset_flag": false,
+      "attributes": {
+        "is_actor": true,
+        "is_link": false,
+        "is_articulation_link": false,
+        "entity_kind": "actor",
+        "entity_key": "actor:008_pudding_box",
+        "whitelist_key": "actor:008_pudding_box",
+        "whitelist_roles": [
+          "support"
+        ],
+        "pair_type": "static_object"
+      }
+    },
+    {
+      "node_id": "<pad:5>",
+      "node_type": "object",
+      "name": "<pad>",
+      "visible": false,
+      "segmentation_ids": [],
+      "pixel_area": 0,
+      "pose_world": null,
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "frozen_pose": false,
+      "slot_id": 5,
+      "entity_id": null,
+      "valid_mask": false,
+      "reset_flag": false,
+      "attributes": {}
+    },
+    {
+      "node_id": "<pad:6>",
+      "node_type": "object",
+      "name": "<pad>",
+      "visible": false,
+      "segmentation_ids": [],
+      "pixel_area": 0,
+      "pose_world": null,
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "frozen_pose": false,
+      "slot_id": 6,
+      "entity_id": null,
+      "valid_mask": false,
+      "reset_flag": false,
+      "attributes": {}
+    },
+    {
+      "node_id": "<pad:7>",
+      "node_type": "object",
+      "name": "<pad>",
+      "visible": false,
+      "segmentation_ids": [],
+      "pixel_area": 0,
+      "pose_world": null,
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "frozen_pose": false,
+      "slot_id": 7,
+      "entity_id": null,
+      "valid_mask": false,
+      "reset_flag": false,
+      "attributes": {}
+    },
+    {
+      "node_id": "<pad:8>",
+      "node_type": "object",
+      "name": "<pad>",
+      "visible": false,
+      "segmentation_ids": [],
+      "pixel_area": 0,
+      "pose_world": null,
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "frozen_pose": false,
+      "slot_id": 8,
+      "entity_id": null,
+      "valid_mask": false,
+      "reset_flag": false,
+      "attributes": {}
+    },
+    {
+      "node_id": "<pad:9>",
+      "node_type": "object",
+      "name": "<pad>",
+      "visible": false,
+      "segmentation_ids": [],
+      "pixel_area": 0,
+      "pose_world": null,
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "frozen_pose": false,
+      "slot_id": 9,
+      "entity_id": null,
+      "valid_mask": false,
+      "reset_flag": false,
+      "attributes": {}
+    }
+  ],
+  "edges": [
+    {
+      "src": "ee",
+      "dst": "link:kitchen_counter-0/body",
+      "relation": "planar-distance",
+      "label": "medium",
+      "raw_value": 0.4050118201235391,
+      "temporal": false,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "link:kitchen_counter-0/body",
+      "relation": "height-offset",
+      "label": "above",
+      "raw_value": 1.1386372782289982,
+      "temporal": false,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "actor:024_bowl-3",
+      "relation": "planar-distance",
+      "label": "far",
+      "raw_value": 0.7771570116457558,
+      "temporal": false,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "actor:024_bowl-3",
+      "relation": "height-offset",
+      "label": "above",
+      "raw_value": 0.6539452075958252,
+      "temporal": false,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "link:kitchen_counter-0/drawer3",
+      "relation": "planar-distance",
+      "label": "far",
+      "raw_value": 0.866414095494915,
+      "temporal": false,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "link:kitchen_counter-0/drawer3",
+      "relation": "height-offset",
+      "label": "above",
+      "raw_value": 0.6192373037338257,
+      "temporal": false,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "link:kitchen_counter-0/drawer3",
+      "dst": "actor:024_bowl-3",
+      "relation": "support",
+      "label": "support",
+      "raw_value": 5.119504898522903,
+      "temporal": false,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {
+        "support_role": "supporter"
+      }
+    },
+    {
+      "src": "ee",
+      "dst": "actor:008_pudding_box-3",
+      "relation": "planar-distance",
+      "label": "far",
+      "raw_value": 0.9926422971060135,
+      "temporal": false,
+      "masked": false,
+      "stale": true,
+      "observed_frame": 3,
+      "age": 1,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "actor:008_pudding_box-3",
+      "relation": "height-offset",
+      "label": "above",
+      "raw_value": 0.3241790533065796,
+      "temporal": false,
+      "masked": false,
+      "stale": true,
+      "observed_frame": 3,
+      "age": 1,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "actor:008_pudding_box-2",
+      "relation": "planar-distance",
+      "label": "far",
+      "raw_value": 1.2085044471753597,
+      "temporal": false,
+      "masked": false,
+      "stale": true,
+      "observed_frame": 3,
+      "age": 1,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "actor:008_pudding_box-2",
+      "relation": "height-offset",
+      "label": "above",
+      "raw_value": 0.32417911291122437,
+      "temporal": false,
+      "masked": false,
+      "stale": true,
+      "observed_frame": 3,
+      "age": 1,
+      "attributes": {}
+    },
+    {
+      "src": "link:kitchen_counter-0/body",
+      "dst": "actor:008_pudding_box-3",
+      "relation": "support",
+      "label": "support",
+      "raw_value": 0.09483672255765488,
+      "temporal": false,
+      "masked": false,
+      "stale": true,
+      "observed_frame": 3,
+      "age": 1,
+      "attributes": {
+        "support_role": "supporter"
+      }
+    },
+    {
+      "src": "link:kitchen_counter-0/body",
+      "dst": "actor:008_pudding_box-2",
+      "relation": "support",
+      "label": "support",
+      "raw_value": 0.09511143472562503,
+      "temporal": false,
+      "masked": false,
+      "stale": true,
+      "observed_frame": 3,
+      "age": 1,
+      "attributes": {
+        "support_role": "supporter"
+      }
+    }
+  ],
+  "meta": {
+    "is_mshab": true,
+    "active_subtask": "pick",
+    "n_valid": 5
+  }
+}

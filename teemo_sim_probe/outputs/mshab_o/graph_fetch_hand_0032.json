@@ -1,0 +1,685 @@
+{
+  "frame": 32,
+  "env_id": "PickSubtaskTrain-v0",
+  "camera": "fetch_hand",
+  "nodes": [
+    {
+      "node_id": "ee",
+      "node_type": "ee",
+      "name": "end_effector",
+      "visible": true,
+      "segmentation_ids": [
+        22,
+        23,
+        24
+      ],
+      "pixel_area": 2276,
+      "pose_world": [
+        -1.7326159477233887,
+        -0.15037640929222107,
+        1.1966819763183594,
+        0.01252105925232172,
+        -0.5285844206809998,
+        0.40274181962013245,
+        0.7471550703048706
+      ],
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "frozen_pose": false,
+      "slot_id": null,
+      "entity_id": null,
+      "valid_mask": true,
+      "reset_flag": false,
+      "attributes": {}
+    },
+    {
+      "node_id": "link:kitchen_counter-0/body",
+      "node_type": "object",
+      "name": "body",
+      "visible": true,
+      "segmentation_ids": [
+        56
+      ],
+      "pixel_area": 4963,
+      "pose_world": [
+        -1.9999998807907104,
+        -0.8699999451637268,
+        0.029999997466802597,
+        0.7071067690849304,
+        0.7071067690849304,
+        0.0,
+        0.0
+      ],
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "frozen_pose": false,
+      "slot_id": 0,
+      "entity_id": "link:kitchen_counter-0/body",
+      "valid_mask": true,
+      "reset_flag": false,
+      "attributes": {
+        "is_actor": false,
+        "is_link": true,
+        "is_articulation_link": true,
+        "entity_kind": "link",
+        "entity_key": "link:kitchen_counter-0/body",
+        "whitelist_key": "link:kitchen_counter-0/body",
+        "whitelist_roles": [
+          "interacted",
+          "support"
+        ],
+        "pair_type": "interactive_object"
+      }
+    },
+    {
+      "node_id": "actor:024_bowl-3",
+      "node_type": "object",
+      "name": "env-0_024_bowl-3",
+      "visible": true,
+      "segmentation_ids": [
+        94
+      ],
+      "pixel_area": 836,
+      "pose_world": [
+        -1.7495858669281006,
+        -0.13504940271377563,
+        1.1098610162734985,
+        0.6806238889694214,
+        -0.015652336180210114,
+        0.5694740414619446,
+        0.46065753698349
+      ],
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "frozen_pose": false,
+      "slot_id": 1,
+      "entity_id": "actor:024_bowl-3",
+      "valid_mask": true,
+      "reset_flag": false,
+      "attributes": {
+        "is_actor": true,
+        "is_link": false,
+        "is_articulation_link": false,
+        "entity_kind": "actor",
+        "entity_key": "actor:024_bowl",
+        "whitelist_key": "actor:024_bowl",
+        "whitelist_roles": [
+          "interacted",
+          "support"
+        ],
+        "pair_type": "interactive_object",
+        "affordance_a_star": 21
+      }
+    },
+    {
+      "node_id": "link:kitchen_counter-0/drawer3",
+      "node_type": "object",
+      "name": "drawer3",
+      "visible": true,
+      "segmentation_ids": [
+        62
+      ],
+      "pixel_area": 2187,
+      "pose_world": [
+        -1.6895099878311157,
+        0.13587194681167603,
+        0.5493999719619751,
+        0.7071067690849304,
+        0.7071067690849304,
+        0.0,
+        0.0
+      ],
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "frozen_pose": false,
+      "slot_id": 2,
+      "entity_id": "link:kitchen_counter-0/drawer3",
+      "valid_mask": true,
+      "reset_flag": false,
+      "attributes": {
+        "is_actor": false,
+        "is_link": true,
+        "is_articulation_link": true,
+        "entity_kind": "link",
+        "entity_key": "link:kitchen_counter-0/drawer3",
+        "whitelist_key": "link:kitchen_counter-0/drawer3",
+        "whitelist_roles": [
+          "interacted",
+          "support"
+        ],
+        "pair_type": "interactive_object"
+      }
+    },
+    {
+      "node_id": "actor:008_pudding_box-0",
+      "node_type": "object",
+      "name": "env-0_008_pudding_box-0",
+      "visible": false,
+      "segmentation_ids": [],
+      "pixel_area": 0,
+      "pose_world": [
+        -2.4603261947631836,
+        0.4234360456466675,
+        0.874896764755249,
+        0.5319587588310242,
+        -0.006981643848121166,
+        0.004527597688138485,
+        0.8467294573783875
+      ],
+      "persistent": true,
+      "steps_since_seen": 1,
+      "source": "segmentation",
+      "frozen_pose": true,
+      "slot_id": 3,
+      "entity_id": "actor:008_pudding_box-0",
+      "valid_mask": true,
+      "reset_flag": false,
+      "attributes": {
+        "is_actor": true,
+        "is_link": false,
+        "is_articulation_link": false,
+        "entity_kind": "actor",
+        "entity_key": "actor:008_pudding_box",
+        "whitelist_key": "actor:008_pudding_box",
+        "whitelist_roles": [
+          "support"
+        ],
+        "pair_type": "static_object"
+      }
+    },
+    {
+      "node_id": "actor:008_pudding_box-3",
+      "node_type": "object",
+      "name": "env-0_008_pudding_box-3",
+      "visible": true,
+      "segmentation_ids": [
+        114
+      ],
+      "pixel_area": 7,
+      "pose_world": [
+        -2.299604654312134,
+        -1.5312319993972778,
+        0.8748931288719177,
+        0.5349557399749756,
+        -0.006965684238821268,
+        0.004553301725536585,
+        0.8448391556739807
+      ],
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "frozen_pose": false,
+      "slot_id": 4,
+      "entity_id": "actor:008_pudding_box-3",
+      "valid_mask": true,
+      "reset_flag": false,
+      "attributes": {
+        "is_actor": true,
+        "is_link": false,
+        "is_articulation_link": false,
+        "entity_kind": "actor",
+        "entity_key": "actor:008_pudding_box",
+        "whitelist_key": "actor:008_pudding_box",
+        "whitelist_roles": [
+          "support"
+        ],
+        "pair_type": "static_object"
+      }
+    },
+    {
+      "node_id": "actor:008_pudding_box-2",
+      "node_type": "object",
+      "name": "env-0_008_pudding_box-2",
+      "visible": true,
+      "segmentation_ids": [
+        113
+      ],
+      "pixel_area": 5,
+      "pose_world": [
+        -2.0973143577575684,
+        -1.9074609279632568,
+        0.8748935461044312,
+        0.23512470722198486,
+        -0.008055814541876316,
+        0.002074994146823883,
+        0.971929669380188
+      ],
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "frozen_pose": false,
+      "slot_id": 5,
+      "entity_id": "actor:008_pudding_box-2",
+      "valid_mask": true,
+      "reset_flag": false,
+      "attributes": {
+        "is_actor": true,
+        "is_link": false,
+        "is_articulation_link": false,
+        "entity_kind": "actor",
+        "entity_key": "actor:008_pudding_box",
+        "whitelist_key": "actor:008_pudding_box",
+        "whitelist_roles": [
+          "support"
+        ],
+        "pair_type": "static_object"
+      }
+    },
+    {
+      "node_id": "<pad:6>",
+      "node_type": "object",
+      "name": "<pad>",
+      "visible": false,
+      "segmentation_ids": [],
+      "pixel_area": 0,
+      "pose_world": null,
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "frozen_pose": false,
+      "slot_id": 6,
+      "entity_id": null,
+      "valid_mask": false,
+      "reset_flag": false,
+      "attributes": {}
+    },
+    {
+      "node_id": "<pad:7>",
+      "node_type": "object",
+      "name": "<pad>",
+      "visible": false,
+      "segmentation_ids": [],
+      "pixel_area": 0,
+      "pose_world": null,
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "frozen_pose": false,
+      "slot_id": 7,
+      "entity_id": null,
+      "valid_mask": false,
+      "reset_flag": false,
+      "attributes": {}
+    },
+    {
+      "node_id": "<pad:8>",
+      "node_type": "object",
+      "name": "<pad>",
+      "visible": false,
+      "segmentation_ids": [],
+      "pixel_area": 0,
+      "pose_world": null,
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "frozen_pose": false,
+      "slot_id": 8,
+      "entity_id": null,
+      "valid_mask": false,
+      "reset_flag": false,
+      "attributes": {}
+    },
+    {
+      "node_id": "<pad:9>",
+      "node_type": "object",
+      "name": "<pad>",
+      "visible": false,
+      "segmentation_ids": [],
+      "pixel_area": 0,
+      "pose_world": null,
+      "persistent": false,
+      "steps_since_seen": 0,
+      "source": "segmentation",
+      "frozen_pose": false,
+      "slot_id": 9,
+      "entity_id": null,
+      "valid_mask": false,
+      "reset_flag": false,
+      "attributes": {}
+    }
+  ],
+  "edges": [
+    {
+      "src": "ee",
+      "dst": "link:kitchen_counter-0/body",
+      "relation": "planar-distance",
+      "label": "far",
+      "raw_value": 0.7676927777716541,
+      "temporal": false,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "link:kitchen_counter-0/body",
+      "relation": "height-offset",
+      "label": "above",
+      "raw_value": 1.1666819788515568,
+      "temporal": false,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "actor:024_bowl-3",
+      "relation": "planar-distance",
+      "label": "near",
+      "raw_value": 0.022866903779702224,
+      "temporal": false,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "actor:024_bowl-3",
+      "relation": "height-offset",
+      "label": "level",
+      "raw_value": 0.08682096004486084,
+      "temporal": false,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "actor:024_bowl-3",
+      "relation": "grasp",
+      "label": "grasp",
+      "raw_value": 1.0,
+      "temporal": false,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "link:kitchen_counter-0/drawer3",
+      "relation": "planar-distance",
+      "label": "medium",
+      "raw_value": 0.2894758109936264,
+      "temporal": false,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "link:kitchen_counter-0/drawer3",
+      "relation": "height-offset",
+      "label": "above",
+      "raw_value": 0.6472820043563843,
+      "temporal": false,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "actor:008_pudding_box-3",
+      "relation": "planar-distance",
+      "label": "far",
+      "raw_value": 1.492728493103673,
+      "temporal": false,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "actor:008_pudding_box-3",
+      "relation": "height-offset",
+      "label": "above",
+      "raw_value": 0.32178884744644165,
+      "temporal": false,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "actor:008_pudding_box-2",
+      "relation": "planar-distance",
+      "label": "far",
+      "raw_value": 1.7945336263316116,
+      "temporal": false,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "actor:008_pudding_box-2",
+      "relation": "height-offset",
+      "label": "above",
+      "raw_value": 0.3217884302139282,
+      "temporal": false,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "actor:024_bowl-3",
+      "relation": "grasp-compatibility",
+      "label": "match",
+      "raw_value": 0.06636157390592931,
+      "temporal": false,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "actor:024_bowl-3",
+      "relation": "contact-compatibility",
+      "label": "match",
+      "raw_value": 0.09812113234502731,
+      "temporal": false,
+      "masked": true,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {
+        "suppressed_by_grasp": true
+      }
+    },
+    {
+      "src": "link:kitchen_counter-0/body",
+      "dst": "actor:008_pudding_box-3",
+      "relation": "support",
+      "label": "support",
+      "raw_value": 0.09493462330832553,
+      "temporal": false,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {
+        "support_role": "supporter"
+      }
+    },
+    {
+      "src": "link:kitchen_counter-0/body",
+      "dst": "actor:008_pudding_box-2",
+      "relation": "support",
+      "label": "support",
+      "raw_value": 0.09491798294495009,
+      "temporal": false,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {
+        "support_role": "supporter"
+      }
+    },
+    {
+      "src": "ee",
+      "dst": "actor:008_pudding_box-0",
+      "relation": "planar-distance",
+      "label": "far",
+      "raw_value": 0.9110085873290966,
+      "temporal": false,
+      "masked": false,
+      "stale": true,
+      "observed_frame": 31,
+      "age": 1,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "actor:008_pudding_box-0",
+      "relation": "height-offset",
+      "label": "above",
+      "raw_value": 0.2684640884399414,
+      "temporal": false,
+      "masked": false,
+      "stale": true,
+      "observed_frame": 31,
+      "age": 1,
+      "attributes": {}
+    },
+    {
+      "src": "link:kitchen_counter-0/body",
+      "dst": "actor:008_pudding_box-0",
+      "relation": "support",
+      "label": "support",
+      "raw_value": 0.0939102057289464,
+      "temporal": false,
+      "masked": false,
+      "stale": true,
+      "observed_frame": 31,
+      "age": 1,
+      "attributes": {
+        "support_role": "supporter"
+      }
+    },
+    {
+      "src": "ee",
+      "dst": "actor:024_bowl-3",
+      "relation": "planar-distance-change",
+      "label": "stable-distance",
+      "raw_value": -0.010521026426426317,
+      "temporal": true,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "actor:024_bowl-3",
+      "relation": "height-offset-change",
+      "label": "stable-height",
+      "raw_value": 0.0033296942710876465,
+      "temporal": true,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "link:kitchen_counter-0/drawer3",
+      "relation": "planar-distance-change",
+      "label": "receding-slow",
+      "raw_value": 0.13018165288292466,
+      "temporal": true,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "link:kitchen_counter-0/drawer3",
+      "relation": "height-offset-change",
+      "label": "rising-fast",
+      "raw_value": 0.2814449071884155,
+      "temporal": true,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "actor:024_bowl-3",
+      "relation": "grasp-compatibility-change",
+      "label": "stable-grasp-fit",
+      "raw_value": 0.0019982874820354685,
+      "temporal": true,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "link:kitchen_counter-0/body",
+      "relation": "planar-distance-change",
+      "label": "approaching-slow",
+      "raw_value": -0.13021719205924787,
+      "temporal": true,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    },
+    {
+      "src": "ee",
+      "dst": "link:kitchen_counter-0/body",
+      "relation": "height-offset-change",
+      "label": "rising-fast",
+      "raw_value": 0.2814449071884155,
+      "temporal": true,
+      "masked": false,
+      "stale": false,
+      "observed_frame": null,
+      "age": 0,
+      "attributes": {}
+    }
+  ],
+  "meta": {
+    "is_mshab": true,
+    "active_subtask": "pick",
+    "n_valid": 6
+  }
+}
