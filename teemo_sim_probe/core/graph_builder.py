@@ -138,10 +138,20 @@ class GraphBuilder:
         # entities are never persisted.
         active_target_node_id: Optional[str] = None
         if state.active_obj is not None:
-            try:
-                active_target_node_id = stable_node_id(state.active_obj)
-            except Exception:
-                active_target_node_id = None
+            # Fail open if active-object resolution fell back to the merged
+            # MS-HAB handle itself. Its node id is like ``actor:obj_0``, which
+            # matches no visible segmentation node and would drop every target
+            # instance from the graph.
+            active_obj_merged = getattr(state, "active_obj_merged", None)
+            resolution_fell_back = (
+                active_obj_merged is not None
+                and state.active_obj is active_obj_merged
+            )
+            if not resolution_fell_back:
+                try:
+                    active_target_node_id = stable_node_id(state.active_obj)
+                except Exception:
+                    active_target_node_id = None
         nodes = self.selector.apply_whitelist(
             nodes, active_target_node_id=active_target_node_id,
         )

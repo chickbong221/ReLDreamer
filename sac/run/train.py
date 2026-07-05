@@ -360,9 +360,10 @@ def _run_eval(agent, eval_envs, graph_eval, logger, device, *,
             graph_obs = graph_eval.step(done, device)
 
         if do_video and not env0_done:
-            _record_frame(t + 1)
             if bool(done[0].item()):
                 env0_done = True
+            else:
+                _record_frame(t + 1)
 
     if len(eval_envs.return_queue) > 0:
         _log_env_stats(logger, eval_envs, "eval", step)
