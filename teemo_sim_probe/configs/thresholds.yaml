@@ -26,6 +26,17 @@ support:
 
 affordances:
   asset_path: affordances.json
+  # EE-object affordance compatibility is always enabled. Obj-obj contact /
+  # contain compatibility remains useful for tool-style interactions (e.g. a
+  # knife contacting food). Obj-obj support-fit is useful for place-style
+  # tasks, but passive support during pick (drawer/counter -> bowl) is already
+  # represented by the physical support edge and otherwise adds misleading
+  # affordance chips.
+  object_object_compatibility: true
+  object_object_contact_compatibility: true
+  object_object_support_compatibility: true
+  object_object_support_compatibility_subtasks: [place]
+  object_object_contain_compatibility: true
 
 # Compatibility normalization. Each per-component mismatch (metres for pos /
 # width / xy / vertical / radial / axial, radians for orient) is clipped to

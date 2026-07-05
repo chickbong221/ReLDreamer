@@ -752,7 +752,15 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             vertical_ratio = abs(float(vector[2])) / force
             vertical_support = bool(
                 vertical_ratio >= self.min_vertical_force_ratio
+                # ``_pairwise_force(supporter, supported)`` returns force on
+                # the candidate supporter due to the supported object. A real
+                # support contact pushes the supporter downward. Without this
+                # sign check we record both directions for the same contact,
+                # which teaches the assets that e.g. a bowl supports a drawer.
+                and float(vector[2]) < 0.0
             )
+            if not vertical_support:
+                continue
             dz = (
                 float(supported_xyz[2] - supporter_xyz[2])
                 if supporter_xyz is not None and supported_xyz is not None

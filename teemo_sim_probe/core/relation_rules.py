@@ -605,9 +605,25 @@ def object_object_compatibility_edges(
     if aff_set is None:
         return []
 
-    contact_spec = _get_bin_spec(cfg, "contact-compatibility")
-    support_spec = _get_bin_spec(cfg, "support-compatibility")
-    contain_spec = _get_bin_spec(cfg, "contain-compatibility")
+    aff_cfg = cfg.get("affordances", {})
+    contact_spec = (
+        _get_bin_spec(cfg, "contact-compatibility")
+        if bool(aff_cfg.get("object_object_contact_compatibility", True))
+        else None
+    )
+    support_enabled = bool(aff_cfg.get("object_object_support_compatibility", False))
+    support_subtasks = aff_cfg.get("object_object_support_compatibility_subtasks")
+    if support_enabled and support_subtasks is not None:
+        active_subtask = graph.meta.get("active_subtask")
+        support_enabled = str(active_subtask) in {str(s) for s in support_subtasks}
+    support_spec = (
+        _get_bin_spec(cfg, "support-compatibility") if support_enabled else None
+    )
+    contain_spec = (
+        _get_bin_spec(cfg, "contain-compatibility")
+        if bool(aff_cfg.get("object_object_contain_compatibility", True))
+        else None
+    )
     if contact_spec is None and support_spec is None and contain_spec is None:
         return []
 
@@ -724,4 +740,5 @@ def build_absolute_edges(
     graph.edges.extend(ee_object_spatial_event_edges(graph, state, cfg))
     graph.edges.extend(ee_object_compatibility_edges(graph, state, cfg))
     graph.edges.extend(object_object_edges(graph, state, cfg))
-    graph.edges.extend(object_object_compatibility_edges(graph, state, cfg))
+    if bool(cfg.get("affordances", {}).get("object_object_compatibility", True)):
+        graph.edges.extend(object_object_compatibility_edges(graph, state, cfg))

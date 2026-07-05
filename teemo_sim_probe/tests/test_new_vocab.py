@@ -30,6 +30,7 @@ from teemo_sim_probe.core.relation_rules import (
     ALL_LABELS,
     ee_object_spatial_event_edges,
     object_object_edges,
+    object_object_compatibility_edges,
 )
 from teemo_sim_probe.core.schema import Edge, Graph, Node
 from teemo_sim_probe.core.temporal_buffer import TemporalBuffer
@@ -185,6 +186,98 @@ class SupportCompatTests(unittest.TestCase):
         meas = support_compatibility(supporter, sup_comps, supported, bot_comps)
         self.assertIsNotNone(meas)
         self.assertAlmostEqual(meas.xy_mismatch, 0.0, places=6)
+
+
+# --------------------------------------------------------------------------- #
+# Runtime obj-obj compatibility gating
+# --------------------------------------------------------------------------- #
+class ObjectObjectCompatibilityGateTests(unittest.TestCase):
+    def _cfg(self, *, support_enabled=True, support_subtasks=("place",)):
+        aff_set = AffordanceSet(
+            contact_by_object={
+                "knife": [ContactComponent(
+                    anchor_obj_frame=np.array([0.05, 0.0, 0.0]),
+                    outward_normal_obj_frame=np.array([1.0, 0.0, 0.0]),
+                )],
+                "onion": [ContactComponent(
+                    anchor_obj_frame=np.array([-0.05, 0.0, 0.0]),
+                    outward_normal_obj_frame=np.array([-1.0, 0.0, 0.0]),
+                )],
+            },
+            support_by_object={
+                "link:drawer": [SupportComponent(
+                    surface_anchor_obj_frame=np.array([0.0, 0.0, 0.04]),
+                    surface_normal_obj_frame=np.array([0.0, 0.0, 1.0]),
+                    footprint_radius=0.10,
+                )],
+            },
+            bottom_by_object={
+                "actor:bowl": [BottomComponent(
+                    bottom_anchor_obj_frame=np.array([0.0, 0.0, 0.0]),
+                    bottom_normal_obj_frame=np.array([0.0, 0.0, -1.0]),
+                )],
+            },
+        )
+        return {
+            "contact": {"eps_force": 0.05},
+            "grasp": {"max_angle": 30, "tcp_approach_axis_local": [0, 0, 1]},
+            "bin_edges": {
+                "planar-distance": [0.20, 0.50],
+                "contact-compatibility": [1.0 / 3.0, 2.0 / 3.0],
+                "support-compatibility": [1.0 / 3.0, 2.0 / 3.0],
+            },
+            "interaction_types": {
+                "actor:knife": {"contact"},
+                "actor:onion": {"contact"},
+                "link:drawer": {"support"},
+                "actor:bowl": {"support"},
+            },
+            "affordance_set": aff_set,
+            "affordances": {
+                "object_object_contact_compatibility": True,
+                "object_object_support_compatibility": support_enabled,
+                "object_object_support_compatibility_subtasks": list(support_subtasks),
+            },
+        }
+
+    def test_contact_compat_stays_enabled_for_tool_object_pairs(self):
+        knife = _obj_node("actor:knife", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
+        onion = _obj_node("actor:onion", (0.10, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
+        knife.attributes.update({"entity_key": "actor:knife", "whitelist_key": "actor:knife"})
+        onion.attributes.update({"entity_key": "actor:onion", "whitelist_key": "actor:onion"})
+        graph = Graph(0, "env", "cam", nodes=[knife, onion])
+
+        edges = object_object_compatibility_edges(graph, _StubState(), self._cfg())
+
+        self.assertIn("contact-compatibility", {e.relation for e in edges})
+
+    def test_support_compat_is_off_by_default_for_passive_support_pairs(self):
+        drawer = _obj_node("link:drawer", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
+        bowl = _obj_node("actor:bowl", (0.0, 0.0, 0.04, 1.0, 0.0, 0.0, 0.0))
+        drawer.attributes.update({"entity_key": "link:drawer", "whitelist_key": "link:drawer"})
+        bowl.attributes.update({"entity_key": "actor:bowl", "whitelist_key": "actor:bowl"})
+        graph = Graph(
+            0, "env", "cam", nodes=[drawer, bowl],
+            meta={"active_subtask": "pick"},
+        )
+
+        edges = object_object_compatibility_edges(graph, _StubState(), self._cfg())
+
+        self.assertNotIn("support-compatibility", {e.relation for e in edges})
+
+    def test_support_compat_is_enabled_for_place_when_allowlisted(self):
+        drawer = _obj_node("link:drawer", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
+        bowl = _obj_node("actor:bowl", (0.0, 0.0, 0.04, 1.0, 0.0, 0.0, 0.0))
+        drawer.attributes.update({"entity_key": "link:drawer", "whitelist_key": "link:drawer"})
+        bowl.attributes.update({"entity_key": "actor:bowl", "whitelist_key": "actor:bowl"})
+        graph = Graph(
+            0, "env", "cam", nodes=[drawer, bowl],
+            meta={"active_subtask": "place"},
+        )
+
+        edges = object_object_compatibility_edges(graph, _StubState(), self._cfg())
+
+        self.assertIn("support-compatibility", {e.relation for e in edges})
 
 
 # --------------------------------------------------------------------------- #
