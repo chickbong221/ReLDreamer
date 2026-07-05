@@ -36,6 +36,7 @@ class ManiSkill(embodied.Env):
       render_mode=None,
       mshab_task=None,
       mshab_split='train',
+      mshab_eval_split=None,
       mshab_obj='all',
       nonprivileged_obs=False,
       max_depth=20000.0,
@@ -100,13 +101,14 @@ class ManiSkill(embodied.Env):
       from mshab.envs.planner import plan_data_from_file
       subtask = task.split('SubtaskTrain')[0].lower()
       rearrange_dir = ASSET_DIR / 'scene_datasets/replica_cad_dataset/rearrange'
+      split = mshab_eval_split if (self._is_eval and mshab_eval_split) else mshab_split
       plan_data = plan_data_from_file(
-          rearrange_dir / 'task_plans' / mshab_task / subtask / mshab_split / f'{mshab_obj}.json'
+          rearrange_dir / 'task_plans' / mshab_task / subtask / split / f'{mshab_obj}.json'
       )
       make_kwargs['task_plans'] = plan_data.plans
       make_kwargs['scene_builder_cls'] = plan_data.dataset
       make_kwargs['spawn_data_fp'] = (
-          rearrange_dir / 'spawn_data' / mshab_task / subtask / mshab_split / 'spawn_data.pt'
+          rearrange_dir / 'spawn_data' / mshab_task / subtask / split / 'spawn_data.pt'
       )
       # mshab envs assert num_envs % num_scenes == 0 by default (63 train / 21 val).
       # Disable so any num_envs works (make_agent uses 1 for shape discovery).

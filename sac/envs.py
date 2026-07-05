@@ -41,9 +41,11 @@ def build_env(
 
     subtask = task.split("SubtaskTrain")[0].lower()
     rearrange_dir = ASSET_DIR / "scene_datasets/replica_cad_dataset/rearrange"
+    split = cfg.get("mshab_eval_split") if is_eval else None
+    split = split or cfg["mshab_split"]
     plan = plan_data_from_file(
         rearrange_dir / "task_plans" / cfg["mshab_task"] / subtask
-        / cfg["mshab_split"] / f"{cfg['mshab_obj']}.json"
+        / split / f"{cfg['mshab_obj']}.json"
     )
 
     env_kwargs = dict(
@@ -51,7 +53,7 @@ def build_env(
         scene_builder_cls=plan.dataset,
         spawn_data_fp=(
             rearrange_dir / "spawn_data" / cfg["mshab_task"] / subtask
-            / cfg["mshab_split"] / "spawn_data.pt"
+            / split / "spawn_data.pt"
         ),
         require_build_configs_repeated_equally_across_envs=False,
         robot_force_mult=float(cfg["robot_force_mult"]),

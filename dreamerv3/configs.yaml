@@ -49,6 +49,7 @@ defaults:
       num_frames: 1
       mshab_task: 'none'
       mshab_split: train
+      mshab_eval_split: val
       mshab_obj: all
       nonprivileged_obs: false
       max_episode_steps: 0       # 0 → use the registered default; mshab overrides to 100

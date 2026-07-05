@@ -56,6 +56,7 @@ defaults:
       reward_mode: normalized_dense
       mshab_task: pick
       mshab_split: train
+      mshab_eval_split: val
       mshab_obj: all
       mshab_stationary_head: True
       max_episode_steps: 100
