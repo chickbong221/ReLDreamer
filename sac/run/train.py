@@ -94,7 +94,9 @@ def train(config: dict) -> None:
     train_split = env_cfg["mshab_split"]
     eval_split = env_cfg.get("mshab_eval_split") or train_split
     print(f"[sac] mshab split: train='{train_split}' eval='{eval_split}' "
-          f"task={env_cfg['mshab_task']} obj={env_cfg['mshab_obj']}", flush=True)
+          f"task={env_cfg['mshab_task']} obj={env_cfg['mshab_obj']} "
+          f"nonprivileged_obs={bool(env_cfg.get('nonprivileged_obs', True))}",
+          flush=True)
     envs = build_env(task, env_cfg, is_eval=False, seed=int(config["seed"]),
                      graph_enabled=graph_enabled)
     eval_envs = build_env(task, env_cfg, is_eval=True, seed=int(config["seed"]) + 1,

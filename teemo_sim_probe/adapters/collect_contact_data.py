@@ -612,12 +612,9 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
                     max_ee_force=force, grasped=True,
                 )
 
-        # Obj-obj contact event sampling. Also one-hop elevates the other
-        # endpoint into ``_episode_interacted`` when one side was ee-touched
-        # or grasped, so the supporter pass below picks up its direct
-        # supporter too (e.g. knife -> onion elevates onion; onion's cutting
-        # board is then admitted as a supporter). Runs before the supporter
-        # pass so elevated entities become roots this tick.
+        # Obj-obj contact event sampling. Restrict the expensive contact
+        # queries to pairs touching a real EE source; direct target/supporter
+        # contacts are still handled by the support pass below.
         self._sample_obj_obj_contacts(env_idx, entity_by_key)
 
         # Support evidence may be visible before robot-object contact. Buffer
@@ -656,8 +653,15 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
     def _sample_obj_obj_contacts(
         self, env_idx: int, entity_by_key: Dict[str, Any],
     ) -> None:
-        """Record obj-obj contact events and one-hop lift the other endpoint
-        into ``_episode_interacted`` when one side is ee-touched or grasped.
+        """Record EE-local obj-obj contacts and one-hop lift the other endpoint.
+
+        The old implementation scanned every object-object pair in the visible
+        scene. ReplicaCAD kitchens contain many static links, so that becomes
+        O(N^2) GPU contact queries per env per tick. The whitelist only uses
+        obj-obj contacts to propagate one hop from an EE-touched source (for
+        example knife -> onion), while direct support evidence is collected in
+        ``_observe_direct_supporters``. Query only pairs that touch a true EE
+        source and let the support pass cover target/supporter relations.
 
         Elevation runs even when the sample bucket is full so a late-in-episode
         contact still promotes membership; the bucket cap only bounds the
@@ -670,43 +674,52 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         }
         scene = self._base_env.scene
         interacted = self._episode_interacted[env_idx]
-        keys = list(entity_by_key.keys())
-        for i in range(len(keys)):
-            for j in range(i + 1, len(keys)):
-                a_key, b_key = keys[i], keys[j]
-                if frozenset({a_key, b_key}) in support_pairs:
+        source_keys = [
+            key for key, rec in interacted.items()
+            if key in entity_by_key and self._is_ee_source(rec)
+        ]
+        if not source_keys:
+            return
+
+        seen_pairs = set()
+        for source_key in source_keys:
+            source = entity_by_key[source_key]
+            for other_key, other in entity_by_key.items():
+                if other_key == source_key:
                     continue
-                a, b = entity_by_key[a_key], entity_by_key[b_key]
-                vector = self._pairwise_force(scene, a, b, env_idx)
+                pair_key = frozenset({source_key, other_key})
+                if pair_key in seen_pairs or pair_key in support_pairs:
+                    continue
+                seen_pairs.add(pair_key)
+
+                vector = self._pairwise_force(scene, source, other, env_idx)
                 if vector is None:
                     continue
                 force = float(np.linalg.norm(vector))
                 if force <= self.eps_force:
                     continue
-                a_pose = _entity_pose7(a, env_idx)
-                b_pose = _entity_pose7(b, env_idx)
-                if a_pose is None or b_pose is None:
+                source_pose = _entity_pose7(source, env_idx)
+                other_pose = _entity_pose7(other, env_idx)
+                if source_pose is None or other_pose is None:
                     continue
                 if len(bucket) < _OBJ_CONTACT_SAMPLE_CAP:
                     bucket.append({
-                        "a_key": a_key,
-                        "b_key": b_key,
-                        "a_pose": a_pose,
-                        "b_pose": b_pose,
+                        "a_key": source_key,
+                        "b_key": other_key,
+                        "a_pose": source_pose,
+                        "b_pose": other_pose,
                         "force_vector": [
                             float(vector[0]), float(vector[1]), float(vector[2]),
                         ],
                         "force": force,
                     })
-                # One-hop elevation. Only entries with real ee force or an
-                # active grasp count as the "source" side, so elevated records
-                # (max_ee_force=0, no grasped flag) can never propagate further.
-                a_is_source = self._is_ee_source(interacted.get(a_key))
-                b_is_source = self._is_ee_source(interacted.get(b_key))
-                if a_is_source and b_key not in interacted:
-                    self._mark_interacted(env_idx, b_key, b, max_ee_force=0.0)
-                if b_is_source and a_key not in interacted:
-                    self._mark_interacted(env_idx, a_key, a, max_ee_force=0.0)
+                # One-hop elevation. The source side has real EE evidence;
+                # the other side is admitted with zero EE force and therefore
+                # cannot propagate further in this or later mining.
+                if other_key not in interacted:
+                    self._mark_interacted(
+                        env_idx, other_key, other, max_ee_force=0.0
+                    )
 
     @staticmethod
     def _is_ee_source(rec: Optional[Dict[str, Any]]) -> bool:

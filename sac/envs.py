@@ -76,6 +76,10 @@ def build_env(
         **env_kwargs,
     )
 
+    if bool(cfg.get("nonprivileged_obs", True)):
+        from embodied.envs.obs_wrappers import NonPrivilegedObsWrapper
+        env = NonPrivilegedObsWrapper(env)
+
     env = FetchDepthObservationWrapper(env, cat_state=True, cat_pixels=False)
     env = FrameStack(
         env, num_stack=int(cfg["frame_stack"]),
