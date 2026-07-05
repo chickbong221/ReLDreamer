@@ -32,7 +32,7 @@ class ManiSkill(embodied.Env):
       num_frames=3,
       seed=0,
       is_eval=False,
-      eval_reconfiguration_frequency=1,
+      eval_reconfiguration_frequency=0,
       render_mode=None,
       mshab_task=None,
       mshab_split='train',

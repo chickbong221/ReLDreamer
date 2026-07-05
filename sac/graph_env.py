@@ -19,6 +19,10 @@ from typing import Dict, Optional
 import numpy as np
 import torch
 
+from teemo_sim_probe.adapters.privileged_state import (
+    begin_frame_cache,
+    end_frame_cache,
+)
 from teemo_sim_probe.adapters.graph_pack import GRAPH_KEYS, pack_graph
 from teemo_sim_probe.adapters.graph_vocab import (
     EdgeVocab,
@@ -28,6 +32,58 @@ from teemo_sim_probe.adapters.graph_vocab import (
 )
 from teemo_sim_probe.configs.loader import load_config as load_teemo_config
 from teemo_sim_probe.core.graph_builder import GraphBuilder
+
+
+def _verify_whitelist_coverage(env, whitelist_dir: str) -> None:
+    """Fail at startup if any object-target plan lacks a mined whitelist.
+
+    This catches the common split mismatch early, for example training with
+    train-mined whitelists while eval uses val task plans. Only pick/place are
+    checked here because their runtime target is exactly actor:<obj>. Open and
+    close bind through live handle links and should fail loudly at runtime if
+    the corresponding link whitelist is absent.
+    """
+    from teemo_sim_probe.core.affordance import canonical_affordance_key
+    from teemo_sim_probe.core.whitelist import resolve_whitelist_path
+
+    base = getattr(env, "unwrapped", env)
+    plans_by_bci = getattr(base, "build_config_idx_to_task_plans", None)
+    if plans_by_bci is None:
+        return
+
+    groups = (
+        plans_by_bci.values() if hasattr(plans_by_bci, "values") else plans_by_bci
+    )
+    missing = set()
+    checked = set()
+    for plans in groups:
+        for plan in plans:
+            for subtask in getattr(plan, "subtasks", []) or []:
+                st_type = getattr(subtask, "type", None)
+                if st_type not in {"pick", "place"}:
+                    continue
+                obj_id = getattr(subtask, "obj_id", None)
+                if not obj_id:
+                    continue
+                key = canonical_affordance_key(str(obj_id))
+                if not key:
+                    continue
+                pair = (str(st_type), key)
+                if pair in checked:
+                    continue
+                checked.add(pair)
+                target = f"actor:{key}"
+                if resolve_whitelist_path(whitelist_dir, str(st_type), target) is None:
+                    missing.add(pair)
+
+    if missing:
+        listing = ", ".join(f"{st}:{key}" for st, key in sorted(missing))
+        raise FileNotFoundError(
+            f"graph: {len(missing)} object-target whitelist(s) missing under "
+            f"{whitelist_dir!r}: {listing}. Mine them with "
+            "tools/build_subtask_whitelists.py for the active mshab_split/"
+            "mshab_eval_split before training."
+        )
 
 
 class GraphObsBuilder:
@@ -89,6 +145,9 @@ class GraphObsBuilder:
     def _pack_one(
         self, env_idx: int, episode_boundary: bool, seg_i: np.ndarray,
     ) -> Dict[str, np.ndarray]:
+        # Full binary masks are only needed for env-0 video overlays. Training
+        # tensors use node ids/areas, so other envs can run the counts path.
+        need_masks = env_idx == 0 and self.record_env0
         graph, masks, _, _ = self.builders[env_idx].step(
             {},
             int(self._frames[env_idx]),
@@ -96,6 +155,7 @@ class GraphObsBuilder:
             seg_override=seg_i,
             rgb_override=None,
             camera_override=self.camera,
+            need_masks=need_masks,
         )
         if env_idx == 0 and self.record_env0:
             self.last_env0_graph = graph
@@ -131,10 +191,14 @@ class GraphObsBuilder:
         else:
             done_np = np.zeros(self.num_envs, dtype=bool)
         seg_all = self._read_batched_seg()
-        packed = [
-            self._pack_one(i, bool(done_np[i]), seg_all[i])
-            for i in range(self.num_envs)
-        ]
+        begin_frame_cache()
+        try:
+            packed = [
+                self._pack_one(i, bool(done_np[i]), seg_all[i])
+                for i in range(self.num_envs)
+            ]
+        finally:
+            end_frame_cache()
         out: Dict[str, torch.Tensor] = {}
         for k in GRAPH_KEYS:
             arr = np.stack([p[k] for p in packed], axis=0)
@@ -175,6 +239,7 @@ def build_graph_obs(
             "thresholds.yaml."
         )
 
+    _verify_whitelist_coverage(env, teemo_cfg["whitelist_dir"])
     node_vocab = build_node_vocab(teemo_cfg["whitelist_dir"])
     edge_vocab = build_edge_vocab()
 

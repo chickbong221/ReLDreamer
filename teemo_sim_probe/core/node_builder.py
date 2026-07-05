@@ -21,9 +21,7 @@ from .mask_extractor import (
     MaskAccumulator,
     extract_camera_obs,
     mask_for_id,
-    pixel_area,
     pick_camera,
-    unique_seg_ids,
 )
 from ..adapters.privileged_state import (
     PrivilegedState,
@@ -119,6 +117,7 @@ def build_nodes(
     seg_override: Optional[np.ndarray] = None,
     rgb_override: Optional[np.ndarray] = None,
     camera_override: Optional[str] = None,
+    need_masks: bool = True,
 ) -> Tuple[Dict[str, Node], MaskAccumulator, str, np.ndarray]:
     """Return (nodes_by_id, masks, camera_name, rgb).
 
@@ -143,37 +142,46 @@ def build_nodes(
     # The ee node always exists.
     nodes["ee"] = make_ee_node(state)
 
+    ids, counts = np.unique(seg, return_counts=True)
+    area_by_key: Dict[str, int] = {"ee": 0}
+
     # Iterate visible segmentation ids, excluding background.
-    for seg_id in unique_seg_ids(seg, exclude_background=True):
+    for seg_id, count in zip(ids, counts):
+        seg_id = int(seg_id)
+        if seg_id == 0:
+            continue
         entity = state.seg_id_map.get(seg_id)
         if entity is None:
             continue
-        m = mask_for_id(seg, seg_id)
 
         # Robot links are folded into ee when they are gripper links.
         if _is_robot_link(entity, state.robot_links):
             if _is_ee_link(entity, state.ee_links):
-                masks.add("ee", m)
+                if need_masks:
+                    masks.add("ee", mask_for_id(seg, seg_id))
                 nodes["ee"].visible = True
                 nodes["ee"].segmentation_ids.append(seg_id)
+                area_by_key["ee"] += int(count)
             continue
 
         # Every non-empty current mask becomes a candidate.  The whitelist is
         # the sole relevance gate, so supporters and ordinary links are not
         # lost to name or area heuristics before mask registration.
-        area = pixel_area(m)
-        if area <= 0:
+        if count <= 0:
             continue
 
         # Visible actors and non-robot links become object nodes.
         key = canonical_object_key(entity)
         if key not in nodes:
             nodes[key] = make_object_node(entity, state)
+            area_by_key[key] = 0
         nodes[key].segmentation_ids.append(seg_id)
-        masks.add(key, m)
-        nodes[key].pixel_area = masks.area(key)
+        area_by_key[key] += int(count)
+        if need_masks:
+            masks.add(key, mask_for_id(seg, seg_id))
+        nodes[key].pixel_area = area_by_key[key]
 
-    nodes["ee"].pixel_area = masks.area("ee")
+    nodes["ee"].pixel_area = area_by_key["ee"]
 
     return nodes, masks, cam, rgb
 

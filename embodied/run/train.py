@@ -219,7 +219,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
         num_envs=eval_num_envs,
         is_eval=True,
         eval_reconfiguration_frequency=int(_arg(
-            'eval_reconfiguration_frequency', 1)),
+            'eval_reconfiguration_frequency', 0)),
     )
 
   def _zero_actions(env, num_envs):

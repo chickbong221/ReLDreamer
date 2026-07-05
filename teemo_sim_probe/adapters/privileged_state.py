@@ -87,17 +87,40 @@ class PrivilegedState:
         if ra is None or rb is None:
             return np.zeros(3, dtype=float)
         if ra != rb:
-            a = _slice_view_for_env(a, self.env_idx)
-            b = _slice_view_for_env(b, self.env_idx)
+            # Align the wider view to the narrower scene-idx subset when
+            # possible. One multi-row query can then serve every env sharing
+            # that pair, instead of creating one single-row query per env.
+            sa = _scene_idxs_list(a)
+            sb = _scene_idxs_list(b)
+            a2 = b2 = None
+            if sa is not None and sb is not None:
+                if set(sb).issubset(sa):
+                    a2, b2, row = _slice_view_rows(a, sb), b, rb
+                elif set(sa).issubset(sb):
+                    a2, b2, row = a, _slice_view_rows(b, sa), ra
+            if a2 is None or b2 is None:
+                a2 = _slice_view_for_env(a, self.env_idx)
+                b2 = _slice_view_for_env(b, self.env_idx)
+                row = 0
+            a, b = a2, b2
             if a is None or b is None:
                 return np.zeros(3, dtype=float)
-            ra = rb = 0
-        forces = _to_np(self.scene.get_pairwise_contact_forces(a, b))
+        else:
+            row = ra
+
+        if _FRAME_CACHE is not None:
+            fkey = (id(a), id(b))
+            forces = _FRAME_CACHE["forces"].get(fkey)
+            if forces is None:
+                forces = _to_np(self.scene.get_pairwise_contact_forces(a, b))
+                _FRAME_CACHE["forces"][fkey] = forces
+        else:
+            forces = _to_np(self.scene.get_pairwise_contact_forces(a, b))
         if forces.ndim == 1:
-            return forces.astype(float)
-        if ra >= forces.shape[0]:
+            return forces.astype(float) if row == 0 else np.zeros(3, dtype=float)
+        if row >= forces.shape[0]:
             return np.zeros(3, dtype=float)
-        return np.asarray(forces[ra], dtype=float)
+        return np.asarray(forces[row], dtype=float)
 
     def pairwise_force(self, a: Any, b: Any) -> float:
         """Scalar contact-force magnitude between two entities for this env."""
@@ -183,11 +206,21 @@ class PrivilegedState:
         if query is None or not hasattr(self.agent, "is_grasping"):
             return self._is_grasping_manual(obj, max_angle)
 
-        try:
-            g = self.agent.is_grasping(query, max_angle=max_angle)
-        except TypeError:
-            g = self.agent.is_grasping(query)
-        g = _to_np(g).reshape(-1)
+        def _run_grasp_query():
+            try:
+                gg = self.agent.is_grasping(query, max_angle=max_angle)
+            except TypeError:
+                gg = self.agent.is_grasping(query)
+            return _to_np(gg).reshape(-1)
+
+        if _FRAME_CACHE is not None:
+            gkey = (id(query), int(max_angle))
+            g = _FRAME_CACHE["grasp"].get(gkey)
+            if g is None:
+                g = _run_grasp_query()
+                _FRAME_CACHE["grasp"][gkey] = g
+        else:
+            g = _run_grasp_query()
         if self.env_idx >= g.shape[0]:
             return False
         return bool(g[self.env_idx])
@@ -202,12 +235,56 @@ def _to_np(x) -> np.ndarray:
     return np.asarray(x)
 
 
-def _scene_idxs_list(entity) -> Optional[List[int]]:
+_FRAME_CACHE: Optional[Dict[str, Any]] = None
+
+
+def begin_frame_cache() -> None:
+    """Start one-frame memoization for the graph env loop."""
+    global _FRAME_CACHE
+    _FRAME_CACHE = {"np": {}, "pose": {}, "grasp": {}, "forces": {}}
+
+
+def end_frame_cache() -> None:
+    """Clear one-frame memoization."""
+    global _FRAME_CACHE
+    _FRAME_CACHE = None
+
+
+def _frame_np(key, fn):
+    if _FRAME_CACHE is None:
+        return fn()
+    bucket = _FRAME_CACHE["np"]
+    if key not in bucket:
+        bucket[key] = fn()
+    return bucket[key]
+
+
+def _scene_idxs_list(entity, pin: bool = False) -> Optional[List[int]]:
     try:
         s = entity._scene_idxs
     except AttributeError:
         return None
-    return s.tolist() if hasattr(s, "tolist") else list(s)
+    scene = getattr(entity, "scene", None)
+    durable = (
+        scene.__dict__.setdefault("_teemo_sidxs_cache", {})
+        if scene is not None else None
+    )
+    if durable is not None:
+        hit = durable.get(id(entity))
+        if hit is not None and hit[0] is entity:
+            return hit[1]
+
+    frame = _FRAME_CACHE["np"] if _FRAME_CACHE is not None else None
+    fkey = ("sidxs", id(entity))
+    if frame is not None and fkey in frame:
+        return frame[fkey]
+
+    out = s.tolist() if hasattr(s, "tolist") else list(s)
+    if pin and durable is not None:
+        durable[id(entity)] = (entity, out)
+    elif frame is not None:
+        frame[fkey] = out
+    return out
 
 
 def _obj_index_for_env(entity, env_idx: int) -> Optional[int]:
@@ -233,6 +310,19 @@ def get_tcp_pose(agent) -> Any:
     return agent.tcp.pose
 
 
+def _tcp_pose_world_cached(agent, env_idx: int) -> np.ndarray:
+    pq = _frame_np(
+        "tcp_pq",
+        lambda: (lambda pose: (_to_np(pose.p), _to_np(pose.q)))(get_tcp_pose(agent)),
+    )
+    p, q = pq
+    if p.ndim == 2:
+        p = p[env_idx]
+    if q.ndim == 2:
+        q = q[env_idx]
+    return np.concatenate([p, q]).astype(float)
+
+
 def compute_gripper_width(agent, env_idx: int) -> Optional[float]:
     """Width = qpos[-2] + qpos[-1] (matches MS-HAB miner / collect_data.py).
 
@@ -246,7 +336,7 @@ def compute_gripper_width(agent, env_idx: int) -> Optional[float]:
     if agent is None or not hasattr(agent, "robot"):
         return None
     try:
-        qpos = _to_np(agent.robot.qpos)
+        qpos = _frame_np("qpos", lambda: _to_np(agent.robot.qpos))
     except Exception:
         return None
     if qpos.ndim == 0:
@@ -278,6 +368,19 @@ def pose_to_world_array(pose, env_idx: int) -> np.ndarray:
     return np.concatenate([p, q]).astype(float)
 
 
+def _scene_scoped(agent, key: str, fn):
+    robot = getattr(agent, "robot", None)
+    scene = getattr(robot, "scene", None) if robot is not None else None
+    if scene is None:
+        return fn()
+    hit = scene.__dict__.get(key)
+    if hit is not None:
+        return hit
+    out = fn()
+    scene.__dict__[key] = out
+    return out
+
+
 def get_ee_links(agent) -> List[Any]:
     """Links to fold into the single ``ee`` node.
 
@@ -285,19 +388,25 @@ def get_ee_links(agent) -> List[Any]:
     ``_after_init``. We start with those; the run scripts can print the seg map
     and extend this set (e.g. wrist/hand links) once empirically observed.
     """
-    links = []
-    for attr in ("tcp", "finger1_link", "finger2_link"):
-        link = getattr(agent, attr, None)
-        if link is not None:
-            links.append(link)
-    return links
+    def _build():
+        links = []
+        for attr in ("tcp", "finger1_link", "finger2_link"):
+            link = getattr(agent, attr, None)
+            if link is not None:
+                links.append(link)
+        return links
+
+    return _scene_scoped(agent, "_teemo_ee_links", _build)
 
 
 def _robot_link_set(agent) -> set:
-    try:
-        return set(agent.robot.get_links())
-    except Exception:
-        return set()
+    def _build():
+        try:
+            return set(agent.robot.get_links())
+        except Exception:
+            return set()
+
+    return _scene_scoped(agent, "_teemo_robot_links", _build)
 
 
 def _looks_like_mshab(env) -> bool:
@@ -321,9 +430,10 @@ def _entity_for_env(entity, env_idx: int):
         return entity
 
     try:
-        scene_idxs = _to_np(entity._scene_idxs).reshape(-1).tolist()
-        return objs[scene_idxs.index(env_idx)]
-    except (AttributeError, ValueError, IndexError, TypeError):
+        scene_idxs = _scene_idxs_list(entity)
+        if scene_idxs is not None:
+            return objs[scene_idxs.index(env_idx)]
+    except (ValueError, IndexError, TypeError):
         pass
 
     try:
@@ -352,6 +462,7 @@ def per_env_segmentation_id_map(env, env_idx: int) -> Dict[int, Any]:
     for actor in scene.actors.values():
         if getattr(actor, "merged", False):
             continue
+        _scene_idxs_list(actor, pin=True)
         row = _obj_index_for_env(actor, env_idx)
         objs = getattr(actor, "_objs", None)
         if row is None or not objs or row >= len(objs):
@@ -361,9 +472,11 @@ def per_env_segmentation_id_map(env, env_idx: int) -> Dict[int, Any]:
     for art in scene.articulations.values():
         if getattr(art, "merged", False):
             continue
+        _scene_idxs_list(art, pin=True)
         if _obj_index_for_env(art, env_idx) is None:
             continue
         for link in art.links:
+            _scene_idxs_list(link, pin=True)
             row = _obj_index_for_env(link, env_idx)
             objs = getattr(link, "_objs", None)
             if row is None or not objs or row >= len(objs):
@@ -385,8 +498,15 @@ def entity_pose_world_array(entity, env_idx: int) -> Optional[np.ndarray]:
     row = _obj_index_for_env(entity, env_idx)
     if row is None:
         return None
-    p = _to_np(pose.p)
-    q = _to_np(pose.q)
+    if _FRAME_CACHE is not None:
+        hit = _FRAME_CACHE["pose"].get(id(entity))
+        if hit is None:
+            hit = (_to_np(pose.p), _to_np(pose.q))
+            _FRAME_CACHE["pose"][id(entity)] = hit
+        p, q = hit
+    else:
+        p = _to_np(pose.p)
+        q = _to_np(pose.q)
     if p.ndim == 2:
         if row >= p.shape[0]:
             return None
@@ -432,6 +552,53 @@ def _slice_view_for_env(entity, env_idx: int):
     return view
 
 
+def _slice_view_rows(entity, target_scene_idxs: List[int]):
+    """Return a multi-row Actor/Link view restricted to target scene indices."""
+    objs = getattr(entity, "_objs", None)
+    sidxs = _scene_idxs_list(entity)
+    if objs is None or sidxs is None:
+        return None
+    target_scene_idxs = list(target_scene_idxs)
+    if sidxs == target_scene_idxs:
+        return entity
+
+    scene = getattr(entity, "scene", None)
+    cache = (
+        scene.__dict__.setdefault("_teemo_row_sliced_views", {})
+        if scene is not None else {}
+    )
+    key = (id(entity), tuple(target_scene_idxs))
+    hit = cache.get(key)
+    if hit is not None and hit[0] is entity:
+        return hit[1]
+
+    try:
+        rows = [sidxs.index(s) for s in target_scene_idxs]
+    except ValueError:
+        return None
+
+    import torch
+    from mani_skill.utils.structs.actor import Actor
+    from mani_skill.utils.structs.link import Link
+
+    sub = torch.tensor(target_scene_idxs, dtype=torch.int64)
+    picked = [objs[r] for r in rows]
+    if type(entity).__name__ == "Link":
+        view = Link.create(picked, scene, sub)
+        view.articulation = getattr(entity, "articulation", None)
+    else:
+        view = Actor.create_from_entities(picked, scene, sub)
+    try:
+        view.name = (
+            f"{getattr(entity, 'name', 'entity')}@{id(entity)}"
+            f"@rows{hash(tuple(target_scene_idxs)) & 0xFFFFFFFF:08x}"
+        )
+    except Exception:
+        pass
+    cache[key] = (entity, view)
+    return view
+
+
 def _resolve_actual_entity(entity, seg_id_map: Dict[int, Any], env_idx: int):
     """Map an MS-HAB merged handle to its per-env segmentation wrapper.
 
@@ -443,22 +610,39 @@ def _resolve_actual_entity(entity, seg_id_map: Dict[int, Any], env_idx: int):
     """
     if entity is None:
         return None
+    scene = getattr(entity, "scene", None)
+    handle_name = getattr(entity, "name", None)
+    cache = None
+    if scene is not None and handle_name is not None:
+        cache = scene.__dict__.setdefault("_teemo_resolve_cache", {})
+        hit = cache.get((handle_name, env_idx))
+        if hit is not None and hit[0] is entity:
+            return hit[1]
+
     target = _entity_for_env(entity, env_idx)
     target_name = getattr(target, "name", None)
 
+    result = None
     for candidate in seg_id_map.values():
         candidate_target = _entity_for_env(candidate, env_idx)
         if candidate_target is target:
-            return candidate
+            result = candidate
+            break
 
     # Identity is the reliable path, but matching the concrete SAPIEN name is
     # a useful fallback across wrapper/proxy implementations.
-    if target_name is not None:
+    if result is None and target_name is not None:
         for candidate in seg_id_map.values():
             candidate_target = _entity_for_env(candidate, env_idx)
             if getattr(candidate_target, "name", None) == target_name:
-                return candidate
-    return entity
+                result = candidate
+                break
+
+    if result is None:
+        result = entity
+    if cache is not None:
+        cache[(handle_name, env_idx)] = (entity, result)
+    return result
 
 
 def _alias_segmentation_entity(
@@ -509,7 +693,10 @@ def _active_mshab_handles(
         active_obj_id=None,
     )
     try:
-        ptr = int(_to_np(env.subtask_pointer)[env_idx])
+        ptr_all = _frame_np(
+            "subtask_ptr", lambda: _to_np(env.subtask_pointer).reshape(-1)
+        )
+        ptr = int(ptr_all[env_idx])
     except Exception:
         return out
 
@@ -531,7 +718,8 @@ def _active_mshab_handles(
         bcitp = getattr(env, "build_config_idx_to_task_plans", None)
         if bcis is not None and tpis is not None and bcitp is not None:
             bci = int(bcis[env_idx])
-            tpi = int(_to_np(tpis)[env_idx])
+            tpi_all = _frame_np("task_plan_idxs", lambda: _to_np(tpis).reshape(-1))
+            tpi = int(tpi_all[env_idx])
             tp_list = bcitp.get(bci) if hasattr(bcitp, "get") else None
             if tp_list is not None and 0 <= tpi < len(tp_list):
                 original_plan = tp_list[tpi]
@@ -595,7 +783,7 @@ def get_privileged_state(
         env_idx=env_idx,
         is_mshab=_looks_like_mshab(e),
         ee_links=get_ee_links(agent),
-        tcp_pose_world=pose_to_world_array(get_tcp_pose(agent), env_idx),
+        tcp_pose_world=_tcp_pose_world_cached(agent, env_idx),
         gripper_width=compute_gripper_width(agent, env_idx),
         seg_id_map=per_env_segmentation_id_map(e, env_idx),
         robot_links=_robot_link_set(agent),

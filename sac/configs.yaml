@@ -52,7 +52,7 @@ defaults:
       image_size: 128
       frame_stack: 3
       reconfiguration_freq: 0
-      eval_reconfiguration_freq: 1
+      eval_reconfiguration_freq: 0
       reward_mode: normalized_dense
       mshab_task: pick
       mshab_split: train
@@ -100,7 +100,7 @@ pick_bowl:
   env:
     maniskill:
       num_envs: 189
-      num_eval_envs: 63
+      num_eval_envs: 21
       mshab_task: set_table
       mshab_obj: 024_bowl
   graph:

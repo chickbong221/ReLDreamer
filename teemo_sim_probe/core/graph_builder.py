@@ -115,6 +115,7 @@ class GraphBuilder:
         *,
         episode_boundary: bool = False,
         seg_override=None, rgb_override=None, camera_override=None,
+        need_masks: bool = True,
     ) -> Tuple[Graph, MaskAccumulator, str, np.ndarray]:
         if episode_boundary:
             self.reset_episode()
@@ -130,6 +131,7 @@ class GraphBuilder:
             seg_override=seg_override,
             rgb_override=rgb_override,
             camera_override=camera_override,
+            need_masks=need_masks,
         )
 
         # Whitelist admission first, then episode-scoped persistence: a node
