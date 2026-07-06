@@ -6,9 +6,7 @@ If imageio is unavailable this degrades to writing a contact-sheet PNG.
 
 from __future__ import annotations
 
-import glob
-import os
-from typing import List, Optional
+from typing import List
 
 import numpy as np
 
@@ -43,26 +41,33 @@ def write_video(
     out_path: str,
     fps: int = 5,
 ) -> str:
-    frames = []
-    for op, gp in zip(overlay_paths, graph_paths):
-        frames.append(_hstack(_load_png(op), _load_png(gp)))
-
     try:
         import imageio.v2 as imageio
         # Pad all frames to a common size that is divisible by 16 so ffmpeg
         # does not silently resize the video for codec compatibility.
-        H = _round_up(max(f.shape[0] for f in frames), 16)
-        W = _round_up(max(f.shape[1] for f in frames), 16)
-        padded = []
-        for f in frames:
-            out = np.full((H, W, 3), 253, dtype=np.uint8)
-            out[: f.shape[0], : f.shape[1]] = f
-            padded.append(out)
-        imageio.mimsave(out_path, padded, fps=fps)
+        H = W = 0
+        for op, gp in zip(overlay_paths, graph_paths):
+            frame = _hstack(_load_png(op), _load_png(gp))
+            H = max(H, frame.shape[0])
+            W = max(W, frame.shape[1])
+        H = _round_up(H, 16)
+        W = _round_up(W, 16)
+
+        with imageio.get_writer(out_path, fps=fps) as writer:
+            for op, gp in zip(overlay_paths, graph_paths):
+                frame = _hstack(_load_png(op), _load_png(gp))
+                out = np.full((H, W, 3), 253, dtype=np.uint8)
+                out[: frame.shape[0], : frame.shape[1]] = frame
+                writer.append_data(out)
         return out_path
     except Exception:
-        # Fallback contact sheet.
-        sheet = np.concatenate(frames[:8], axis=0)
+        # Fallback contact sheet without materializing the full eval rollout.
+        frames = []
+        for op, gp in list(zip(overlay_paths, graph_paths))[:8]:
+            frames.append(_hstack(_load_png(op), _load_png(gp)))
+        if not frames:
+            raise
+        sheet = np.concatenate(frames, axis=0)
         import matplotlib.image as mpimg
         png = out_path.rsplit(".", 1)[0] + "_contactsheet.png"
         mpimg.imsave(png, sheet)

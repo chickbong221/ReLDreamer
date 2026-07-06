@@ -237,6 +237,16 @@ def _to_np(x) -> np.ndarray:
 
 _FRAME_CACHE: Optional[Dict[str, Any]] = None
 
+_SCENE_CACHE_KEYS = (
+    "_teemo_sidxs_cache",
+    "_teemo_ee_links",
+    "_teemo_robot_links",
+    "_teemo_per_env_seg_maps",
+    "_teemo_sliced_views",
+    "_teemo_row_sliced_views",
+    "_teemo_resolve_cache",
+)
+
 
 def begin_frame_cache() -> None:
     """Start one-frame memoization for the graph env loop."""
@@ -248,6 +258,30 @@ def end_frame_cache() -> None:
     """Clear one-frame memoization."""
     global _FRAME_CACHE
     _FRAME_CACHE = None
+
+
+def clear_privileged_state_caches(env_or_scene) -> None:
+    """Drop scene-attached TEEMO caches after a simulator reconfiguration."""
+    candidates = []
+    base = getattr(env_or_scene, "unwrapped", env_or_scene)
+    scene = getattr(base, "scene", None)
+    if scene is None and any(k in getattr(base, "__dict__", {}) for k in _SCENE_CACHE_KEYS):
+        scene = base
+    if scene is not None:
+        candidates.append(scene)
+
+    agent = getattr(base, "agent", None)
+    robot = getattr(agent, "robot", None) if agent is not None else None
+    robot_scene = getattr(robot, "scene", None) if robot is not None else None
+    if robot_scene is not None and robot_scene not in candidates:
+        candidates.append(robot_scene)
+
+    for candidate in candidates:
+        d = getattr(candidate, "__dict__", None)
+        if d is None:
+            continue
+        for key in _SCENE_CACHE_KEYS:
+            d.pop(key, None)
 
 
 def _frame_np(key, fn):

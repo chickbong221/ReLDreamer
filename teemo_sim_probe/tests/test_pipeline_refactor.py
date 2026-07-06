@@ -4,6 +4,7 @@ import unittest
 
 import numpy as np
 
+from teemo_sim_probe.adapters.privileged_state import clear_privileged_state_caches
 from teemo_sim_probe.core.affordance import AffordanceComponent, AffordanceSet
 from teemo_sim_probe.core.graph_builder import GraphBuilder
 from teemo_sim_probe.core.node_builder import build_nodes
@@ -278,6 +279,66 @@ class SupporterMaskTests(unittest.TestCase):
         self.assertIn(key, nodes)
         self.assertEqual(masks.area(key), 3)
         self.assertEqual(key, "link:cabinet-2/frl_apartment_drawer3")
+
+
+class _GraphEnvStub:
+    def __init__(self, seg):
+        self.unwrapped = type("_Base", (), {})()
+        self.set_seg(seg)
+
+    def set_seg(self, seg):
+        self.unwrapped._last_obs = {
+            "sensor_data": {
+                "cam": {
+                    "segmentation": seg,
+                },
+            },
+        }
+
+
+class GraphRuntimeMemoryTests(unittest.TestCase):
+    def test_segmentation_cpu_buffer_is_reused(self):
+        try:
+            import torch
+            from sac.graph_env import GraphObsBuilder
+        except ImportError as exc:
+            self.skipTest(f"torch-backed graph env unavailable: {exc}")
+
+        builder = GraphObsBuilder.__new__(GraphObsBuilder)
+        builder.env = _GraphEnvStub(
+            torch.arange(8, dtype=torch.int32).reshape(2, 2, 2, 1)
+        )
+        builder.cameras = ["cam"]
+        builder._cams_checked = False
+        builder._seg_cpu_buffers = {}
+
+        first = builder._read_batched_segs()
+        self.assertTrue(
+            np.array_equal(first["cam"], np.arange(8, dtype=np.int32).reshape(2, 2, 2))
+        )
+        ptr = builder._seg_cpu_buffers["cam"].data_ptr()
+
+        builder.env.set_seg(
+            torch.full((2, 2, 2, 1), 7, dtype=torch.int32)
+        )
+        second = builder._read_batched_segs()
+
+        self.assertEqual(builder._seg_cpu_buffers["cam"].data_ptr(), ptr)
+        self.assertTrue(np.array_equal(second["cam"], np.full((2, 2, 2), 7)))
+
+    def test_scene_cache_cleanup_drops_teemo_caches(self):
+        scene = type("_Scene", (), {})()
+        scene._teemo_sidxs_cache = {"old": object()}
+        scene._teemo_per_env_seg_maps = {0: {"old": object()}}
+        scene._teemo_sliced_views = {(1, 0): object()}
+        scene.keep_me = "still here"
+
+        clear_privileged_state_caches(scene)
+
+        self.assertNotIn("_teemo_sidxs_cache", scene.__dict__)
+        self.assertNotIn("_teemo_per_env_seg_maps", scene.__dict__)
+        self.assertNotIn("_teemo_sliced_views", scene.__dict__)
+        self.assertEqual(scene.keep_me, "still here")
 
 
 if __name__ == "__main__":

@@ -80,6 +80,7 @@ defaults:
 
   graph:
     enabled: False
+    bypass_teemo: False
     profile: tabletop
     thresholds_path: null
     whitelist_dir: null

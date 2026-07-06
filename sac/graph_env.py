@@ -21,6 +21,7 @@ import torch
 
 from teemo_sim_probe.adapters.privileged_state import (
     begin_frame_cache,
+    clear_privileged_state_caches,
     end_frame_cache,
 )
 from teemo_sim_probe.adapters.graph_pack import GRAPH_KEYS, pack_graph
@@ -102,6 +103,7 @@ class GraphObsBuilder:
         k_soft: float,
         cameras: List[str],
         primary_camera: str,
+        bypass_teemo: bool = False,
     ):
         self.env = env
         self.num_envs = int(num_envs)
@@ -110,6 +112,7 @@ class GraphObsBuilder:
         self.n_max = int(n_max)
         self.e_max = int(e_max)
         self.k_soft = float(k_soft)
+        self.bypass_teemo = bool(bypass_teemo)
         self.cameras = list(cameras)
         if primary_camera not in self.cameras:
             raise ValueError(
@@ -129,6 +132,8 @@ class GraphObsBuilder:
         self.last_env0_graph = None
         self.last_env0_masks = None
         self._cams_checked = False
+        self._scene_cache_signature = None
+        self._seg_cpu_buffers: Dict[str, torch.Tensor] = {}
 
     @property
     def obs_spec_shapes(self) -> Dict[str, tuple]:
@@ -143,6 +148,12 @@ class GraphObsBuilder:
             "graph_edge_pred":    (self.e_max,),
             "graph_edge_valid":   (self.e_max,),
         }
+
+    def _zero_obs(self, device: torch.device) -> Dict[str, torch.Tensor]:
+        out: Dict[str, torch.Tensor] = {}
+        for k, shape in self.obs_spec_shapes.items():
+            out[k] = torch.zeros((self.num_envs, *shape), device=device)
+        return out
 
     def _pack_one(
         self, env_idx: int, episode_boundary: bool,
@@ -190,9 +201,43 @@ class GraphObsBuilder:
             self._cams_checked = True
         out: Dict[str, np.ndarray] = {}
         for cam in self.cameras:
-            seg = sensor_data[cam]["segmentation"].squeeze(-1)
-            out[cam] = seg.detach().cpu().numpy()
+            seg = sensor_data[cam]["segmentation"].squeeze(-1).detach()
+            buf = self._seg_cpu_buffers.get(cam)
+            if (
+                buf is None
+                or tuple(buf.shape) != tuple(seg.shape)
+                or buf.dtype != seg.dtype
+            ):
+                buf = torch.empty(tuple(seg.shape), dtype=seg.dtype, device="cpu")
+                self._seg_cpu_buffers[cam] = buf
+            buf.copy_(seg, non_blocking=False)
+            out[cam] = buf.numpy()
         return out
+
+    def _current_scene_signature(self):
+        base = self.env.unwrapped
+        scene = getattr(base, "scene", None)
+        if scene is None:
+            return None
+        actors = getattr(scene, "actors", {}) or {}
+        articulations = getattr(scene, "articulations", {}) or {}
+        actor_ids = tuple(sorted(id(a) for a in actors.values()))
+        link_ids = []
+        for art in articulations.values():
+            link_ids.extend(id(link) for link in getattr(art, "links", []) or [])
+        return (id(scene), actor_ids, tuple(sorted(link_ids)))
+
+    def _refresh_scene_caches_if_needed(self) -> None:
+        sig = self._current_scene_signature()
+        if sig is None:
+            return
+        if self._scene_cache_signature is None:
+            self._scene_cache_signature = sig
+            return
+        if sig == self._scene_cache_signature:
+            return
+        clear_privileged_state_caches(self.env)
+        self._scene_cache_signature = sig
 
     def step(
         self, done_mask: Optional[torch.Tensor], device: torch.device,
@@ -201,7 +246,11 @@ class GraphObsBuilder:
             done_np = done_mask.detach().cpu().numpy().astype(bool).reshape(-1)
         else:
             done_np = np.zeros(self.num_envs, dtype=bool)
+        if done_mask is None or bool(done_np.any()):
+            self._refresh_scene_caches_if_needed()
         segs_by_cam = self._read_batched_segs()
+        if self.bypass_teemo:
+            return self._zero_obs(device)
         begin_frame_cache()
         try:
             packed = [
@@ -280,4 +329,5 @@ def build_graph_obs(
         k_soft=k_soft,
         cameras=list(cameras),
         primary_camera=primary_camera,
+        bypass_teemo=bool(graph_cfg.get("bypass_teemo", False)),
     )

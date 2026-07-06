@@ -1,9 +1,7 @@
 """Env builder for MS-HAB SAC. Mirrors mshab/envs/make.make_env.
 
-When graph is enabled, obs_mode widens to ``rgb+depth+segmentation`` so the
-graph pipeline can read segmentation (and, at eval time, RGB for the video
-overlay) via ``env.unwrapped._last_obs``. The policy-facing obs is unaffected:
-``FetchDepthObservationWrapper`` still exposes only depth + state.
+Graph reads segmentation; train adds it to depth, eval also renders RGB for
+the video overlay. Policy obs stays depth + state.
 """
 
 from __future__ import annotations
@@ -30,7 +28,10 @@ def build_env(
     from mani_skill import ASSET_DIR
     from mshab.envs.planner import plan_data_from_file
 
-    obs_mode = "rgb+depth+segmentation" if graph_enabled else "depth"
+    if graph_enabled:
+        obs_mode = "rgb+depth+segmentation" if is_eval else "depth+segmentation"
+    else:
+        obs_mode = "depth"
     num_envs = int(cfg["num_eval_envs"] if is_eval else cfg["num_envs"])
     image_size = int(cfg["image_size"])
     reconfiguration_freq = int(

@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 import os
 import tempfile
+import time
 from typing import Dict, Optional
 
 from gymnasium import spaces
@@ -71,6 +72,42 @@ class Logger:
     def close(self):
         if self.tb is not None:
             self.tb.close()
+
+
+class _RamLogger:
+    """Append process + system RAM to ``ram_usage.csv`` so the leak slope is
+    inspectable offline; also mirrors to the metrics logger."""
+
+    def __init__(self, logdir: str):
+        self.path = os.path.join(logdir, "ram_usage.csv")
+        self._t0 = time.time()
+        try:
+            import psutil
+            self._proc = psutil.Process()
+        except Exception:
+            self._proc = None
+        with open(self.path, "w") as f:
+            f.write("step,elapsed_s,proc_rss_mb,sys_used_mb,sys_avail_mb\n")
+
+    def log(self, logger: "Logger", step: int):
+        if self._proc is None:
+            return None
+        import psutil
+        rss = self._proc.memory_info().rss
+        for child in self._proc.children(recursive=True):
+            try:
+                rss += child.memory_info().rss
+            except psutil.Error:
+                pass
+        vm = psutil.virtual_memory()
+        rss_mb, used_mb, avail_mb = rss / 2**20, vm.used / 2**20, vm.available / 2**20
+        with open(self.path, "a") as f:
+            f.write(f"{step},{time.time() - self._t0:.1f},{rss_mb:.1f},"
+                    f"{used_mb:.1f},{avail_mb:.1f}\n")
+        logger.scalar("sys/proc_rss_mb", rss_mb, step)
+        logger.scalar("sys/sys_used_mb", used_mb, step)
+        logger.scalar("sys/sys_avail_mb", avail_mb, step)
+        return rss_mb, avail_mb
 
 
 def train(config: dict) -> None:
@@ -161,6 +198,7 @@ def train(config: dict) -> None:
     )
 
     logger = Logger(config["logdir"], config["logger"]["outputs"])
+    ram_logger = _RamLogger(config["logdir"])
     if "wandb" in config["logger"]["outputs"]:
         import wandb
         wandb.init(
@@ -242,7 +280,11 @@ def train(config: dict) -> None:
                 _log_env_stats(logger, envs, "train", global_step)
             if loss_metrics is not None:
                 _log_losses(logger, loss_metrics, global_step)
-            print(f"[sac] step={global_step}/{total_steps} replay={len(replay)}", flush=True)
+            ram = ram_logger.log(logger, global_step)
+            ram_str = (f" rss={ram[0] / 1024:.1f}GB avail={ram[1] / 1024:.1f}GB"
+                       if ram else "")
+            print(f"[sac] step={global_step}/{total_steps} "
+                  f"replay={len(replay)}{ram_str}", flush=True)
 
         if eval_every > 0 and global_step - last_eval >= eval_every:
             last_eval = global_step
@@ -330,54 +372,62 @@ def _run_eval(agent, eval_envs, graph_eval, logger, device, *,
     cmap = None
     env0_done = False
 
-    if do_video:
-        from teemo_sim_probe.viz.palette import ColorMap
-        from teemo_sim_probe.viz.overlay import render_overlay
-        from teemo_sim_probe.viz.graph_draw import render_graph
-        graph_eval.record_env0 = True
-        tmp_dir = tempfile.TemporaryDirectory()
-        cmap = ColorMap()
+    try:
+        if do_video:
+            from teemo_sim_probe.viz.palette import ColorMap
+            from teemo_sim_probe.viz.overlay import render_overlay
+            from teemo_sim_probe.viz.graph_draw import render_graph
+            graph_eval.record_env0 = True
+            tmp_dir = tempfile.TemporaryDirectory()
+            cmap = ColorMap()
 
-    eval_raw, _ = eval_envs.reset()
-    obs = adapt_obs(eval_raw, device)
-    graph_obs = graph_eval.reset(device) if graph_eval is not None else None
+        eval_raw, _ = eval_envs.reset()
+        obs = adapt_obs(eval_raw, device)
+        graph_obs = graph_eval.reset(device) if graph_eval is not None else None
 
-    def _record_frame(t: int) -> None:
-        rgb0 = graph_eval.read_rgb_env0()
-        overlay_paths.append(render_overlay(
-            rgb0, graph_eval.last_env0_graph, graph_eval.last_env0_masks,
-            os.path.join(tmp_dir.name, f"overlay_{t:04d}.png"), colormap=cmap,
-        ))
-        graph_paths.append(render_graph(
-            graph_eval.last_env0_graph,
-            os.path.join(tmp_dir.name, f"graph_{t:04d}.png"), colormap=cmap,
-        ))
+        def _record_frame(t: int) -> None:
+            rgb0 = graph_eval.read_rgb_env0()
+            overlay_paths.append(render_overlay(
+                rgb0, graph_eval.last_env0_graph, graph_eval.last_env0_masks,
+                os.path.join(tmp_dir.name, f"overlay_{t:04d}.png"), colormap=cmap,
+            ))
+            graph_paths.append(render_graph(
+                graph_eval.last_env0_graph,
+                os.path.join(tmp_dir.name, f"graph_{t:04d}.png"), colormap=cmap,
+            ))
 
-    if do_video:
-        _record_frame(0)
+        if do_video:
+            _record_frame(0)
 
-    for t in range(eval_max_steps):
-        with torch.no_grad():
-            act = agent.act(obs["pixels"], obs["state"], graph_obs, deterministic=True)
-        next_raw, _, term, trunc, _ = eval_envs.step(act)
-        obs = adapt_obs(next_raw, device)
-        done = term | trunc
-        if graph_eval is not None:
-            graph_obs = graph_eval.step(done, device)
+        for t in range(eval_max_steps):
+            with torch.no_grad():
+                act = agent.act(
+                    obs["pixels"], obs["state"], graph_obs, deterministic=True,
+                )
+            next_raw, _, term, trunc, _ = eval_envs.step(act)
+            obs = adapt_obs(next_raw, device)
+            done = term | trunc
+            if graph_eval is not None:
+                graph_obs = graph_eval.step(done, device)
 
-        if do_video and not env0_done:
-            if bool(done[0].item()):
-                env0_done = True
-            else:
-                _record_frame(t + 1)
+            if do_video and not env0_done:
+                if bool(done[0].item()):
+                    env0_done = True
+                else:
+                    _record_frame(t + 1)
 
-    if len(eval_envs.return_queue) > 0:
-        _log_env_stats(logger, eval_envs, "eval", step)
+        if len(eval_envs.return_queue) > 0:
+            _log_env_stats(logger, eval_envs, "eval", step)
 
-    if do_video:
-        from teemo_sim_probe.viz.video_writer import write_video
-        mp4 = os.path.join(tmp_dir.name, "eval.mp4")
-        write_video(overlay_paths, graph_paths, mp4, fps=5)
-        logger.video("eval/graph_video", mp4, step)
-        graph_eval.record_env0 = False
-        tmp_dir.cleanup()
+        if do_video:
+            from teemo_sim_probe.viz.video_writer import write_video
+            mp4 = os.path.join(tmp_dir.name, "eval.mp4")
+            write_video(overlay_paths, graph_paths, mp4, fps=5)
+            logger.video("eval/graph_video", mp4, step)
+    finally:
+        if do_video:
+            graph_eval.record_env0 = False
+            graph_eval.last_env0_graph = None
+            graph_eval.last_env0_masks = None
+        if tmp_dir is not None:
+            tmp_dir.cleanup()
