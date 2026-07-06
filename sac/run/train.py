@@ -128,6 +128,14 @@ def train(config: dict) -> None:
     torch.set_float32_matmul_precision("high")
     _seed_everything(int(config["seed"]))
 
+    _tm_enabled = bool(run_cfg.get("tracemalloc", False))
+    _tm_snap_every = int(run_cfg.get("tracemalloc_every", 40000))
+    _tm_first_at = int(run_cfg.get("tracemalloc_first_at", 40000))
+    _tm_prev_snap = None
+    if _tm_enabled:
+        import tracemalloc
+        tracemalloc.start(25)
+
     train_split = env_cfg["mshab_split"]
     eval_split = env_cfg.get("mshab_eval_split") or train_split
     print(f"[sac] mshab split: train='{train_split}' eval='{eval_split}' "
@@ -285,6 +293,27 @@ def train(config: dict) -> None:
                        if ram else "")
             print(f"[sac] step={global_step}/{total_steps} "
                   f"replay={len(replay)}{ram_str}", flush=True)
+
+            if _tm_enabled and global_step >= _tm_first_at:
+                import tracemalloc
+                snap = tracemalloc.take_snapshot().filter_traces((
+                    tracemalloc.Filter(False, tracemalloc.__file__),
+                ))
+                if _tm_prev_snap is None:
+                    _tm_prev_snap = snap
+                    print(f"[tracemalloc] baseline snapshot at step {global_step}", flush=True)
+                elif (global_step - _tm_first_at) % _tm_snap_every == 0:
+                    print(f"[tracemalloc] top allocation deltas at step {global_step}:",
+                          flush=True)
+                    diffs = snap.compare_to(_tm_prev_snap, "lineno")
+                    for stat in diffs[:15]:
+                        print(f"  {stat}", flush=True)
+                    if diffs:
+                        top = diffs[0]
+                        print(f"[tracemalloc] traceback for top grower:", flush=True)
+                        for line in top.traceback.format():
+                            print(f"    {line}", flush=True)
+                    _tm_prev_snap = snap
 
         if eval_every > 0 and global_step - last_eval >= eval_every:
             last_eval = global_step
