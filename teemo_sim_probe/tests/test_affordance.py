@@ -53,14 +53,14 @@ class _State:
 
 def _cfg(aff_set=None, *, interaction_types=None, bin_edges=None):
     bins = bin_edges or {
-        "planar-distance": [0.05, 0.20],
-        "height-offset": [-0.10, 0.10],
+        "planar-distance": [0.05, 0.10, 0.20, 0.40],
+        "height-offset": [-0.20, -0.10, 0.10, 0.20],
         "grasp-compatibility": [1.0 / 3.0, 2.0 / 3.0],
         "contact-compatibility": [1.0 / 3.0, 2.0 / 3.0],
-        "planar-distance-change": [-0.06, -0.02, 0.02, 0.06],
-        "height-offset-change": [-0.06, -0.02, 0.02, 0.06],
-        "grasp-compatibility-change": [-0.30, -0.10, 0.10, 0.30],
-        "contact-compatibility-change": [-0.30, -0.10, 0.10, 0.30],
+        "planar-distance-change": [-0.06, -0.01, 0.01, 0.06],
+        "height-offset-change": [-0.06, -0.01, 0.01, 0.06],
+        "grasp-compatibility-change": [-0.30, -0.05, 0.05, 0.30],
+        "contact-compatibility-change": [-0.30, -0.05, 0.05, 0.30],
     }
     return {
         "affordance_set": aff_set if aff_set is not None else AffordanceSet(),
@@ -354,7 +354,7 @@ class CompatibilityEdgeTests(unittest.TestCase):
             self._aff_set(),
             interaction_types={"actor:024_bowl": {"contact", "grasp"}},
         )
-        # Far enough away that planar-distance label != "near".
+        # Far enough away that planar-distance label is neither "very-near" nor "near".
         node = _obj_node(whitelist_key="actor:024_bowl",
                          pose=(0.30, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
         state = _State([0.0, 0.0, 0.02], gripper_width=0.045)

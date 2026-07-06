@@ -62,8 +62,8 @@ from ..adapters.privileged_state import PrivilegedState
 # Canonical label vocabulary (relation -> labels, in ascending bin order)
 # --------------------------------------------------------------------------- #
 SPATIAL_LABELS: Dict[str, List[str]] = {
-    "planar-distance": ["near", "medium", "far"],
-    "height-offset": ["below", "level", "above"],
+    "planar-distance": ["very-near", "near", "medium", "far", "very-far"],
+    "height-offset": ["far-below", "below", "level", "above", "far-above"],
 }
 COMPAT_LABELS: Dict[str, List[str]] = {
     "grasp-compatibility":   ["match", "partial-match", "poor-match"],
@@ -103,6 +103,13 @@ CHANGE_LABELS: Dict[str, List[str]] = {
 ALL_LABELS: Dict[str, List[str]] = {
     **SPATIAL_LABELS, **COMPAT_LABELS, **CHANGE_LABELS,
 }
+
+
+def _planar_near_labels() -> Set[str]:
+    labels = SPATIAL_LABELS["planar-distance"]
+    if len(labels) >= 5:
+        return set(labels[:2])
+    return {labels[0]}
 
 
 def bin_label(value: float, edges: List[float], labels: List[str]) -> str:
@@ -405,7 +412,7 @@ def ee_object_compatibility_edges(
     contact_spec = _get_bin_spec(cfg, "contact-compatibility")
     if grasp_spec is None and contact_spec is None:
         return []
-    near_label = SPATIAL_LABELS["planar-distance"][0]
+    near_labels = _planar_near_labels()
     norm = _compat_norm(cfg)
     tcp_axis_local = cfg["grasp"].get("tcp_approach_axis_local", [0.0, 0.0, 1.0])
     grasp_angle = cfg["grasp"]["max_angle"]
@@ -419,7 +426,7 @@ def ee_object_compatibility_edges(
         if obj_xyz is None:
             continue
         d = planar_distance_xyz(ee_xyz, obj_xyz)
-        if bin_label(d, pd_spec[0], pd_spec[1]) != near_label:
+        if bin_label(d, pd_spec[0], pd_spec[1]) not in near_labels:
             continue
 
         anchor_world, comp, a_star = _resolve_active_anchor(node, state, cfg)
@@ -574,11 +581,11 @@ def object_object_edges(
 
 
 def _near_pair(
-    a_xyz: np.ndarray, b_xyz: np.ndarray, pd_spec, near_label: str,
+    a_xyz: np.ndarray, b_xyz: np.ndarray, pd_spec, near_labels: Set[str],
 ) -> bool:
     return bin_label(
         planar_distance_xyz(a_xyz, b_xyz), pd_spec[0], pd_spec[1],
-    ) == near_label
+    ) in near_labels
 
 
 def object_object_compatibility_edges(
@@ -600,7 +607,7 @@ def object_object_compatibility_edges(
     pd_spec = _get_bin_spec(cfg, "planar-distance")
     if pd_spec is None:
         return []
-    near_label = SPATIAL_LABELS["planar-distance"][0]
+    near_labels = _planar_near_labels()
     aff_set = cfg.get("affordance_set")
     if aff_set is None:
         return []
@@ -636,7 +643,7 @@ def object_object_compatibility_edges(
         b_xyz = _xyz(b)
         if a_xyz is None or b_xyz is None:
             continue
-        if not _near_pair(a_xyz, b_xyz, pd_spec, near_label):
+        if not _near_pair(a_xyz, b_xyz, pd_spec, near_labels):
             continue
 
         a_key = a.attributes.get("whitelist_key")

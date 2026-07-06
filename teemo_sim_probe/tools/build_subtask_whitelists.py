@@ -19,13 +19,39 @@ import json
 import logging
 import pickle
 import sys
-from collections import defaultdict
+from collections import defaultdict, deque
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
+from teemo_sim_probe.core.affordance import (
+    AffordanceSet,
+    compatibility_components,
+    load_affordance_set,
+    lookup_bottom_components,
+    lookup_components,
+    lookup_contact_components,
+    lookup_contain_components,
+    lookup_key_components,
+    lookup_support_components,
+    select_active_component,
+    transform_anchors,
+)
+from teemo_sim_probe.core.containment import (
+    contain_compatibility,
+    obj_contact_compatibility,
+    support_compatibility,
+)
 from teemo_sim_probe.core.entity_identity import normalize_asset_key
+from teemo_sim_probe.core.relation_rules import (
+    SPATIAL_LABELS,
+    _compat_norm,
+    _compatibility_score,
+    _mean_normalized,
+    bin_label,
+)
+from teemo_sim_probe.core.schema import Node
 from teemo_sim_probe.core.whitelist import (
     INTERACTION_CONTACT,
     INTERACTION_CONTAIN,
@@ -49,7 +75,14 @@ _BIN_VALUE_CEILING: Dict[str, float] = {
     "height_offset": 1.5,
     "planar_distance_change": 2.0,
     "height_offset_change": 1.5,
+    "grasp_compatibility_change": 1.0,
+    "contact_compatibility_change": 1.0,
+    "support_compatibility_change": 1.0,
+    "contain_compatibility_change": 1.0,
 }
+
+_DEFAULT_TCP_AXIS_LOCAL = [0.0, 0.0, 1.0]
+_DEFAULT_ORIENTATION_SELECTION_WEIGHT = 0.10
 
 
 log = logging.getLogger("build_subtask_whitelists")
@@ -68,9 +101,18 @@ def _iter_pickles(root: Path):
 
 
 class _WhitelistBuilder:
-    def __init__(self, subtask: str, target: str):
+    def __init__(
+        self,
+        subtask: str,
+        target: str,
+        *,
+        affordance_set: Optional[AffordanceSet] = None,
+        temporal_k: int = 5,
+    ):
         self.subtask = subtask
         self.target = target
+        self.affordance_set = affordance_set or AffordanceSet()
+        self.temporal_k = max(1, int(temporal_k))
         self.roles: Dict[str, Set[str]] = defaultdict(set)
         self.kinds: Dict[str, str] = {}
         self.names: Dict[str, str] = {}
@@ -83,6 +125,9 @@ class _WhitelistBuilder:
         self.bin_value: Dict[str, float] = {}
         # Raw per-relation sample pool across rollouts.
         self.bin_samples: Dict[str, List[float]] = defaultdict(list)
+        # Per-rollout pose traces used to mine compatibility-change bins once
+        # affordance components are available.
+        self.pose_rollouts: List[List[Dict[str, Any]]] = []
 
     def absorb(self, rollout: Dict[str, Any]) -> None:
         self.rollout_count += 1
@@ -203,7 +248,14 @@ class _WhitelistBuilder:
                     if np.isfinite(fv):
                         bucket.append(fv)
 
-    def _aggregate_bins(self) -> Tuple[Dict[str, float], Dict[str, float]]:
+        raw_pose_samples = rollout.get("pose_samples")
+        if isinstance(raw_pose_samples, list):
+            self.pose_rollouts.append(raw_pose_samples)
+
+    def _aggregate_bins(
+        self,
+        extra_samples: Optional[Dict[str, List[float]]] = None,
+    ) -> Tuple[Dict[str, float], Dict[str, float]]:
         """Return ``(robust_value, observed_max)`` per relation.
 
         The robust value -- fed to ``derive_bin_edges`` -- is the configured
@@ -213,7 +265,13 @@ class _WhitelistBuilder:
         """
         robust: Dict[str, float] = {}
         observed: Dict[str, float] = {}
-        for k, samples in self.bin_samples.items():
+        keys = set(self.bin_samples)
+        if extra_samples:
+            keys.update(extra_samples)
+        for k in sorted(keys):
+            samples = list(self.bin_samples.get(k, ()))
+            if extra_samples:
+                samples.extend(extra_samples.get(k, ()))
             if not samples:
                 continue
             value = float(np.quantile(samples, _MINER_QUANTILE))
@@ -230,6 +288,300 @@ class _WhitelistBuilder:
             robust[k] = value
             observed[k] = obs
         return robust, observed
+
+    @staticmethod
+    def _planar_near_labels() -> Set[str]:
+        labels = SPATIAL_LABELS["planar-distance"]
+        if len(labels) >= 5:
+            return set(labels[:2])
+        return {labels[0]}
+
+    @staticmethod
+    def _trace_node(raw_key: str, raw: Any) -> Optional[Node]:
+        if not isinstance(raw, dict):
+            return None
+        key = normalize_asset_key(raw_key, raw.get("kind"))
+        if not key:
+            return None
+        pose = raw.get("pose")
+        if not isinstance(pose, (list, tuple)) or len(pose) < 7:
+            return None
+        try:
+            pose7 = [float(x) for x in pose[:7]]
+        except (TypeError, ValueError):
+            return None
+        if not np.all(np.isfinite(pose7)):
+            return None
+        kind = str(raw.get("kind") or ("actor" if key.startswith("actor:") else "other"))
+        return Node(
+            node_id=key,
+            node_type="object",
+            name=str(raw.get("name") or key),
+            pose_world=pose7,
+            attributes={
+                "whitelist_key": key,
+                "entity_key": key,
+                "entity_kind": kind,
+                "is_actor": key.startswith("actor:"),
+            },
+        )
+
+    @staticmethod
+    def _is_near(
+        a_xyz: np.ndarray,
+        b_xyz: np.ndarray,
+        pd_edges: List[float],
+        near_labels: Set[str],
+    ) -> bool:
+        d = float(np.linalg.norm(np.asarray(a_xyz[:2]) - np.asarray(b_xyz[:2])))
+        return bin_label(d, pd_edges, SPATIAL_LABELS["planar-distance"]) in near_labels
+
+    def _push_compat_history(
+        self,
+        samples: Dict[str, List[float]],
+        history: Dict[Tuple[str, str, str], Deque[float]],
+        present: Set[Tuple[str, str, str]],
+        key: Tuple[str, str, str],
+        value: float,
+    ) -> None:
+        if not np.isfinite(value):
+            return
+        present.add(key)
+        buf = history.get(key)
+        if buf is None:
+            buf = deque(maxlen=self.temporal_k + 1)
+            history[key] = buf
+        buf.append(float(value))
+        if len(buf) > self.temporal_k:
+            sample_key = f"{key[2].replace('-', '_')}_change"
+            samples[sample_key].append(abs(buf[-1] - buf[0]))
+
+    def _score_ee_object_compatibility(
+        self,
+        node: Node,
+        tcp_pose: np.ndarray,
+        gripper_width: Optional[float],
+        anchor_cache: Dict[str, int],
+    ) -> Optional[Tuple[float, float]]:
+        comps = lookup_components(self.affordance_set, node)
+        if not comps:
+            return None
+        anchors_world = transform_anchors(node.pose_world, comps)
+        if anchors_world is None:
+            return None
+        cached = anchor_cache.get(node.node_id)
+        if isinstance(cached, int) and 0 <= cached < len(comps):
+            a_star = cached
+        else:
+            a_star = select_active_component(
+                tcp_pose[:3],
+                anchors_world,
+                components=comps,
+                obj_pose_world=node.pose_world,
+                tcp_pose_world=tcp_pose,
+                tcp_axis_local=_DEFAULT_TCP_AXIS_LOCAL,
+                orientation_weight=_DEFAULT_ORIENTATION_SELECTION_WEIGHT,
+            )
+            if a_star is None:
+                return None
+            anchor_cache[node.node_id] = int(a_star)
+        norm = _compat_norm({})
+        meas = compatibility_components(
+            comps[a_star],
+            int(a_star),
+            anchors_world[a_star],
+            obj_pose_world=node.pose_world,
+            tcp_pose_world=tcp_pose,
+            tcp_axis_local=_DEFAULT_TCP_AXIS_LOCAL,
+            gripper_width=gripper_width,
+        )
+        grasp_score = _compatibility_score(meas, norm, include_width=True)
+        contact_score = _compatibility_score(meas, norm, include_width=False)
+        return grasp_score, contact_score
+
+    def _mine_compatibility_change_samples(
+        self,
+        bin_edges: Dict[str, List[float]],
+    ) -> Dict[str, List[float]]:
+        samples: Dict[str, List[float]] = defaultdict(list)
+        if self.affordance_set.is_empty() or not self.pose_rollouts:
+            return samples
+        pd_edges = bin_edges.get("planar-distance")
+        if not pd_edges:
+            return samples
+
+        near_labels = self._planar_near_labels()
+        norm = _compat_norm({})
+
+        for rollout in self.pose_rollouts:
+            history: Dict[Tuple[str, str, str], Deque[float]] = {}
+            anchor_cache: Dict[str, int] = {}
+            for snap in rollout:
+                if not isinstance(snap, dict):
+                    continue
+                tcp_raw = snap.get("tcp_pose")
+                if not isinstance(tcp_raw, (list, tuple)) or len(tcp_raw) < 7:
+                    continue
+                try:
+                    tcp_pose = np.asarray([float(x) for x in tcp_raw[:7]], dtype=float)
+                except (TypeError, ValueError):
+                    continue
+                if not np.all(np.isfinite(tcp_pose[:3])):
+                    continue
+                gripper_width = snap.get("gripper_width")
+                try:
+                    gripper_width = (
+                        float(gripper_width)
+                        if gripper_width is not None
+                        else None
+                    )
+                except (TypeError, ValueError):
+                    gripper_width = None
+
+                raw_entities = snap.get("entities")
+                if not isinstance(raw_entities, dict):
+                    continue
+                nodes = {
+                    key: node
+                    for key, raw in raw_entities.items()
+                    if (node := self._trace_node(str(key), raw)) is not None
+                }
+                present: Set[Tuple[str, str, str]] = set()
+
+                # EE-object compatibility mirrors runtime gating: only near
+                # objects with matching whitelist interaction types emit.
+                for key, node in nodes.items():
+                    types = self.interaction_types.get(key, set())
+                    if not (INTERACTION_GRASP in types or INTERACTION_CONTACT in types):
+                        continue
+                    obj_xyz = np.asarray(node.pose_world[:3], dtype=float)
+                    if not self._is_near(tcp_pose[:3], obj_xyz, pd_edges, near_labels):
+                        continue
+                    scored = self._score_ee_object_compatibility(
+                        node, tcp_pose, gripper_width, anchor_cache,
+                    )
+                    if scored is None:
+                        continue
+                    grasp_score, contact_score = scored
+                    if INTERACTION_GRASP in types:
+                        self._push_compat_history(
+                            samples, history, present,
+                            ("ee", key, "grasp-compatibility"),
+                            grasp_score,
+                        )
+                    if INTERACTION_CONTACT in types:
+                        self._push_compat_history(
+                            samples, history, present,
+                            ("ee", key, "contact-compatibility"),
+                            contact_score,
+                        )
+
+                keys = sorted(nodes)
+                for i in range(len(keys)):
+                    for j in range(i + 1, len(keys)):
+                        a = nodes[keys[i]]
+                        b = nodes[keys[j]]
+                        a_xyz = np.asarray(a.pose_world[:3], dtype=float)
+                        b_xyz = np.asarray(b.pose_world[:3], dtype=float)
+                        if not self._is_near(a_xyz, b_xyz, pd_edges, near_labels):
+                            continue
+                        a_types = self.interaction_types.get(a.node_id, set())
+                        b_types = self.interaction_types.get(b.node_id, set())
+
+                        if (
+                            INTERACTION_CONTACT in a_types
+                            and INTERACTION_CONTACT in b_types
+                        ):
+                            a_comps = lookup_contact_components(self.affordance_set, a)
+                            b_comps = lookup_contact_components(self.affordance_set, b)
+                            if a_comps and b_comps:
+                                meas = obj_contact_compatibility(
+                                    a.pose_world, a_comps, b.pose_world, b_comps,
+                                )
+                                if meas is not None:
+                                    parts = [meas.pos_mismatch / norm["pos"]]
+                                    if meas.orient_mismatch is not None:
+                                        parts.append(meas.orient_mismatch / norm["orient"])
+                                    self._push_compat_history(
+                                        samples, history, present,
+                                        (a.node_id, b.node_id, "contact-compatibility"),
+                                        _mean_normalized(parts),
+                                    )
+
+                        if (
+                            INTERACTION_SUPPORT in a_types
+                            and INTERACTION_SUPPORT in b_types
+                        ):
+                            for supporter, supported in ((a, b), (b, a)):
+                                sup_comps = lookup_support_components(
+                                    self.affordance_set, supporter,
+                                )
+                                bot_comps = lookup_bottom_components(
+                                    self.affordance_set, supported,
+                                )
+                                if not sup_comps or not bot_comps:
+                                    continue
+                                meas = support_compatibility(
+                                    supporter.pose_world, sup_comps,
+                                    supported.pose_world, bot_comps,
+                                )
+                                if meas is None:
+                                    continue
+                                parts = [
+                                    meas.xy_mismatch / norm["xy"],
+                                    meas.vertical_mismatch / norm["vertical"],
+                                ]
+                                if meas.orient_mismatch is not None:
+                                    parts.append(meas.orient_mismatch / norm["orient"])
+                                self._push_compat_history(
+                                    samples, history, present,
+                                    (
+                                        supporter.node_id,
+                                        supported.node_id,
+                                        "support-compatibility",
+                                    ),
+                                    _mean_normalized(parts),
+                                )
+
+                        if (
+                            INTERACTION_CONTAIN in a_types
+                            and INTERACTION_CONTAIN in b_types
+                        ):
+                            for container, containee in ((a, b), (b, a)):
+                                con_comps = lookup_contain_components(
+                                    self.affordance_set, container,
+                                )
+                                key_comps = lookup_key_components(
+                                    self.affordance_set, containee,
+                                )
+                                if not con_comps or not key_comps:
+                                    continue
+                                meas = contain_compatibility(
+                                    container.pose_world, con_comps,
+                                    containee.pose_world, key_comps,
+                                )
+                                if meas is None:
+                                    continue
+                                parts = [
+                                    meas.radial_mismatch / norm["radial"],
+                                    meas.axial_mismatch / norm["axial"],
+                                ]
+                                if meas.orient_mismatch is not None:
+                                    parts.append(meas.orient_mismatch / norm["orient"])
+                                self._push_compat_history(
+                                    samples, history, present,
+                                    (
+                                        container.node_id,
+                                        containee.node_id,
+                                        "contain-compatibility",
+                                    ),
+                                    _mean_normalized(parts),
+                                )
+
+                for key in list(history):
+                    if key not in present:
+                        del history[key]
+        return samples
 
     def payload(self) -> Dict[str, Any]:
         members: Dict[str, Dict[str, Any]] = {}
@@ -269,7 +621,11 @@ class _WhitelistBuilder:
                     self.interaction_count.get(k, 0),
                 )
 
-        robust, observed = self._aggregate_bins()
+        robust, _observed = self._aggregate_bins()
+        compatibility_samples = self._mine_compatibility_change_samples(
+            derive_bin_edges(robust)
+        )
+        robust, observed = self._aggregate_bins(compatibility_samples)
         bin_edges = derive_bin_edges(robust)
         return {
             "_schema_version": WHITELIST_SCHEMA_VERSION,
@@ -291,6 +647,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--success-states-dir", required=True)
     parser.add_argument("--out-dir", required=True)
+    parser.add_argument(
+        "--affordance-json",
+        default=None,
+        help=(
+            "Path to affordances.json. Defaults to <out-dir>/../affordances.json; "
+            "compatibility-change bins are omitted when unavailable."
+        ),
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
     logging.basicConfig(
@@ -304,6 +668,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    affordance_path = (
+        Path(args.affordance_json)
+        if args.affordance_json
+        else out_dir.parent / "affordances.json"
+    )
+    affordance_set = load_affordance_set(str(affordance_path))
 
     builders: Dict[Tuple[str, str], _WhitelistBuilder] = {}
     n_rollouts = 0
@@ -323,7 +693,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             continue
         builder = builders.setdefault(
             (subtask, target),
-            _WhitelistBuilder(subtask, target),
+            _WhitelistBuilder(
+                subtask,
+                target,
+                affordance_set=affordance_set,
+            ),
         )
         for rollout in rollouts:
             if isinstance(rollout, dict):

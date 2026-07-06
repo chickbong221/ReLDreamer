@@ -14,7 +14,7 @@ and would also re-render + CUDA-sync once per env.
 from __future__ import annotations
 
 from copy import copy as _shallow_copy
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import torch
@@ -100,7 +100,8 @@ class GraphObsBuilder:
         n_max: int,
         e_max: int,
         k_soft: float,
-        camera: str,
+        cameras: List[str],
+        primary_camera: str,
     ):
         self.env = env
         self.num_envs = int(num_envs)
@@ -109,24 +110,25 @@ class GraphObsBuilder:
         self.n_max = int(n_max)
         self.e_max = int(e_max)
         self.k_soft = float(k_soft)
-        self.camera = camera
-        # Each builder gets its own shallow copy of the outer cfg dict with a
-        # fresh ``_affordance_selection_cache``. ``bin_edges`` /
-        # ``interaction_types`` are rewritten wholesale by the whitelist bind,
-        # so a shallow copy already isolates those; the selection cache is
-        # mutated in place and would otherwise leak component picks across
-        # envs (node ids canonicalize across parallel scenes).
+        self.cameras = list(cameras)
+        if primary_camera not in self.cameras:
+            raise ValueError(
+                f"primary_camera={primary_camera!r} not in cameras={self.cameras}"
+            )
+        self.primary_camera = primary_camera
         self.builders = []
         for i in range(self.num_envs):
             cfg_i = _shallow_copy(teemo_cfg)
             cfg_i["_affordance_selection_cache"] = {}
             self.builders.append(
-                GraphBuilder(env, cfg_i, env_idx=i, env_id=f"env{i}", camera=camera)
+                GraphBuilder(env, cfg_i, env_idx=i, env_id=f"env{i}",
+                             camera=primary_camera)
             )
         self._frames = np.zeros(self.num_envs, dtype=np.int64)
         self.record_env0 = False
         self.last_env0_graph = None
         self.last_env0_masks = None
+        self._cams_checked = False
 
     @property
     def obs_spec_shapes(self) -> Dict[str, tuple]:
@@ -143,18 +145,17 @@ class GraphObsBuilder:
         }
 
     def _pack_one(
-        self, env_idx: int, episode_boundary: bool, seg_i: np.ndarray,
+        self, env_idx: int, episode_boundary: bool,
+        seg_by_cam: Dict[str, np.ndarray],
     ) -> Dict[str, np.ndarray]:
-        # Full binary masks are only needed for env-0 video overlays. Training
-        # tensors use node ids/areas, so other envs can run the counts path.
         need_masks = env_idx == 0 and self.record_env0
         graph, masks, _, _ = self.builders[env_idx].step(
             {},
             int(self._frames[env_idx]),
             episode_boundary=episode_boundary,
-            seg_override=seg_i,
+            seg_overrides=seg_by_cam,
             rgb_override=None,
-            camera_override=self.camera,
+            primary_camera=self.primary_camera,
             need_masks=need_masks,
         )
         if env_idx == 0 and self.record_env0:
@@ -167,21 +168,31 @@ class GraphObsBuilder:
         )
 
     def read_rgb_env0(self) -> np.ndarray:
-        rgb = self.env.unwrapped._last_obs["sensor_data"][self.camera]["rgb"][0]
+        rgb = self.env.unwrapped._last_obs["sensor_data"][self.primary_camera]["rgb"][0]
         return rgb.detach().cpu().numpy().astype(np.uint8)
 
-    def _read_batched_seg(self) -> np.ndarray:
-        """Return segmentation for every env as ``[N, H, W]``.
-
-        Reads ``env.unwrapped._last_obs`` (populated by the underlying env's
-        ``step`` / ``reset``) so we neither re-render nor re-invoke
-        ``get_info`` -> MS-HAB ``evaluate``. Source dtype is kept (int32 on
-        current ManiSkill); downstream (``np.unique``, ``seg == seg_id``) is
-        dtype-agnostic.
-        """
-        last_obs = self.env.unwrapped._last_obs
-        seg = last_obs["sensor_data"][self.camera]["segmentation"].squeeze(-1)
-        return seg.detach().cpu().numpy()
+    def _read_batched_segs(self) -> Dict[str, np.ndarray]:
+        """Return ``{cam: [N, H, W]}`` for every configured camera."""
+        sensor_data = self.env.unwrapped._last_obs["sensor_data"]
+        if not self._cams_checked:
+            for cam in self.cameras:
+                if cam not in sensor_data:
+                    raise KeyError(
+                        f"graph: camera {cam!r} not in sensor_data "
+                        f"(available: {list(sensor_data)}). Check obs_mode and "
+                        "sensor configs render this camera."
+                    )
+                if "segmentation" not in sensor_data[cam]:
+                    raise KeyError(
+                        f"graph: camera {cam!r} has no 'segmentation' in "
+                        f"_last_obs; obs_mode must include segmentation."
+                    )
+            self._cams_checked = True
+        out: Dict[str, np.ndarray] = {}
+        for cam in self.cameras:
+            seg = sensor_data[cam]["segmentation"].squeeze(-1)
+            out[cam] = seg.detach().cpu().numpy()
+        return out
 
     def step(
         self, done_mask: Optional[torch.Tensor], device: torch.device,
@@ -190,11 +201,14 @@ class GraphObsBuilder:
             done_np = done_mask.detach().cpu().numpy().astype(bool).reshape(-1)
         else:
             done_np = np.zeros(self.num_envs, dtype=bool)
-        seg_all = self._read_batched_seg()
+        segs_by_cam = self._read_batched_segs()
         begin_frame_cache()
         try:
             packed = [
-                self._pack_one(i, bool(done_np[i]), seg_all[i])
+                self._pack_one(
+                    i, bool(done_np[i]),
+                    {cam: segs_by_cam[cam][i] for cam in self.cameras},
+                )
                 for i in range(self.num_envs)
             ]
         finally:
@@ -250,6 +264,11 @@ def build_graph_obs(
         graph_cfg.get("k_soft", teemo_cfg["selection"].get("k_persist", 5))
     )
 
+    cameras = graph_cfg.get("cameras")
+    if not cameras:
+        cameras = [graph_cfg.get("camera", "fetch_head")]
+    primary_camera = graph_cfg.get("primary_camera") or cameras[0]
+
     return GraphObsBuilder(
         env,
         num_envs=num_envs,
@@ -259,5 +278,6 @@ def build_graph_obs(
         n_max=n_max,
         e_max=e_max,
         k_soft=k_soft,
-        camera=graph_cfg.get("camera", "fetch_head"),
+        cameras=list(cameras),
+        primary_camera=primary_camera,
     )

@@ -222,7 +222,7 @@ class ObjectObjectCompatibilityGateTests(unittest.TestCase):
             "contact": {"eps_force": 0.05},
             "grasp": {"max_angle": 30, "tcp_approach_axis_local": [0, 0, 1]},
             "bin_edges": {
-                "planar-distance": [0.20, 0.50],
+                "planar-distance": [0.10, 0.20, 0.50, 1.00],
                 "contact-compatibility": [1.0 / 3.0, 2.0 / 3.0],
                 "support-compatibility": [1.0 / 3.0, 2.0 / 3.0],
             },
@@ -314,8 +314,8 @@ class PhysicalStateLabelTests(unittest.TestCase):
             "contact": {"eps_force": 0.05},
             "grasp": {"max_angle": 30, "tcp_approach_axis_local": [0, 0, 1]},
             "bin_edges": {
-                "planar-distance": [0.05, 0.20],
-                "height-offset": [-0.10, 0.10],
+                "planar-distance": [0.05, 0.10, 0.20, 0.40],
+                "height-offset": [-0.20, -0.10, 0.10, 0.20],
             },
             "interaction_types": {},
         }

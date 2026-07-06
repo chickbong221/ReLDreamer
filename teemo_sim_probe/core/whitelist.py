@@ -197,40 +197,44 @@ def load_whitelist(path: str) -> Whitelist:
 # Bin-edge derivation
 # --------------------------------------------------------------------------- #
 # Equal-width splits of [0, max] (unsigned) and [-max, max] (signed).
-# 3-label unsigned: 2 edges at max/3 and 2*max/3.
-# 3-label signed:   2 edges at -max/3 and  max/3.
+# 5-label unsigned: 4 edges at max/5, 2*max/5, 3*max/5, 4*max/5.
 # 5-label signed:   4 edges at -3*max/5, -max/5, max/5, 3*max/5.
+# Sensitive 5-label signed changes keep the same fast outer thresholds but
+# shrink the stable center band to +/-max/10.
 # Compatibility absolute edges are fixed because the score is already in [0,1].
 
 
-def _equal_width_3_unsigned(max_v: float) -> Optional[List[float]]:
+def _equal_width_5_unsigned(max_v: float) -> Optional[List[float]]:
     if max_v <= 0 or not math.isfinite(max_v):
         return None
-    return [max_v / 3.0, 2.0 * max_v / 3.0]
-
-
-def _equal_width_3_signed(max_v: float) -> Optional[List[float]]:
-    if max_v <= 0 or not math.isfinite(max_v):
-        return None
-    return [-max_v / 3.0, max_v / 3.0]
+    return [max_v / 5.0, 2.0 * max_v / 5.0,
+            3.0 * max_v / 5.0, 4.0 * max_v / 5.0]
 
 
 def _equal_width_5_signed(max_v: float) -> Optional[List[float]]:
     if max_v <= 0 or not math.isfinite(max_v):
         return None
-    return [-3.0 * max_v / 5.0, -max_v / 5.0, max_v / 5.0, 3.0 * max_v / 5.0]
+    return [-3.0 * max_v / 5.0, -max_v / 5.0,
+            max_v / 5.0, 3.0 * max_v / 5.0]
+
+
+def _sensitive_width_5_signed(max_v: float) -> Optional[List[float]]:
+    if max_v <= 0 or not math.isfinite(max_v):
+        return None
+    return [-3.0 * max_v / 5.0, -max_v / 10.0,
+            max_v / 10.0, 3.0 * max_v / 5.0]
 
 
 # Relations and the kind of bin-derivation they use.
 _BIN_DERIVATION = {
-    "planar-distance":              ("unsigned3", "planar_distance"),
-    "height-offset":                ("signed3",   "height_offset"),
-    "planar-distance-change":       ("signed5",   "planar_distance_change"),
-    "height-offset-change":         ("signed5",   "height_offset_change"),
-    "grasp-compatibility-change":   ("signed5",   "grasp_compatibility_change"),
-    "contact-compatibility-change": ("signed5",   "contact_compatibility_change"),
-    "support-compatibility-change": ("signed5",   "support_compatibility_change"),
-    "contain-compatibility-change": ("signed5",   "contain_compatibility_change"),
+    "planar-distance":              ("unsigned5",        "planar_distance"),
+    "height-offset":                ("signed5",          "height_offset"),
+    "planar-distance-change":       ("signed5-sensitive", "planar_distance_change"),
+    "height-offset-change":         ("signed5-sensitive", "height_offset_change"),
+    "grasp-compatibility-change":   ("signed5-sensitive", "grasp_compatibility_change"),
+    "contact-compatibility-change": ("signed5-sensitive", "contact_compatibility_change"),
+    "support-compatibility-change": ("signed5-sensitive", "support_compatibility_change"),
+    "contain-compatibility-change": ("signed5-sensitive", "contain_compatibility_change"),
 }
 
 
@@ -252,12 +256,12 @@ def derive_bin_edges(max_values: Dict[str, float]) -> Dict[str, List[float]]:
         except (TypeError, ValueError):
             continue
         edges: Optional[List[float]] = None
-        if kind == "unsigned3":
-            edges = _equal_width_3_unsigned(v)
-        elif kind == "signed3":
-            edges = _equal_width_3_signed(v)
+        if kind == "unsigned5":
+            edges = _equal_width_5_unsigned(v)
         elif kind == "signed5":
             edges = _equal_width_5_signed(v)
+        elif kind == "signed5-sensitive":
+            edges = _sensitive_width_5_signed(v)
         if edges is not None:
             out[relation] = edges
     return out

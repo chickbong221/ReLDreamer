@@ -114,7 +114,8 @@ class GraphBuilder:
         self, obs: dict, frame: int,
         *,
         episode_boundary: bool = False,
-        seg_override=None, rgb_override=None, camera_override=None,
+        seg_override=None, seg_overrides=None,
+        rgb_override=None, camera_override=None, primary_camera=None,
         need_masks: bool = True,
     ) -> Tuple[Graph, MaskAccumulator, str, np.ndarray]:
         if episode_boundary:
@@ -129,8 +130,10 @@ class GraphBuilder:
             obs, state,
             camera=self.camera,
             seg_override=seg_override,
+            seg_overrides=seg_overrides,
             rgb_override=rgb_override,
             camera_override=camera_override,
+            primary_camera=primary_camera,
             need_masks=need_masks,
         )
 

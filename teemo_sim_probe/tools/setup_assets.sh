@@ -76,7 +76,8 @@ echo " STEP 4 -- mine per-subtask whitelists -> ${WHITELIST_DIR}/"
 echo "================================================================"
 python -m teemo_sim_probe.tools.build_subtask_whitelists \
     --success-states-dir "${SUCCESS_STATES_DIR}" \
-    --out-dir "${WHITELIST_DIR}"
+    --out-dir "${WHITELIST_DIR}" \
+    --affordance-json "${AFFORD_JSON}"
 
 echo ""
 echo "================================================================"

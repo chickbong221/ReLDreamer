@@ -21,6 +21,9 @@ For each successful rollout it records:
   planar distance, |height offset|, and their K-window absolute changes, used
   by the whitelist miner to derive per-(subtask, target) bin edges via a
   robust quantile across rollouts.
+* a per-rollout ``pose_samples`` trace for the same restricted subject set.
+  The whitelist miner uses this after ``affordances.json`` exists to derive
+  K-window compatibility-change thresholds.
 
 The active target is not injected as a whitelist member unless an ee link
 actually contacts it. Robot links other than tcp/finger1/finger2 are evidence
@@ -60,7 +63,7 @@ if TYPE_CHECKING:
     from mshab.envs.sequential_task import SequentialTaskEnv
 
 
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 # Per-rollout cap on stored obj-obj contact event poses (keeps pickles small).
 _OBJ_CONTACT_SAMPLE_CAP = 1024
 _EPS_FORCE_DEFAULT = 0.05
@@ -74,6 +77,7 @@ _RESET_WARMUP_TICKS = 3
 # Per-rollout sample buffer cap (per relation, per env). The miner takes a
 # robust quantile across these.
 _BIN_SAMPLE_CAP = 4096
+_POSE_SAMPLE_CAP = 4096
 
 
 def _to_np(x) -> np.ndarray:
@@ -198,6 +202,8 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         # Per (env, relation) list of sampled values for the current rollout.
         # Replaces a running-max so the miner can take a robust quantile.
         self._episode_bin_samples: List[Dict[str, List[float]]] = []
+        # Per-env compact per-tick pose trace for offline compatibility mining.
+        self._episode_pose_samples: List[List[Dict[str, Any]]] = []
         # (entity_key, relation_name) -> deque of last K+1 values
         self._episode_history: List[Dict[Tuple[str, str], Deque[float]]] = []
         # Per-env tick count since last reset (used to skip warmup samples).
@@ -220,6 +226,7 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             self._episode_bin_samples = [
                 defaultdict(list) for _ in range(self.num_envs)
             ]
+            self._episode_pose_samples = [[] for _ in range(self.num_envs)]
             self._episode_history = [dict() for _ in range(self.num_envs)]
             self._episode_ticks = [0 for _ in range(self.num_envs)]
             self._episode_obj_contacts = [[] for _ in range(self.num_envs)]
@@ -230,6 +237,7 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             self._episode_entities[i].clear()
             self._episode_supports[i].clear()
             self._episode_bin_samples[i].clear()
+            self._episode_pose_samples[i].clear()
             self._episode_history[i].clear()
             self._episode_ticks[i] = 0
             self._episode_obj_contacts[i].clear()
@@ -488,7 +496,8 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         self,
         env_idx: int,
         entity_by_key: Dict[str, Any],
-        ee_xyz: Optional[np.ndarray],
+        tcp_pose_world: Optional[np.ndarray],
+        gripper_width: Optional[float],
     ) -> None:
         """Buffer per-rollout samples of ee<->object spatial values and their
         K-window absolute changes for a *restricted* set of entities (the
@@ -500,16 +509,28 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         Compatibility metrics are not sampled here (they require the affordance
         asset) -- defaults are applied in the miner.
         """
-        if ee_xyz is None or not entity_by_key:
+        if tcp_pose_world is None or not entity_by_key:
             return
         samples = self._episode_bin_samples[env_idx]
         history = self._episode_history[env_idx]
+        tcp_pose = np.asarray(tcp_pose_world, dtype=float).reshape(-1)
+        if tcp_pose.size < 3 or not np.all(np.isfinite(tcp_pose[:3])):
+            return
+        ee_xyz = tcp_pose[:3]
         ee_xy = ee_xyz[:2]
         ee_z = float(ee_xyz[2])
+        pose_entities: Dict[str, Dict[str, Any]] = {}
         for key, ent in entity_by_key.items():
             obj_xyz = _entity_xyz(ent, env_idx)
             if obj_xyz is None:
                 continue
+            pose = _entity_pose7(ent, env_idx)
+            if pose is not None:
+                pose_entities[str(key)] = {
+                    "pose": pose,
+                    "kind": entity_kind(ent),
+                    "name": entity_name(ent),
+                }
             pd = float(np.linalg.norm(ee_xy - obj_xyz[:2]))
             ho_signed = ee_z - float(obj_xyz[2])
             self._push_sample(samples, "planar_distance", pd)
@@ -527,6 +548,14 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
                 if len(buf) > self.temporal_k:
                     change = abs(buf[-1] - buf[0])
                     self._push_sample(samples, f"{relation}_change", change)
+        if pose_entities and len(self._episode_pose_samples[env_idx]) < _POSE_SAMPLE_CAP:
+            pose_sample: Dict[str, Any] = {
+                "tcp_pose": tcp_pose[:7].astype(float).tolist(),
+                "entities": pose_entities,
+            }
+            if gripper_width is not None and np.isfinite(gripper_width):
+                pose_sample["gripper_width"] = float(gripper_width)
+            self._episode_pose_samples[env_idx].append(pose_sample)
 
     @staticmethod
     def _push_sample(samples: Dict[str, List[float]], key: str, value: float) -> None:
@@ -548,11 +577,6 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
         target_ent, target_key = self._target(env_idx, actual_state)
         physics_target_ent = target_ent
         ee_links = list(actual_state.ee_links)
-        ee_xyz = (
-            np.asarray(actual_state.tcp_pose_world[:3], dtype=float)
-            if actual_state.tcp_pose_world is not None
-            else None
-        )
 
         # For pick, MS-HAB's grasp predicate and contact forces are most
         # reliable on the merged runtime actor.  We still record the canonical
@@ -648,7 +672,11 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             ent = entity_by_key.get(supporter_key)
             if ent is not None:
                 subjects.setdefault(supporter_key, ent)
-        self._update_bin_stats(env_idx, subjects, ee_xyz)
+        self._update_bin_stats(
+            env_idx, subjects,
+            actual_state.tcp_pose_world,
+            actual_state.gripper_width,
+        )
 
     def _sample_obj_obj_contacts(
         self, env_idx: int, entity_by_key: Dict[str, Any],
@@ -843,11 +871,13 @@ class FetchCollectContactDataWrapper(gym.Wrapper):
             for k, values in self._episode_bin_samples[env_idx].items()
             if values
         }
+        rollout_pose_samples = list(self._episode_pose_samples[env_idx])
         self.interaction_rollouts.append({
             "target_key": target_key,
             "interacted": interacted,
             "supports": supports,
             "bin_samples": rollout_bin_samples,
+            "pose_samples": rollout_pose_samples,
             "obj_contacts": list(self._episode_obj_contacts[env_idx]),
         })
 

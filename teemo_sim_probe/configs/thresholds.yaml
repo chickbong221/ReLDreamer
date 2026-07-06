@@ -73,11 +73,11 @@ profiles:
 
   tabletop:
     planar_distance:
-      edges:  [0.08, 0.20]
-      labels: [near, medium, far]
+      edges:  [0.04, 0.08, 0.20, 0.40]
+      labels: [very-near, near, medium, far, very-far]
     height_offset:
-      edges:  [-0.05, 0.05]
-      labels: [below, level, above]
+      edges:  [-0.15, -0.05, 0.05, 0.15]
+      labels: [far-below, below, level, above, far-above]
     grasp_compatibility:
       edges:  [0.3333333333333333, 0.6666666666666666]
       labels: [match, partial-match, poor-match]
@@ -91,40 +91,40 @@ profiles:
       edges:  [0.3333333333333333, 0.6666666666666666]
       labels: [match, partial-match, poor-match]
     planar_distance_change:
-      edges:  [-0.06, -0.02, 0.02, 0.06]
+      edges:  [-0.06, -0.01, 0.01, 0.06]
       labels: [approaching-fast, approaching-slow, stable-distance,
                receding-slow, receding-fast]
     height_offset_change:
-      edges:  [-0.06, -0.02, 0.02, 0.06]
+      edges:  [-0.06, -0.01, 0.01, 0.06]
       labels: [lowering-fast, lowering-slow, stable-height,
                rising-slow, rising-fast]
     grasp_compatibility_change:
-      edges:  [-0.30, -0.10, 0.10, 0.30]
+      edges:  [-0.30, -0.05, 0.05, 0.30]
       labels: [grasp-fit-better-fast, grasp-fit-better-slow, stable-grasp-fit,
                grasp-fit-worse-slow, grasp-fit-worse-fast]
     contact_compatibility_change:
-      edges:  [-0.30, -0.10, 0.10, 0.30]
+      edges:  [-0.30, -0.05, 0.05, 0.30]
       labels: [contact-fit-better-fast, contact-fit-better-slow,
                stable-contact-fit,
                contact-fit-worse-slow, contact-fit-worse-fast]
     support_compatibility_change:
-      edges:  [-0.30, -0.10, 0.10, 0.30]
+      edges:  [-0.30, -0.05, 0.05, 0.30]
       labels: [support-fit-better-fast, support-fit-better-slow,
                stable-support-fit,
                support-fit-worse-slow, support-fit-worse-fast]
     contain_compatibility_change:
-      edges:  [-0.30, -0.10, 0.10, 0.30]
+      edges:  [-0.30, -0.05, 0.05, 0.30]
       labels: [contain-fit-better-fast, contain-fit-better-slow,
                stable-contain-fit,
                contain-fit-worse-slow, contain-fit-worse-fast]
 
   room_scale:
     planar_distance:
-      edges:  [0.30, 1.00]
-      labels: [near, medium, far]
+      edges:  [0.15, 0.30, 1.00, 1.50]
+      labels: [very-near, near, medium, far, very-far]
     height_offset:
-      edges:  [-0.05, 0.05]
-      labels: [below, level, above]
+      edges:  [-0.15, -0.05, 0.05, 0.15]
+      labels: [far-below, below, level, above, far-above]
     grasp_compatibility:
       edges:  [0.3333333333333333, 0.6666666666666666]
       labels: [match, partial-match, poor-match]
@@ -138,29 +138,29 @@ profiles:
       edges:  [0.3333333333333333, 0.6666666666666666]
       labels: [match, partial-match, poor-match]
     planar_distance_change:
-      edges:  [-0.18, -0.06, 0.06, 0.18]
+      edges:  [-0.18, -0.03, 0.03, 0.18]
       labels: [approaching-fast, approaching-slow, stable-distance,
                receding-slow, receding-fast]
     height_offset_change:
-      edges:  [-0.06, -0.02, 0.02, 0.06]
+      edges:  [-0.06, -0.01, 0.01, 0.06]
       labels: [lowering-fast, lowering-slow, stable-height,
                rising-slow, rising-fast]
     grasp_compatibility_change:
-      edges:  [-0.30, -0.10, 0.10, 0.30]
+      edges:  [-0.30, -0.05, 0.05, 0.30]
       labels: [grasp-fit-better-fast, grasp-fit-better-slow, stable-grasp-fit,
                grasp-fit-worse-slow, grasp-fit-worse-fast]
     contact_compatibility_change:
-      edges:  [-0.30, -0.10, 0.10, 0.30]
+      edges:  [-0.30, -0.05, 0.05, 0.30]
       labels: [contact-fit-better-fast, contact-fit-better-slow,
                stable-contact-fit,
                contact-fit-worse-slow, contact-fit-worse-fast]
     support_compatibility_change:
-      edges:  [-0.30, -0.10, 0.10, 0.30]
+      edges:  [-0.30, -0.05, 0.05, 0.30]
       labels: [support-fit-better-fast, support-fit-better-slow,
                stable-support-fit,
                support-fit-worse-slow, support-fit-worse-fast]
     contain_compatibility_change:
-      edges:  [-0.30, -0.10, 0.10, 0.30]
+      edges:  [-0.30, -0.05, 0.05, 0.30]
       labels: [contain-fit-better-fast, contain-fit-better-slow,
                stable-contain-fit,
                contain-fit-worse-slow, contain-fit-worse-fast]

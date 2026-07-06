@@ -109,52 +109,25 @@ def make_object_node(entity, state: PrivilegedState) -> Node:
 # --------------------------------------------------------------------------- #
 # Main builder
 # --------------------------------------------------------------------------- #
-def build_nodes(
-    obs: dict,
+def _ingest_camera(
+    seg: np.ndarray,
     state: PrivilegedState,
+    nodes: Dict[str, Node],
+    area_by_key: Dict[str, int],
+    masks: MaskAccumulator,
     *,
-    camera: Optional[str] = None,
-    seg_override: Optional[np.ndarray] = None,
-    rgb_override: Optional[np.ndarray] = None,
-    camera_override: Optional[str] = None,
-    need_masks: bool = True,
-) -> Tuple[Dict[str, Node], MaskAccumulator, str, np.ndarray]:
-    """Return (nodes_by_id, masks, camera_name, rgb).
-
-    If ``seg_override`` is given the segmentation image is taken from it (and
-    ``rgb_override`` as the backdrop) instead of from ``obs``. This is the
-    MS-HAB depth-mode path, where the policy obs has no segmentation and the
-    probe reads it from the unwrapped env separately.
-    """
-    if seg_override is not None:
-        seg = seg_override
-        rgb = rgb_override if rgb_override is not None else \
-            np.zeros((*seg.shape, 3), dtype=np.uint8)
-        cam = camera_override or camera or "fetch_head"
-    else:
-        cam = pick_camera(obs, camera)
-        rgb, seg, _depth = extract_camera_obs(obs, cam, state.env_idx)
-    H, W = seg.shape
-    masks = MaskAccumulator(H, W)
-
-    nodes: Dict[str, Node] = {}
-
-    # The ee node always exists.
-    nodes["ee"] = make_ee_node(state)
-
+    need_masks: bool,
+) -> None:
+    """Union one camera's segmentation into the shared node dict."""
     ids, counts = np.unique(seg, return_counts=True)
-    area_by_key: Dict[str, int] = {"ee": 0}
-
-    # Iterate visible segmentation ids, excluding background.
     for seg_id, count in zip(ids, counts):
         seg_id = int(seg_id)
-        if seg_id == 0:
+        if seg_id == 0 or count <= 0:
             continue
         entity = state.seg_id_map.get(seg_id)
         if entity is None:
             continue
 
-        # Robot links are folded into ee when they are gripper links.
         if _is_robot_link(entity, state.robot_links):
             if _is_ee_link(entity, state.ee_links):
                 if need_masks:
@@ -164,13 +137,6 @@ def build_nodes(
                 area_by_key["ee"] += int(count)
             continue
 
-        # Every non-empty current mask becomes a candidate.  The whitelist is
-        # the sole relevance gate, so supporters and ordinary links are not
-        # lost to name or area heuristics before mask registration.
-        if count <= 0:
-            continue
-
-        # Visible actors and non-robot links become object nodes.
         key = canonical_object_key(entity)
         if key not in nodes:
             nodes[key] = make_object_node(entity, state)
@@ -181,8 +147,58 @@ def build_nodes(
             masks.add(key, mask_for_id(seg, seg_id))
         nodes[key].pixel_area = area_by_key[key]
 
-    nodes["ee"].pixel_area = area_by_key["ee"]
 
+def build_nodes(
+    obs: dict,
+    state: PrivilegedState,
+    *,
+    camera: Optional[str] = None,
+    seg_override: Optional[np.ndarray] = None,
+    seg_overrides: Optional[Dict[str, np.ndarray]] = None,
+    rgb_override: Optional[np.ndarray] = None,
+    camera_override: Optional[str] = None,
+    primary_camera: Optional[str] = None,
+    need_masks: bool = True,
+) -> Tuple[Dict[str, Node], MaskAccumulator, str, np.ndarray]:
+    """Return (nodes_by_id, masks, camera_name, rgb).
+
+    ``seg_overrides`` (dict of ``cam -> [H, W]``) unions visibility across
+    cameras; masks are collected only for ``primary_camera``. ``seg_override``
+    (singular) is the single-camera path used by the offline probe.
+    """
+    if seg_overrides is not None:
+        if not seg_overrides:
+            raise ValueError("seg_overrides is empty")
+        cam = primary_camera or camera_override or camera or next(iter(seg_overrides))
+        if cam not in seg_overrides:
+            cam = next(iter(seg_overrides))
+        primary_seg = seg_overrides[cam]
+        rgb = rgb_override if rgb_override is not None else \
+            np.zeros((*primary_seg.shape, 3), dtype=np.uint8)
+        H, W = primary_seg.shape
+    elif seg_override is not None:
+        seg_overrides = {camera_override or camera or "fetch_head": seg_override}
+        cam = next(iter(seg_overrides))
+        rgb = rgb_override if rgb_override is not None else \
+            np.zeros((*seg_override.shape, 3), dtype=np.uint8)
+        H, W = seg_override.shape
+    else:
+        cam = pick_camera(obs, camera)
+        rgb, seg, _depth = extract_camera_obs(obs, cam, state.env_idx)
+        seg_overrides = {cam: seg}
+        H, W = seg.shape
+
+    masks = MaskAccumulator(H, W)
+    nodes: Dict[str, Node] = {"ee": make_ee_node(state)}
+    area_by_key: Dict[str, int] = {"ee": 0}
+
+    for cam_name, cam_seg in seg_overrides.items():
+        _ingest_camera(
+            cam_seg, state, nodes, area_by_key, masks,
+            need_masks=need_masks and cam_name == cam,
+        )
+
+    nodes["ee"].pixel_area = area_by_key["ee"]
     return nodes, masks, cam, rgb
 
 

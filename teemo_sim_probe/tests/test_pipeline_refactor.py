@@ -4,6 +4,7 @@ import unittest
 
 import numpy as np
 
+from teemo_sim_probe.core.affordance import AffordanceComponent, AffordanceSet
 from teemo_sim_probe.core.graph_builder import GraphBuilder
 from teemo_sim_probe.core.node_builder import build_nodes
 from teemo_sim_probe.core.schema import Edge, Graph, Node
@@ -112,15 +113,85 @@ class OneHopWhitelistTests(unittest.TestCase):
         })
         payload = builder.payload()
         bins = payload["bin_edges"]
-        # Equal-width on [0, 0.60] -> [0.20, 0.40].
-        self.assertAlmostEqual(bins["planar-distance"][0], 0.20, places=6)
-        self.assertAlmostEqual(bins["planar-distance"][1], 0.40, places=6)
-        # Signed 3-bin on |max|=0.30 -> [-0.10, 0.10].
-        self.assertAlmostEqual(bins["height-offset"][0], -0.10, places=6)
-        self.assertAlmostEqual(bins["height-offset"][1], 0.10, places=6)
+        # Equal-width 5-bin on [0, 0.60].
+        self.assertEqual(len(bins["planar-distance"]), 4)
+        self.assertAlmostEqual(bins["planar-distance"][0], 0.12, places=6)
+        self.assertAlmostEqual(bins["planar-distance"][1], 0.24, places=6)
+        self.assertAlmostEqual(bins["planar-distance"][2], 0.36, places=6)
+        self.assertAlmostEqual(bins["planar-distance"][3], 0.48, places=6)
+        # Signed 5-bin on |max|=0.30.
+        self.assertEqual(len(bins["height-offset"]), 4)
+        self.assertAlmostEqual(bins["height-offset"][0], -0.18, places=6)
+        self.assertAlmostEqual(bins["height-offset"][1], -0.06, places=6)
+        self.assertAlmostEqual(bins["height-offset"][2], 0.06, places=6)
+        self.assertAlmostEqual(bins["height-offset"][3], 0.18, places=6)
+        # Change relations use a narrower stable band: +/-v/10.
+        self.assertAlmostEqual(bins["planar-distance-change"][1], -0.01, places=6)
+        self.assertAlmostEqual(bins["planar-distance-change"][2], 0.01, places=6)
         # Compatibility absolute bins are always [1/3, 2/3].
         self.assertAlmostEqual(bins["grasp-compatibility"][0], 1.0 / 3.0, places=6)
         self.assertAlmostEqual(bins["contact-compatibility"][1], 2.0 / 3.0, places=6)
+
+    def test_compatibility_change_edges_mined_from_pose_samples(self):
+        aff_set = AffordanceSet(by_object={
+            "actor:024_bowl": [
+                AffordanceComponent(
+                    anchor_obj_frame=np.array([0.0, 0.0, 0.0]),
+                    preferred_width=0.05,
+                ),
+            ],
+        })
+        builder = _WhitelistBuilder(
+            "pick",
+            "actor:024_bowl",
+            affordance_set=aff_set,
+            temporal_k=1,
+        )
+        obj_pose = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+        builder.absorb({
+            "interacted": [
+                {
+                    "key": "actor:024_bowl",
+                    "kind": "actor",
+                    "name": "bowl",
+                    "grasped": True,
+                    "max_ee_force": 1.0,
+                },
+            ],
+            "supports": [],
+            "bin_samples": {
+                "planar_distance": [1.0] * 10,
+                "height_offset": [0.5] * 10,
+            },
+            "pose_samples": [
+                {
+                    "tcp_pose": [0.04, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+                    "gripper_width": 0.05,
+                    "entities": {
+                        "actor:024_bowl": {
+                            "pose": obj_pose,
+                            "kind": "actor",
+                            "name": "bowl",
+                        },
+                    },
+                },
+                {
+                    "tcp_pose": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+                    "gripper_width": 0.05,
+                    "entities": {
+                        "actor:024_bowl": {
+                            "pose": obj_pose,
+                            "kind": "actor",
+                            "name": "bowl",
+                        },
+                    },
+                },
+            ],
+        })
+        bins = builder.payload()["bin_edges"]
+        self.assertIn("grasp-compatibility-change", bins)
+        self.assertAlmostEqual(bins["grasp-compatibility-change"][1], -0.02)
+        self.assertAlmostEqual(bins["grasp-compatibility-change"][2], 0.02)
 
 
 class StaleEdgeTests(unittest.TestCase):

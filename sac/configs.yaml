@@ -83,7 +83,7 @@ defaults:
     profile: tabletop
     thresholds_path: null
     whitelist_dir: null
-    camera: fetch_head
+    cameras: [fetch_head, fetch_hand]
     n_slots: 10
     k_persist: 5
     k_soft: 5.0
