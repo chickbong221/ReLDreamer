@@ -129,12 +129,10 @@ def train(config: dict) -> None:
     _seed_everything(int(config["seed"]))
 
     _tm_enabled = bool(run_cfg.get("tracemalloc", False))
-    _tm_snap_every = int(run_cfg.get("tracemalloc_every", 40000))
+    _tm_snap_every = max(int(run_cfg.get("tracemalloc_every", 40000)), 1)
     _tm_first_at = int(run_cfg.get("tracemalloc_first_at", 40000))
     _tm_prev_snap = None
-    if _tm_enabled:
-        import tracemalloc
-        tracemalloc.start(25)
+    _tm_next_snap_at = None
 
     train_split = env_cfg["mshab_split"]
     eval_split = env_cfg.get("mshab_eval_split") or train_split
@@ -237,6 +235,12 @@ def train(config: dict) -> None:
           f"buffer(cap)={capacity} buffer(trans)={replay_size} device={device}",
           flush=True)
 
+    if _tm_enabled:
+        import tracemalloc
+        tracemalloc.start(10)
+        print(f"[tracemalloc] enabled: first_snap={_tm_first_at} every={_tm_snap_every}",
+              flush=True)
+
     for iteration in range(num_iterations):
         if global_step >= total_steps:
             break
@@ -301,8 +305,10 @@ def train(config: dict) -> None:
                 ))
                 if _tm_prev_snap is None:
                     _tm_prev_snap = snap
-                    print(f"[tracemalloc] baseline snapshot at step {global_step}", flush=True)
-                elif (global_step - _tm_first_at) % _tm_snap_every == 0:
+                    _tm_next_snap_at = global_step + _tm_snap_every
+                    print(f"[tracemalloc] baseline snapshot at step {global_step}",
+                          flush=True)
+                elif global_step >= _tm_next_snap_at:
                     print(f"[tracemalloc] top allocation deltas at step {global_step}:",
                           flush=True)
                     diffs = snap.compare_to(_tm_prev_snap, "lineno")
@@ -314,6 +320,7 @@ def train(config: dict) -> None:
                         for line in top.traceback.format():
                             print(f"    {line}", flush=True)
                     _tm_prev_snap = snap
+                    _tm_next_snap_at = global_step + _tm_snap_every
 
         if eval_every > 0 and global_step - last_eval >= eval_every:
             last_eval = global_step
