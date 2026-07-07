@@ -237,6 +237,13 @@ def _to_np(x) -> np.ndarray:
 
 _FRAME_CACHE: Optional[Dict[str, Any]] = None
 
+# Sentinel used to detect "attribute missing" from a single getattr call, so
+# that hot-path lookups do not have to call the property twice via hasattr()
+# + getattr(). Fetch's ``tcp_pose`` is a computed property; probing it with
+# hasattr triggers the entire ManiSkill Pose-wrapper chain once for the
+# existence test and again for the actual read.
+_MISSING = object()
+
 _SCENE_CACHE_KEYS = (
     "_teemo_sidxs_cache",
     "_teemo_ee_links",
@@ -339,8 +346,9 @@ def _obj_index_for_env(entity, env_idx: int) -> Optional[int]:
 
 def get_tcp_pose(agent) -> Any:
     """Fetch defines ``tcp_pose`` (computed); Panda exposes ``tcp.pose``."""
-    if hasattr(agent, "tcp_pose"):
-        return agent.tcp_pose
+    pose = getattr(agent, "tcp_pose", _MISSING)
+    if pose is not _MISSING:
+        return pose
     return agent.tcp.pose
 
 
@@ -524,10 +532,13 @@ def per_env_segmentation_id_map(env, env_idx: int) -> Dict[int, Any]:
 def entity_pose_world_array(entity, env_idx: int) -> Optional[np.ndarray]:
     """Pose row of ``entity`` for parallel env ``env_idx``.
 
-    ``pose.p`` rows follow ``entity._objs`` order, not global env order.
+    ``pose.p`` rows follow ``entity._objs`` order, not global env order. The
+    ``.pose`` accessor on ManiSkill Actor / Link / Articulation returns a
+    fresh Pose object wrapping a fresh CUDA tensor slice on every call, so
+    reading it must only happen on a frame-cache miss -- reading before the
+    cache lookup defeats the cache and multiplies allocations by ``num_envs``.
     """
-    pose = getattr(entity, "pose", None)
-    if pose is None:
+    if entity is None:
         return None
     row = _obj_index_for_env(entity, env_idx)
     if row is None:
@@ -535,10 +546,16 @@ def entity_pose_world_array(entity, env_idx: int) -> Optional[np.ndarray]:
     if _FRAME_CACHE is not None:
         hit = _FRAME_CACHE["pose"].get(id(entity))
         if hit is None:
+            pose = getattr(entity, "pose", None)
+            if pose is None:
+                return None
             hit = (_to_np(pose.p), _to_np(pose.q))
             _FRAME_CACHE["pose"][id(entity)] = hit
         p, q = hit
     else:
+        pose = getattr(entity, "pose", None)
+        if pose is None:
+            return None
         p = _to_np(pose.p)
         q = _to_np(pose.q)
     if p.ndim == 2:

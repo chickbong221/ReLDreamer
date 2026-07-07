@@ -341,5 +341,72 @@ class GraphRuntimeMemoryTests(unittest.TestCase):
         self.assertEqual(scene.keep_me, "still here")
 
 
+class PoseAccessorHotPathTests(unittest.TestCase):
+    """Guard the .pose accessor call rate on the graph hot path."""
+
+    def test_entity_pose_fires_property_once_per_frame(self):
+        from teemo_sim_probe.adapters.privileged_state import (
+            begin_frame_cache, end_frame_cache, entity_pose_world_array,
+        )
+
+        class _P:
+            def __init__(self, p, q):
+                self.p, self.q = p, q
+
+        class _Entity:
+            def __init__(self, batched_pose):
+                self._batched_pose = batched_pose
+                self._objs = [None] * len(batched_pose)
+                self.pose_reads = 0
+
+            @property
+            def pose(self):
+                self.pose_reads += 1
+                b = self._batched_pose
+                return _P(b[:, :3], b[:, 3:])
+
+        num_envs = 8
+        batched = np.tile(
+            np.array([0.1, 0.2, 0.3, 1.0, 0.0, 0.0, 0.0]), (num_envs, 1),
+        )
+        entity = _Entity(batched)
+
+        begin_frame_cache()
+        try:
+            for env_idx in range(num_envs):
+                out = entity_pose_world_array(entity, env_idx)
+                self.assertIsNotNone(out)
+                self.assertEqual(out.shape, (7,))
+        finally:
+            end_frame_cache()
+
+        self.assertEqual(
+            entity.pose_reads, 1,
+            f"expected .pose to fire once per frame across {num_envs} envs, "
+            f"got {entity.pose_reads}",
+        )
+
+    def test_get_tcp_pose_fires_property_once(self):
+        from teemo_sim_probe.adapters.privileged_state import get_tcp_pose
+
+        class _Agent:
+            def __init__(self):
+                self.tcp_pose_reads = 0
+                self._value = object()
+
+            @property
+            def tcp_pose(self):
+                self.tcp_pose_reads += 1
+                return self._value
+
+        agent = _Agent()
+        result = get_tcp_pose(agent)
+        self.assertIs(result, agent._value)
+        self.assertEqual(
+            agent.tcp_pose_reads, 1,
+            f"expected 1 property fire, got {agent.tcp_pose_reads}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
