@@ -11,6 +11,7 @@ as an overlay|graph mp4 and pushed to wandb.
 
 from __future__ import annotations
 
+import gc
 import math
 import os
 import tempfile
@@ -218,6 +219,7 @@ def train(config: dict) -> None:
     save_every = int(run_cfg["save_every"])
     eval_max_steps = int(env_cfg["eval_max_episode_steps"])
     batch_size = int(agent_cfg["batch_size"])
+    gc_collect_every_log = bool(run_cfg.get("gc_collect", False))
 
     global_step = 0
     last_log = -log_every
@@ -286,6 +288,25 @@ def train(config: dict) -> None:
             print(f"[sac] step={global_step}/{total_steps} "
                   f"replay={len(replay)}{ram_str}", flush=True)
 
+            if gc_collect_every_log:
+                gc_t0 = time.time()
+                gc.collect()
+                gc_ms = (time.time() - gc_t0) * 1000.0
+                if ram_logger._proc is not None:
+                    import psutil
+                    rss_after = ram_logger._proc.memory_info().rss
+                    for child in ram_logger._proc.children(recursive=True):
+                        try:
+                            rss_after += child.memory_info().rss
+                        except psutil.Error:
+                            pass
+                    avail_after = psutil.virtual_memory().available
+                    print(f"[gc] collect took {gc_ms:.1f} ms "
+                          f"rss_after={rss_after / 2**30:.2f}GB "
+                          f"avail_after={avail_after / 2**30:.2f}GB",
+                          flush=True)
+                else:
+                    print(f"[gc] collect took {gc_ms:.1f} ms", flush=True)
 
         if eval_every > 0 and global_step - last_eval >= eval_every:
             last_eval = global_step
