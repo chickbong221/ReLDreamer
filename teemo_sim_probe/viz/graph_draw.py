@@ -84,11 +84,14 @@ _FAMILY_STYLE: Dict[str, Dict[str, str]] = {
 # overlap between real chip rectangles.
 def _chip_layout(n_obj: int) -> Dict[str, float]:
     if n_obj <= 4:
-        fontsize, fraction = 13.0, 0.50
+        fontsize, fraction = 9.5, 0.50
     elif n_obj <= 7:
-        fontsize, fraction = 11.0, 0.60
+        fontsize, fraction = 8.0, 0.60
     else:
-        fontsize, fraction = 9.0, 0.70
+        fontsize, fraction = 7.0, 0.70
+    # Chip rectangle size scales with fontsize; the collision constants were
+    # measured against a 13pt chip that covered ~2.5 x 1.8 axes units, so we
+    # scale from that reference.
     scale = fontsize / 13.0
     return {
         "fontsize": fontsize,
