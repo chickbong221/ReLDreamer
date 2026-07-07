@@ -77,15 +77,27 @@ _FAMILY_STYLE: Dict[str, Dict[str, str]] = {
     _FAMILY_AFFORDANCE:     {"bg": "#d8f0dc", "edge": "#3a8f5b", "text": "#1c4a2b"},
 }
 
-# Minimum axis-unit separation between chip centers before we consider two
-# chips as "overlapping" and nudge the later one along its edge's perp.
-# Tuned against the multi-line spatial chips (up to four rows), which are
-# the largest labels in the graph. Scaled with the current relation fontsize
-# (13pt) so a taller chip still finds space.
-_CHIP_MIN_SEP_X = 1.2
-_CHIP_MIN_SEP_Y = 0.65
-_CHIP_NUDGE_STEP = 0.5
-_CHIP_NUDGE_MAX_ITERS = 12
+# Chip layout scales with n_obj: small graphs use a large, easily readable
+# 13pt chip; busy graphs (near ``n_slots``) shrink the chip and push it
+# outward along its edge to avoid piling up around ee. All chip-collision
+# constants scale off the chosen fontsize because they exist to detect
+# overlap between real chip rectangles.
+def _chip_layout(n_obj: int) -> Dict[str, float]:
+    if n_obj <= 4:
+        fontsize, fraction = 13.0, 0.50
+    elif n_obj <= 7:
+        fontsize, fraction = 11.0, 0.60
+    else:
+        fontsize, fraction = 9.0, 0.70
+    scale = fontsize / 13.0
+    return {
+        "fontsize": fontsize,
+        "fraction": fraction,
+        "min_sep_x": 2.5 * scale,
+        "min_sep_y": 1.8 * scale,
+        "nudge_step": 1.0 * scale,
+        "max_iters": 15,
+    }
 
 # Stale edges override every family chip with the same blue palette used for
 # frozen-pose nodes -- a single visual signal that the data is not fresh.
@@ -178,21 +190,23 @@ def render_graph(
 
     n_obj = sum(1 for n in graph.nodes
                 if n.node_type == "object" and n.valid_mask)
+    chip = _chip_layout(n_obj)
 
     # Square canvas that matches the overlay panels (6" @ 200 dpi -> 1200 px)
-    # so the three panels hstack without any padding in the video. The viewport
-    # is sized just above the largest expected ring + a chip's worth of margin
-    # to keep the graph filling the panel rather than sitting in the middle.
+    # so the three panels hstack without any padding in the video.
     figsize = (6.0, 6.0)
+    # Bigger baseline radius so small graphs still spread across the panel;
+    # the growth per extra object is gentle so 10 objects still fit inside
+    # the viewport.
     if n_obj <= 1:
-        radius = 3.0
+        radius = 4.5
     elif n_obj == 2:
-        radius = 3.2
+        radius = 4.8
     else:
-        radius = min(3.2 + 0.45 * (n_obj - 3), 5.0)
+        radius = min(4.8 + 0.2 * (n_obj - 3), 5.6)
 
     node_r = 0.32
-    view_half = 6.0
+    view_half = 6.5
 
     pos = _radial_layout(graph, radius, node_r)
     fig, ax = plt.subplots(figsize=figsize, dpi=200)
@@ -200,6 +214,10 @@ def render_graph(
     bg = "#fdf0e9"
     ax.set_facecolor(bg)
     fig.patch.set_facecolor(bg)
+    # Fill the panel with the axes, reserving only a thin title strip at the
+    # top -- otherwise matplotlib's default margins leave the ring floating in
+    # the middle with empty background around it.
+    fig.subplots_adjust(left=0.02, right=0.98, top=0.93, bottom=0.02)
 
     # ----------------------------------------------------------------- edges
     drawn = [e for e in graph.edges if (not e.masked or not drawable_only)]
@@ -258,12 +276,14 @@ def render_graph(
         if not grouped:
             continue
 
-        # Chips stack SCREEN-VERTICALLY at the edge midpoint, ordered
-        # top-to-bottom as physical / spatial / affordance -- regardless
-        # of edge angle. Cross-edge collisions are resolved by nudging
-        # the later chip further up or down, so the stack stays vertical
-        # instead of drifting off to the side.
-        mid = a0 + (a1 - a0) * 0.5
+        # Chips stack SCREEN-VERTICALLY along the edge, ordered top-to-bottom
+        # as physical / spatial / affordance -- regardless of edge angle. The
+        # chip anchor sits at ``chip["fraction"]`` along the edge so a dense
+        # ee->object star pushes chips outward toward the ring instead of
+        # piling them up near ee. Cross-edge collisions are resolved by
+        # nudging the later chip further up or down, so the stack stays
+        # vertical instead of drifting off to the side.
+        mid = a0 + (a1 - a0) * chip["fraction"]
         spacing = 0.55
         families_present = [f for f in _FAMILY_ORDER if f in grouped]
         n = len(families_present)
@@ -281,13 +301,13 @@ def render_graph(
             # (spatial when three families present) picks its direction
             # from the first collision it hits so it doesn't oscillate.
             push_sign = 1.0 if y_offset > 0 else (-1.0 if y_offset < 0 else 0.0)
-            for _ in range(_CHIP_NUDGE_MAX_ITERS):
+            for _ in range(int(chip["max_iters"])):
                 collided = False
                 first_hit_side = 0.0
                 for px, py in placed_chip_centers:
                     if (
-                        abs(anchor[0] - px) < _CHIP_MIN_SEP_X
-                        and abs(anchor[1] - py) < _CHIP_MIN_SEP_Y
+                        abs(anchor[0] - px) < chip["min_sep_x"]
+                        and abs(anchor[1] - py) < chip["min_sep_y"]
                     ):
                         collided = True
                         first_hit_side = 1.0 if anchor[1] >= py else -1.0
@@ -297,12 +317,12 @@ def render_graph(
                 step_sign = push_sign if push_sign != 0.0 else first_hit_side
                 if step_sign == 0.0:
                     step_sign = 1.0
-                anchor = anchor + np.array([0.0, _CHIP_NUDGE_STEP * step_sign])
+                anchor = anchor + np.array([0.0, chip["nudge_step"] * step_sign])
             placed_chip_centers.append((float(anchor[0]), float(anchor[1])))
             style = _STALE_STYLE if is_stale else _FAMILY_STYLE[family]
             ax.text(
                 anchor[0], anchor[1], "\n".join(grouped[family]),
-                fontsize=13.0, ha="center", va="center", style="italic",
+                fontsize=chip["fontsize"], ha="center", va="center", style="italic",
                 color=style["text"], zorder=4, linespacing=1.05,
                 bbox=dict(
                     facecolor=style["bg"], edgecolor=style["edge"],
