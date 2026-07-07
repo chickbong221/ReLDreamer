@@ -5,9 +5,9 @@ update. On the first crossing of ``init_steps`` the update runs
 ``init_steps`` times in one shot (mshab burn-in).
 
 Eval runs a full ``eval_max_episode_steps``-length sweep across all eval envs.
-When graph is enabled and wandb is on, env-0's first eval episode is rendered
-as a ``head_overlay | hand_overlay | graph`` mp4 (hand panel omitted when only
-one camera is configured) and pushed to wandb.
+When graph is enabled and wandb is on, one ``head_overlay | hand_overlay |
+graph`` mp4 is rendered per recorded env (envs 0 and 1 by default) and pushed
+to wandb. Hand panel is omitted when only one camera is configured.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import math
 import os
 import tempfile
 import time
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from gymnasium import spaces
 
@@ -369,10 +369,12 @@ def _run_eval(agent, eval_envs, graph_eval, logger, device, *,
                eval_max_steps: int, step: int, wandb_enabled: bool) -> None:
     do_video = graph_eval is not None and wandb_enabled
     tmp_dir = None
-    head_paths, hand_paths, graph_paths = [], [], []
-    cmap = None
-    env0_done = False
     hand_cam: Optional[str] = None
+    record_ids: List[int] = []
+    head_paths: Dict[int, list] = {}
+    hand_paths: Dict[int, list] = {}
+    graph_paths: Dict[int, list] = {}
+    env_done: Dict[int, bool] = {}
 
     try:
         if do_video:
@@ -380,7 +382,12 @@ def _run_eval(agent, eval_envs, graph_eval, logger, device, *,
             from teemo_sim_probe.viz.overlay import render_overlay
             from teemo_sim_probe.viz.graph_draw import render_graph
             from teemo_sim_probe.core.mask_extractor import MaskAccumulator
-            graph_eval.record_env0 = True
+            record_ids = [i for i in (0, 1) if i < graph_eval.num_envs]
+            graph_eval.record_env_indices = set(record_ids)
+            head_paths = {i: [] for i in record_ids}
+            hand_paths = {i: [] for i in record_ids}
+            graph_paths = {i: [] for i in record_ids}
+            env_done = {i: False for i in record_ids}
             tmp_dir = tempfile.TemporaryDirectory()
             cmap = ColorMap()
             hand_cam = graph_eval.secondary_camera
@@ -400,26 +407,34 @@ def _run_eval(agent, eval_envs, graph_eval, logger, device, *,
                     masks.add(node.node_id, m)
             return masks
 
-        def _record_frame(t: int) -> None:
-            g = graph_eval.last_env0_graph
-            rgb_head = graph_eval.read_rgb_env0()
-            head_paths.append(render_overlay(
-                rgb_head, g, graph_eval.last_env0_masks,
-                os.path.join(tmp_dir.name, f"head_{t:04d}.png"), colormap=cmap,
+        def _record_frame(env_idx: int, t: int) -> None:
+            g = graph_eval.last_graph_by_env.get(env_idx)
+            m = graph_eval.last_masks_by_env.get(env_idx)
+            if g is None or m is None:
+                return
+            rgb_head = graph_eval.read_rgb(env_idx)
+            head_paths[env_idx].append(render_overlay(
+                rgb_head, g, m,
+                os.path.join(tmp_dir.name, f"head_env{env_idx}_{t:04d}.png"),
+                colormap=cmap,
             ))
             if hand_cam is not None:
-                rgb_hand, seg_hand = graph_eval.read_env0_view(hand_cam)
+                rgb_hand, seg_hand = graph_eval.read_view(hand_cam, env_idx)
                 hand_masks = _masks_from_seg(g, seg_hand)
-                hand_paths.append(render_overlay(
+                hand_paths[env_idx].append(render_overlay(
                     rgb_hand, g, hand_masks,
-                    os.path.join(tmp_dir.name, f"hand_{t:04d}.png"), colormap=cmap,
+                    os.path.join(tmp_dir.name, f"hand_env{env_idx}_{t:04d}.png"),
+                    colormap=cmap,
                 ))
-            graph_paths.append(render_graph(
-                g, os.path.join(tmp_dir.name, f"graph_{t:04d}.png"), colormap=cmap,
+            graph_paths[env_idx].append(render_graph(
+                g,
+                os.path.join(tmp_dir.name, f"graph_env{env_idx}_{t:04d}.png"),
+                colormap=cmap,
             ))
 
         if do_video:
-            _record_frame(0)
+            for i in record_ids:
+                _record_frame(i, 0)
 
         for t in range(eval_max_steps):
             with torch.no_grad():
@@ -432,28 +447,34 @@ def _run_eval(agent, eval_envs, graph_eval, logger, device, *,
             if graph_eval is not None:
                 graph_obs = graph_eval.step(done, device)
 
-            if do_video and not env0_done:
-                if bool(done[0].item()):
-                    env0_done = True
-                else:
-                    _record_frame(t + 1)
+            if do_video:
+                for i in record_ids:
+                    if env_done[i]:
+                        continue
+                    if bool(done[i].item()):
+                        env_done[i] = True
+                    else:
+                        _record_frame(i, t + 1)
 
         if len(eval_envs.return_queue) > 0:
             _log_env_stats(logger, eval_envs, "eval", step)
 
         if do_video:
             from teemo_sim_probe.viz.video_writer import write_video
-            mp4 = os.path.join(tmp_dir.name, "eval.mp4")
-            panels = [head_paths]
-            if hand_cam is not None:
-                panels.append(hand_paths)
-            panels.append(graph_paths)
-            write_video(panels, mp4, fps=5)
-            logger.video("eval/graph_video", mp4, step)
+            for i in record_ids:
+                if not head_paths[i]:
+                    continue
+                mp4 = os.path.join(tmp_dir.name, f"eval_env{i}.mp4")
+                panels = [head_paths[i]]
+                if hand_cam is not None:
+                    panels.append(hand_paths[i])
+                panels.append(graph_paths[i])
+                write_video(panels, mp4, fps=5)
+                logger.video(f"eval/graph_video/env{i}", mp4, step)
     finally:
         if do_video:
-            graph_eval.record_env0 = False
-            graph_eval.last_env0_graph = None
-            graph_eval.last_env0_masks = None
+            graph_eval.record_env_indices = set()
+            graph_eval.last_graph_by_env.clear()
+            graph_eval.last_masks_by_env.clear()
         if tmp_dir is not None:
             tmp_dir.cleanup()

@@ -14,7 +14,7 @@ and would also re-render + CUDA-sync once per env.
 from __future__ import annotations
 
 from copy import copy as _shallow_copy
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import torch
@@ -128,9 +128,11 @@ class GraphObsBuilder:
                              camera=primary_camera)
             )
         self._frames = np.zeros(self.num_envs, dtype=np.int64)
-        self.record_env0 = False
-        self.last_env0_graph = None
-        self.last_env0_masks = None
+        # Set of env indices whose latest graph + primary-cam masks should be
+        # cached each step for offline rendering. Empty in the hot path.
+        self.record_env_indices: Set[int] = set()
+        self.last_graph_by_env: Dict[int, Any] = {}
+        self.last_masks_by_env: Dict[int, Any] = {}
         self._cams_checked = False
         self._scene_cache_signature = None
         self._seg_cpu_buffers: Dict[str, torch.Tensor] = {}
@@ -159,7 +161,7 @@ class GraphObsBuilder:
         self, env_idx: int, episode_boundary: bool,
         seg_by_cam: Dict[str, np.ndarray],
     ) -> Dict[str, np.ndarray]:
-        need_masks = env_idx == 0 and self.record_env0
+        need_masks = env_idx in self.record_env_indices
         graph, masks, _, _ = self.builders[env_idx].step(
             {},
             int(self._frames[env_idx]),
@@ -169,24 +171,25 @@ class GraphObsBuilder:
             primary_camera=self.primary_camera,
             need_masks=need_masks,
         )
-        if env_idx == 0 and self.record_env0:
-            self.last_env0_graph = graph
-            self.last_env0_masks = masks
+        if need_masks:
+            self.last_graph_by_env[env_idx] = graph
+            self.last_masks_by_env[env_idx] = masks
         self._frames[env_idx] += 1
         return pack_graph(
             graph, self.node_vocab, self.edge_vocab,
             n_max=self.n_max, e_max=self.e_max, k_soft=self.k_soft,
         )
 
-    def read_rgb_env0(self) -> np.ndarray:
-        rgb = self.env.unwrapped._last_obs["sensor_data"][self.primary_camera]["rgb"][0]
+    def read_rgb(self, env_idx: int) -> np.ndarray:
+        """Primary-cam RGB (uint8, [H, W, 3]) for ``env_idx``."""
+        rgb = self.env.unwrapped._last_obs["sensor_data"][self.primary_camera]["rgb"][env_idx]
         return rgb.detach().cpu().numpy().astype(np.uint8)
 
-    def read_env0_view(self, camera: str) -> Tuple[np.ndarray, np.ndarray]:
-        """RGB (uint8, [H, W, 3]) + segmentation (int64, [H, W]) for env 0."""
+    def read_view(self, camera: str, env_idx: int) -> Tuple[np.ndarray, np.ndarray]:
+        """RGB (uint8, [H, W, 3]) + segmentation (int64, [H, W]) for one env."""
         sensor = self.env.unwrapped._last_obs["sensor_data"][camera]
-        rgb = sensor["rgb"][0].detach().cpu().numpy().astype(np.uint8)
-        seg = sensor["segmentation"][0].squeeze(-1).detach().cpu().numpy().astype(np.int64)
+        rgb = sensor["rgb"][env_idx].detach().cpu().numpy().astype(np.uint8)
+        seg = sensor["segmentation"][env_idx].squeeze(-1).detach().cpu().numpy().astype(np.int64)
         return rgb, seg
 
     @property
