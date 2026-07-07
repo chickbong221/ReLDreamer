@@ -287,7 +287,7 @@ def main():
             for cam in cameras:
                 if overlay_paths[cam]:
                     vid = write_video(
-                        overlay_paths[cam], graph_paths[cam],
+                        [overlay_paths[cam], graph_paths[cam]],
                         os.path.join(args.out, f"probe_{cam}.mp4"), fps=2,
                     )
                     print(f"video[{cam}]:", vid)

@@ -6,7 +6,8 @@ update. On the first crossing of ``init_steps`` the update runs
 
 Eval runs a full ``eval_max_episode_steps``-length sweep across all eval envs.
 When graph is enabled and wandb is on, env-0's first eval episode is rendered
-as an overlay|graph mp4 and pushed to wandb.
+as a ``head_overlay | hand_overlay | graph`` mp4 (hand panel omitted when only
+one camera is configured) and pushed to wandb.
 """
 
 from __future__ import annotations
@@ -368,32 +369,53 @@ def _run_eval(agent, eval_envs, graph_eval, logger, device, *,
                eval_max_steps: int, step: int, wandb_enabled: bool) -> None:
     do_video = graph_eval is not None and wandb_enabled
     tmp_dir = None
-    overlay_paths, graph_paths = [], []
+    head_paths, hand_paths, graph_paths = [], [], []
     cmap = None
     env0_done = False
+    hand_cam: Optional[str] = None
 
     try:
         if do_video:
             from teemo_sim_probe.viz.palette import ColorMap
             from teemo_sim_probe.viz.overlay import render_overlay
             from teemo_sim_probe.viz.graph_draw import render_graph
+            from teemo_sim_probe.core.mask_extractor import MaskAccumulator
             graph_eval.record_env0 = True
             tmp_dir = tempfile.TemporaryDirectory()
             cmap = ColorMap()
+            hand_cam = graph_eval.secondary_camera
 
         eval_raw, _ = eval_envs.reset()
         obs = adapt_obs(eval_raw, device)
         graph_obs = graph_eval.reset(device) if graph_eval is not None else None
 
+        def _masks_from_seg(graph, seg: np.ndarray) -> "MaskAccumulator":
+            H, W = seg.shape
+            masks = MaskAccumulator(H, W)
+            for node in graph.nodes:
+                if not node.valid_mask or not node.segmentation_ids:
+                    continue
+                m = np.isin(seg, node.segmentation_ids)
+                if bool(m.any()):
+                    masks.add(node.node_id, m)
+            return masks
+
         def _record_frame(t: int) -> None:
-            rgb0 = graph_eval.read_rgb_env0()
-            overlay_paths.append(render_overlay(
-                rgb0, graph_eval.last_env0_graph, graph_eval.last_env0_masks,
-                os.path.join(tmp_dir.name, f"overlay_{t:04d}.png"), colormap=cmap,
+            g = graph_eval.last_env0_graph
+            rgb_head = graph_eval.read_rgb_env0()
+            head_paths.append(render_overlay(
+                rgb_head, g, graph_eval.last_env0_masks,
+                os.path.join(tmp_dir.name, f"head_{t:04d}.png"), colormap=cmap,
             ))
+            if hand_cam is not None:
+                rgb_hand, seg_hand = graph_eval.read_env0_view(hand_cam)
+                hand_masks = _masks_from_seg(g, seg_hand)
+                hand_paths.append(render_overlay(
+                    rgb_hand, g, hand_masks,
+                    os.path.join(tmp_dir.name, f"hand_{t:04d}.png"), colormap=cmap,
+                ))
             graph_paths.append(render_graph(
-                graph_eval.last_env0_graph,
-                os.path.join(tmp_dir.name, f"graph_{t:04d}.png"), colormap=cmap,
+                g, os.path.join(tmp_dir.name, f"graph_{t:04d}.png"), colormap=cmap,
             ))
 
         if do_video:
@@ -422,7 +444,11 @@ def _run_eval(agent, eval_envs, graph_eval, logger, device, *,
         if do_video:
             from teemo_sim_probe.viz.video_writer import write_video
             mp4 = os.path.join(tmp_dir.name, "eval.mp4")
-            write_video(overlay_paths, graph_paths, mp4, fps=5)
+            panels = [head_paths]
+            if hand_cam is not None:
+                panels.append(hand_paths)
+            panels.append(graph_paths)
+            write_video(panels, mp4, fps=5)
             logger.video("eval/graph_video", mp4, step)
     finally:
         if do_video:

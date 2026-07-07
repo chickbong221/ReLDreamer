@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from ..core.entity_identity import display_name
 from ..core.schema import Edge, Graph
 from .palette import ColorMap
 
@@ -177,20 +178,21 @@ def render_graph(
     n_obj = sum(1 for n in graph.nodes
                 if n.node_type == "object" and n.valid_mask)
 
+    # Fixed canvas so the graph panel stays the same size regardless of how
+    # many objects are visible this frame -- otherwise the video encoder has
+    # to re-pad every frame and small graphs look zoomed-in relative to full
+    # ones. Radius is capped so the largest expected ring still fits.
+    figsize = (14.0, 10.0)
     if n_obj <= 1:
-        figsize = (11.0, 8.0)
         radius = 3.0
     elif n_obj == 2:
-        figsize = (12.0, 9.0)
         radius = 3.2
     else:
-        figsize = (
-            max(14.0, 10.0 + 0.65 * n_obj),
-            max(11.0, 8.0 + 0.55 * n_obj),
-        )
-        radius = 3.2 + 0.45 * (n_obj - 3)
+        radius = min(3.2 + 0.45 * (n_obj - 3), 5.0)
 
     node_r = 0.32
+    view_half_x = 6.8
+    view_half_y = 4.8
 
     pos = _radial_layout(graph, radius, node_r)
     fig, ax = plt.subplots(figsize=figsize, dpi=130)
@@ -300,7 +302,7 @@ def render_graph(
             style = _STALE_STYLE if is_stale else _FAMILY_STYLE[family]
             ax.text(
                 anchor[0], anchor[1], "\n".join(grouped[family]),
-                fontsize=9.5, ha="center", va="center", style="italic",
+                fontsize=13.0, ha="center", va="center", style="italic",
                 color=style["text"], zorder=4, linespacing=1.05,
                 bbox=dict(
                     facecolor=style["bg"], edgecolor=style["edge"],
@@ -332,7 +334,7 @@ def render_graph(
         )
         ax.add_patch(circ)
 
-        label = "ee" if node.node_type == "ee" else node.name
+        label = "ee" if node.node_type == "ee" else display_name(node.name)
         label_color = tuple(0.45 * np.asarray(face))
         ax.text(
             x, y - node_r - 0.18, label,
@@ -348,14 +350,11 @@ def render_graph(
         title += f"  |  subtask={sub}"
     ax.set_title(title, fontsize=14)
 
-    xs = [p[0] for p in pos.values()]
-    ys = [p[1] for p in pos.values()]
-    if xs and ys:
-        pad = node_r + 0.9
-        ax.set_xlim(min(xs) - pad, max(xs) + pad)
-        ax.set_ylim(min(ys) - pad - 0.4, max(ys) + pad)
+    ax.set_xlim(-view_half_x, view_half_x)
+    ax.set_ylim(-view_half_y, view_half_y)
     ax.set_aspect("equal")
-    fig.savefig(out_path, bbox_inches="tight", pad_inches=0.25,
-                facecolor=fig.get_facecolor())
+    # No ``bbox_inches='tight'``: cropping to visible content would defeat the
+    # fixed figsize/viewport and re-introduce per-frame size drift.
+    fig.savefig(out_path, facecolor=fig.get_facecolor())
     plt.close(fig)
     return out_path

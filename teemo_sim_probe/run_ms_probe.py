@@ -111,7 +111,7 @@ def main():
 
     if args.video:
         vid = write_video(
-            overlay_paths, graph_paths,
+            [overlay_paths, graph_paths],
             os.path.join(args.out, "probe.mp4"), fps=5,
         )
         print("video:", vid)

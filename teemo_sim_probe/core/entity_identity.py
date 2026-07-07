@@ -20,6 +20,9 @@ _ENV_PREFIX_RE = re.compile(r"^env-\d+_")
 # prefixes across scene sets, so the offline whitelist would be unmatched at
 # runtime if we kept it. Strip it for cross-scene key portability.
 _SCS_PREFIX_RE = re.compile(r"^scs-\[[0-9,]+\]_")
+# Leading YCB-style numeric asset id (``024_bowl-0`` -> ``bowl-0``). Only
+# applied to display names, never to whitelist keys.
+_ASSET_NUM_PREFIX_RE = re.compile(r"^\d+_")
 
 
 def entity_name(entity) -> str:
@@ -60,6 +63,19 @@ def canonical_scene_name(name: Optional[str]) -> Optional[str]:
     stripped = _ENV_PREFIX_RE.sub("", str(name))
     stripped = _SCS_PREFIX_RE.sub("", stripped)
     return stripped or None
+
+
+def display_name(name: Optional[str]) -> str:
+    """Short label for overlays and node-graph rendering.
+
+    Strips the same env/scs prefixes as ``canonical_scene_name`` and, in
+    addition, one leading YCB-style ``<digits>_`` asset id so labels stay
+    readable in a small figure (``env-0_024_bowl-0`` -> ``bowl-0``).
+    """
+    if not name:
+        return ""
+    s = canonical_scene_name(name) or str(name)
+    return _ASSET_NUM_PREFIX_RE.sub("", s) or s
 
 
 def stable_entity_key(entity) -> Optional[str]:

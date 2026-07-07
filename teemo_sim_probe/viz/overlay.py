@@ -12,6 +12,7 @@ from typing import Dict, Optional, Tuple
 
 import numpy as np
 
+from ..core.entity_identity import display_name
 from ..core.schema import Graph
 from ..core.mask_extractor import MaskAccumulator
 from .palette import ColorMap
@@ -92,7 +93,7 @@ def render_overlay(
         placed.append((cx, cy))
 
         color = cmap.color(node.node_id)
-        tag = "ee" if node.node_type == "ee" else node.name
+        tag = "ee" if node.node_type == "ee" else display_name(node.name)
         ax.text(
             cx, cy, tag,
             color="white", fontsize=fs, fontweight="bold",

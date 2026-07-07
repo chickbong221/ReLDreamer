@@ -14,7 +14,7 @@ and would also re-render + CUDA-sync once per env.
 from __future__ import annotations
 
 from copy import copy as _shallow_copy
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -181,6 +181,20 @@ class GraphObsBuilder:
     def read_rgb_env0(self) -> np.ndarray:
         rgb = self.env.unwrapped._last_obs["sensor_data"][self.primary_camera]["rgb"][0]
         return rgb.detach().cpu().numpy().astype(np.uint8)
+
+    def read_env0_view(self, camera: str) -> Tuple[np.ndarray, np.ndarray]:
+        """RGB (uint8, [H, W, 3]) + segmentation (int64, [H, W]) for env 0."""
+        sensor = self.env.unwrapped._last_obs["sensor_data"][camera]
+        rgb = sensor["rgb"][0].detach().cpu().numpy().astype(np.uint8)
+        seg = sensor["segmentation"][0].squeeze(-1).detach().cpu().numpy().astype(np.int64)
+        return rgb, seg
+
+    @property
+    def secondary_camera(self) -> Optional[str]:
+        for cam in self.cameras:
+            if cam != self.primary_camera:
+                return cam
+        return None
 
     def _read_batched_segs(self) -> Dict[str, np.ndarray]:
         """Return ``{cam: [N, H, W]}`` for every configured camera."""
