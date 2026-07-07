@@ -84,11 +84,11 @@ _FAMILY_STYLE: Dict[str, Dict[str, str]] = {
 # overlap between real chip rectangles.
 def _chip_layout(n_obj: int) -> Dict[str, float]:
     if n_obj <= 4:
-        fontsize, fraction = 9.5, 0.50
+        fontsize, fraction = 8.5, 0.50
     elif n_obj <= 7:
-        fontsize, fraction = 8.0, 0.60
+        fontsize, fraction = 7.0, 0.60
     else:
-        fontsize, fraction = 7.0, 0.70
+        fontsize, fraction = 6.0, 0.70
     # Chip rectangle size scales with fontsize; the collision constants were
     # measured against a 13pt chip that covered ~2.5 x 1.8 axes units, so we
     # scale from that reference.
@@ -202,14 +202,14 @@ def render_graph(
     # the growth per extra object is gentle so 10 objects still fit inside
     # the viewport.
     if n_obj <= 1:
-        radius = 4.5
+        radius = 5.3
     elif n_obj == 2:
-        radius = 4.8
+        radius = 5.5
     else:
-        radius = min(4.8 + 0.2 * (n_obj - 3), 5.6)
+        radius = min(5.5 + 0.1 * (n_obj - 3), 6.0)
 
     node_r = 0.32
-    view_half = 6.5
+    view_half = 7.0
 
     pos = _radial_layout(graph, radius, node_r)
     fig, ax = plt.subplots(figsize=figsize, dpi=200)
