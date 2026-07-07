@@ -5,8 +5,7 @@
   "members": {
     "actor:007_tuna_fish_can": {
       "roles": [
-        "interacted",
-        "support"
+        "interacted"
       ],
       "interaction_types": [
         "contact",
@@ -14,16 +13,11 @@
       ],
       "kind": "actor",
       "name": "env-7_007_tuna_fish_can-0",
-      "interaction_rollouts": 4,
-      "support_rollouts": 4,
-      "supports": [
-        "link:kitchen_counter-0/body"
-      ]
+      "interaction_rollouts": 4
     },
     "actor:008_pudding_box": {
       "roles": [
-        "interacted",
-        "support"
+        "interacted"
       ],
       "interaction_types": [
         "contact",
@@ -31,11 +25,7 @@
       ],
       "kind": "actor",
       "name": "env-7_008_pudding_box-0",
-      "interaction_rollouts": 4,
-      "support_rollouts": 4,
-      "supports": [
-        "link:kitchen_counter-0/body"
-      ]
+      "interaction_rollouts": 4
     },
     "actor:024_bowl": {
       "roles": [
@@ -50,10 +40,9 @@
       "kind": "actor",
       "name": "obj_0",
       "interaction_rollouts": 30,
-      "support_rollouts": 6,
+      "support_rollouts": 1,
       "supports": [
-        "link:kitchen_counter-0/body",
-        "link:kitchen_counter-0/drawer3"
+        "link:kitchen_counter-0/body"
       ]
     },
     "link:kitchen_counter-0/body": {
@@ -68,11 +57,10 @@
       "kind": "link",
       "name": "body",
       "interaction_rollouts": 4,
-      "support_rollouts": 11,
+      "support_rollouts": 8,
       "supports": [
         "actor:007_tuna_fish_can",
-        "actor:008_pudding_box",
-        "actor:024_bowl"
+        "actor:008_pudding_box"
       ]
     },
     "link:kitchen_counter-0/drawer3": {
@@ -86,7 +74,7 @@
       ],
       "kind": "link",
       "name": "drawer3",
-      "interaction_rollouts": 3,
+      "interaction_rollouts": 1,
       "support_rollouts": 30,
       "supports": [
         "actor:024_bowl"
@@ -111,41 +99,65 @@
       0.6666666666666666
     ],
     "planar-distance": [
-      0.23502750957434643,
-      0.47005501914869285,
-      0.7050825287230392,
-      0.9401100382973857
+      0.23938825945070458,
+      0.47877651890140915,
+      0.7181647783521138,
+      0.9575530378028183
     ],
     "height-offset": [
-      -0.4055559968948364,
-      -0.1351853322982788,
-      0.1351853322982788,
-      0.4055559968948364
+      -0.39995830535888677,
+      -0.1333194351196289,
+      0.1333194351196289,
+      0.39995830535888677
     ],
     "planar-distance-change": [
-      -0.18407406180279579,
-      -0.030679010300465964,
-      0.030679010300465964,
-      0.18407406180279579
+      -0.18730583963385153,
+      -0.031217639938975257,
+      0.031217639938975257,
+      0.18730583963385153
     ],
     "height-offset-change": [
-      -0.1730498743057251,
-      -0.02884164571762085,
-      0.02884164571762085,
-      0.1730498743057251
+      -0.1708378314971924,
+      -0.02847297191619873,
+      0.02847297191619873,
+      0.1708378314971924
+    ],
+    "grasp-compatibility-change": [
+      -0.2759968796117182,
+      -0.04599947993528637,
+      0.04599947993528637,
+      0.2759968796117182
+    ],
+    "contact-compatibility-change": [
+      -0.19795481968840672,
+      -0.03299246994806779,
+      0.03299246994806779,
+      0.19795481968840672
+    ],
+    "support-compatibility-change": [
+      -0.2,
+      -0.03333333333333334,
+      0.03333333333333334,
+      0.2
     ]
   },
   "bin_stats_robust": {
-    "planar_distance": 1.175137547871732,
-    "height_offset": 0.675926661491394,
-    "planar_distance_change": 0.30679010300465964,
-    "height_offset_change": 0.2884164571762085
+    "contact_compatibility_change": 0.3299246994806779,
+    "grasp_compatibility_change": 0.4599947993528637,
+    "height_offset": 0.6665971755981446,
+    "height_offset_change": 0.2847297191619873,
+    "planar_distance": 1.196941297253523,
+    "planar_distance_change": 0.31217639938975256,
+    "support_compatibility_change": 0.33333333333333337
   },
   "bin_stats_observed": {
-    "planar_distance": 1.7221760030060673,
-    "height_offset": 1.2579831816256046,
+    "contact_compatibility_change": 0.6058657645057497,
+    "grasp_compatibility_change": 0.7290217074600098,
+    "height_offset": 1.2396356798708439,
+    "height_offset_change": 0.3189670443534851,
+    "planar_distance": 1.7170826853053627,
     "planar_distance_change": 0.3662138413364798,
-    "height_offset_change": 0.3311638832092285
+    "support_compatibility_change": 0.5998102195579504
   },
   "_n_successful_rollouts": 30
 }
