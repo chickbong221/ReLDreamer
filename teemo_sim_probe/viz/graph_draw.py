@@ -80,11 +80,12 @@ _FAMILY_STYLE: Dict[str, Dict[str, str]] = {
 # Minimum axis-unit separation between chip centers before we consider two
 # chips as "overlapping" and nudge the later one along its edge's perp.
 # Tuned against the multi-line spatial chips (up to four rows), which are
-# the largest labels in the graph.
-_CHIP_MIN_SEP_X = 0.85
-_CHIP_MIN_SEP_Y = 0.45
-_CHIP_NUDGE_STEP = 0.35
-_CHIP_NUDGE_MAX_ITERS = 8
+# the largest labels in the graph. Scaled with the current relation fontsize
+# (13pt) so a taller chip still finds space.
+_CHIP_MIN_SEP_X = 1.2
+_CHIP_MIN_SEP_Y = 0.65
+_CHIP_NUDGE_STEP = 0.5
+_CHIP_NUDGE_MAX_ITERS = 12
 
 # Stale edges override every family chip with the same blue palette used for
 # frozen-pose nodes -- a single visual signal that the data is not fresh.
@@ -178,11 +179,11 @@ def render_graph(
     n_obj = sum(1 for n in graph.nodes
                 if n.node_type == "object" and n.valid_mask)
 
-    # Fixed canvas so the graph panel stays the same size regardless of how
-    # many objects are visible this frame -- otherwise the video encoder has
-    # to re-pad every frame and small graphs look zoomed-in relative to full
-    # ones. Radius is capped so the largest expected ring still fits.
-    figsize = (14.0, 10.0)
+    # Square canvas that matches the overlay panels (6" @ 200 dpi -> 1200 px)
+    # so the three panels hstack without any padding in the video. The viewport
+    # is sized just above the largest expected ring + a chip's worth of margin
+    # to keep the graph filling the panel rather than sitting in the middle.
+    figsize = (6.0, 6.0)
     if n_obj <= 1:
         radius = 3.0
     elif n_obj == 2:
@@ -191,11 +192,10 @@ def render_graph(
         radius = min(3.2 + 0.45 * (n_obj - 3), 5.0)
 
     node_r = 0.32
-    view_half_x = 6.8
-    view_half_y = 4.8
+    view_half = 6.0
 
     pos = _radial_layout(graph, radius, node_r)
-    fig, ax = plt.subplots(figsize=figsize, dpi=130)
+    fig, ax = plt.subplots(figsize=figsize, dpi=200)
     ax.axis("off")
     bg = "#fdf0e9"
     ax.set_facecolor(bg)
@@ -350,8 +350,8 @@ def render_graph(
         title += f"  |  subtask={sub}"
     ax.set_title(title, fontsize=14)
 
-    ax.set_xlim(-view_half_x, view_half_x)
-    ax.set_ylim(-view_half_y, view_half_y)
+    ax.set_xlim(-view_half, view_half)
+    ax.set_ylim(-view_half, view_half)
     ax.set_aspect("equal")
     # No ``bbox_inches='tight'``: cropping to visible content would defeat the
     # fixed figsize/viewport and re-introduce per-frame size drift.
