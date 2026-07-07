@@ -251,7 +251,7 @@ class GraphObsBuilder:
         segs_by_cam = self._read_batched_segs()
         if self.bypass_teemo:
             return self._zero_obs(device)
-        begin_frame_cache()
+        begin_frame_cache(getattr(self.env.unwrapped, "scene", None))
         try:
             packed = [
                 self._pack_one(

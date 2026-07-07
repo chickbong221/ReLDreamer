@@ -255,10 +255,35 @@ _SCENE_CACHE_KEYS = (
 )
 
 
-def begin_frame_cache() -> None:
-    """Start one-frame memoization for the graph env loop."""
+def begin_frame_cache(scene: Any = None) -> None:
+    """Start one-frame memoization for the graph env loop.
+
+    When ``scene`` is provided and supports the GPU rigid-body buffer, the
+    whole ``cuda_rigid_body_data`` tensor is pulled to CPU once here so every
+    downstream pose read can index into a plain numpy array instead of firing
+    ManiSkill's per-call Pose + tensor-wrapper chain (the top allocator on
+    the graph hot path). Falls back silently when: no scene, no GPU sim,
+    parallel-in-single-scene mode (needs per-entity scene-offset subtraction
+    that can't be replicated from the raw buffer alone), or any exception --
+    downstream ``entity.pose`` fallback then behaves as before.
+    """
     global _FRAME_CACHE
     _FRAME_CACHE = {"np": {}, "pose": {}, "grasp": {}, "forces": {}}
+    if scene is None:
+        return
+    if getattr(scene, "parallel_in_single_scene", False):
+        return
+    px = getattr(scene, "px", None)
+    if px is None:
+        return
+    getter = getattr(px, "cuda_rigid_body_data", None)
+    if getter is None:
+        return
+    try:
+        buf_np = getter.torch().detach().cpu().numpy()
+    except Exception:
+        return
+    _FRAME_CACHE["rigid_body_data"] = buf_np
 
 
 def end_frame_cache() -> None:
@@ -352,11 +377,27 @@ def get_tcp_pose(agent) -> Any:
     return agent.tcp.pose
 
 
+def _tcp_pose_pq(agent):
+    """Fast path for TCP pose: index ``agent.tcp`` in the raw rigid-body buffer
+    when both are available; otherwise fall back to ``get_tcp_pose(agent)``.
+
+    Fetch's ``agent.tcp_pose`` is a computed property that reads TCP through
+    the same Link.pose chain the entity fast path bypasses; hitting it once
+    per frame is small compared to the ``entity.pose`` fanout, but still
+    worth eliminating since we already have the buffer cached."""
+    buf = _FRAME_CACHE.get("rigid_body_data") if _FRAME_CACHE is not None else None
+    if buf is not None:
+        tcp_link = getattr(agent, "tcp", None)
+        if tcp_link is not None:
+            hit = _pose_pq_from_buffer(tcp_link, buf)
+            if hit is not None:
+                return hit
+    pose = get_tcp_pose(agent)
+    return _to_np(pose.p), _to_np(pose.q)
+
+
 def _tcp_pose_world_cached(agent, env_idx: int) -> np.ndarray:
-    pq = _frame_np(
-        "tcp_pq",
-        lambda: (lambda pose: (_to_np(pose.p), _to_np(pose.q)))(get_tcp_pose(agent)),
-    )
+    pq = _frame_np("tcp_pq", lambda: _tcp_pose_pq(agent))
     p, q = pq
     if p.ndim == 2:
         p = p[env_idx]
@@ -529,14 +570,61 @@ def per_env_segmentation_id_map(env, env_idx: int) -> Dict[int, Any]:
     return res
 
 
+def _pose_pq_from_buffer(entity, buf: np.ndarray):
+    """Fast path: read ``(p, q)`` for every env row of ``entity`` directly out
+    of the pre-cached ``cuda_rigid_body_data`` numpy buffer.
+
+    Returns ``None`` -- caller must fall back to ``.pose`` -- when the entity
+    is not represented in that buffer: static / hidden actors, entities that
+    do not carry a ``_body_data_index`` (e.g. some Articulation views), out-
+    of-range indices, or malformed buffers.
+    """
+    if getattr(entity, "px_body_type", None) == "static":
+        return None
+    if getattr(entity, "hidden", False):
+        return None
+    idx = getattr(entity, "_body_data_index", None)
+    if idx is None:
+        return None
+    try:
+        idx_np = _to_np(idx).astype(np.int64, copy=False).reshape(-1)
+    except Exception:
+        return None
+    if idx_np.size == 0:
+        return None
+    if buf.ndim != 2 or buf.shape[1] < 7:
+        return None
+    max_idx = int(idx_np.max())
+    min_idx = int(idx_np.min())
+    if min_idx < 0 or max_idx >= buf.shape[0]:
+        return None
+    rows = buf[idx_np]  # (N, D) numpy view; downstream indexing is free.
+    return rows[:, :3], rows[:, 3:7]
+
+
+def _resolve_pose_pq(entity):
+    """Return ``(p_np, q_np)`` for ``entity``, preferring the raw-buffer fast
+    path when available and falling back to ``.pose`` for everything else."""
+    buf = _FRAME_CACHE.get("rigid_body_data") if _FRAME_CACHE is not None else None
+    if buf is not None:
+        hit = _pose_pq_from_buffer(entity, buf)
+        if hit is not None:
+            return hit
+    pose = getattr(entity, "pose", None)
+    if pose is None:
+        return None
+    return _to_np(pose.p), _to_np(pose.q)
+
+
 def entity_pose_world_array(entity, env_idx: int) -> Optional[np.ndarray]:
     """Pose row of ``entity`` for parallel env ``env_idx``.
 
     ``pose.p`` rows follow ``entity._objs`` order, not global env order. The
-    ``.pose`` accessor on ManiSkill Actor / Link / Articulation returns a
-    fresh Pose object wrapping a fresh CUDA tensor slice on every call, so
-    reading it must only happen on a frame-cache miss -- reading before the
-    cache lookup defeats the cache and multiplies allocations by ``num_envs``.
+    fast path indexes a pre-fetched ``cuda_rigid_body_data`` numpy buffer via
+    ``entity._body_data_index`` and never touches ManiSkill's ``.pose``
+    accessor, which otherwise allocates a fresh Pose + tensor slice + torch
+    dispatch context per call and drives the graph-only RAM slope. Static /
+    hidden / CPU-sim / index-less entities fall back to the accessor.
     """
     if entity is None:
         return None
@@ -546,18 +634,16 @@ def entity_pose_world_array(entity, env_idx: int) -> Optional[np.ndarray]:
     if _FRAME_CACHE is not None:
         hit = _FRAME_CACHE["pose"].get(id(entity))
         if hit is None:
-            pose = getattr(entity, "pose", None)
-            if pose is None:
+            hit = _resolve_pose_pq(entity)
+            if hit is None:
                 return None
-            hit = (_to_np(pose.p), _to_np(pose.q))
             _FRAME_CACHE["pose"][id(entity)] = hit
         p, q = hit
     else:
-        pose = getattr(entity, "pose", None)
-        if pose is None:
+        hit = _resolve_pose_pq(entity)
+        if hit is None:
             return None
-        p = _to_np(pose.p)
-        q = _to_np(pose.q)
+        p, q = hit
     if p.ndim == 2:
         if row >= p.shape[0]:
             return None

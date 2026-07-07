@@ -408,5 +408,236 @@ class PoseAccessorHotPathTests(unittest.TestCase):
         )
 
 
+class RawBufferPoseFastPathTests(unittest.TestCase):
+    """Guard the raw-rigid-body-buffer bypass of ManiSkill's ``.pose`` chain.
+
+    The fast path is what actually eliminates the top allocator on the graph
+    hot path (Link.pose / Actor.pose / cuda_rigid_body_data.torch() slice).
+    These tests assert both correctness (the fast path returns the same rows
+    the buffer would if indexed by hand) and, more importantly, that
+    ``entity.pose`` and ``agent.tcp_pose`` are never fired when the fast
+    path is active.
+    """
+
+    def _make_scene(self, buffer_np):
+        class _Getter:
+            def __init__(self, buf):
+                self._buf = buf
+            def torch(self_getter):
+                class _T:
+                    def __init__(self, arr):
+                        self._arr = arr
+                    def detach(_self):
+                        return _self
+                    def cpu(_self):
+                        return _self
+                    def numpy(_self):
+                        return self_getter._buf
+                return _T(self_getter._buf)
+
+        class _Px:
+            def __init__(self, buf):
+                self.cuda_rigid_body_data = _Getter(buf)
+
+        class _Scene:
+            def __init__(self, buf):
+                self.px = _Px(buf)
+                self.parallel_in_single_scene = False
+
+        return _Scene(buffer_np)
+
+    def test_entity_pose_uses_fast_path_and_skips_accessor(self):
+        from teemo_sim_probe.adapters.privileged_state import (
+            begin_frame_cache, end_frame_cache, entity_pose_world_array,
+        )
+
+        num_envs = 4
+        total_bodies = 10
+        buf = np.zeros((total_bodies, 13), dtype=np.float32)
+        for i in range(num_envs):
+            buf[i + 3] = np.array(
+                [i + 0.1, i + 0.2, i + 0.3, 1.0, 0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0]
+            )
+
+        class _Entity:
+            def __init__(self):
+                self._body_data_index = np.array(
+                    [3, 4, 5, 6], dtype=np.int64,
+                )
+                self._objs = [None] * num_envs
+                self.px_body_type = "dynamic"
+                self.pose_reads = 0
+
+            @property
+            def pose(self):
+                self.pose_reads += 1
+                raise AssertionError(
+                    ".pose must not fire when the raw-buffer fast path is active"
+                )
+
+        entity = _Entity()
+        scene = self._make_scene(buf)
+
+        begin_frame_cache(scene)
+        try:
+            for env_idx in range(num_envs):
+                out = entity_pose_world_array(entity, env_idx)
+                self.assertIsNotNone(out)
+                expected = np.array(
+                    [env_idx + 0.1, env_idx + 0.2, env_idx + 0.3,
+                     1.0, 0.0, 0.0, 0.0]
+                )
+                np.testing.assert_allclose(out, expected, atol=1e-6)
+        finally:
+            end_frame_cache()
+
+        self.assertEqual(
+            entity.pose_reads, 0,
+            "fast path leaked into the .pose accessor",
+        )
+
+    def test_static_entity_falls_back_to_pose_accessor(self):
+        from teemo_sim_probe.adapters.privileged_state import (
+            begin_frame_cache, end_frame_cache, entity_pose_world_array,
+        )
+
+        num_envs = 2
+        buf = np.zeros((5, 13), dtype=np.float32)
+
+        class _P:
+            def __init__(self, p, q):
+                self.p, self.q = p, q
+
+        class _Entity:
+            def __init__(self):
+                self.px_body_type = "static"
+                self._body_data_index = np.array([0, 1], dtype=np.int64)
+                self._objs = [None] * num_envs
+                self._batched = np.tile(
+                    np.array([9.0, 9.0, 9.0, 1.0, 0.0, 0.0, 0.0]), (num_envs, 1),
+                )
+                self.pose_reads = 0
+
+            @property
+            def pose(self):
+                self.pose_reads += 1
+                b = self._batched
+                return _P(b[:, :3], b[:, 3:])
+
+        entity = _Entity()
+        scene = self._make_scene(buf)
+
+        begin_frame_cache(scene)
+        try:
+            for env_idx in range(num_envs):
+                out = entity_pose_world_array(entity, env_idx)
+                self.assertIsNotNone(out)
+                np.testing.assert_allclose(
+                    out, np.array([9.0, 9.0, 9.0, 1.0, 0.0, 0.0, 0.0]),
+                )
+        finally:
+            end_frame_cache()
+
+        self.assertEqual(
+            entity.pose_reads, 1,
+            "static entity should fall back to .pose exactly once per frame",
+        )
+
+    def test_tcp_pose_uses_fast_path_and_skips_accessor(self):
+        from teemo_sim_probe.adapters.privileged_state import (
+            begin_frame_cache, end_frame_cache, _tcp_pose_world_cached,
+        )
+
+        num_envs = 3
+        buf = np.zeros((6, 13), dtype=np.float32)
+        for i in range(num_envs):
+            buf[i] = np.array(
+                [0.5 + i, 0.6, 0.7, 1.0, 0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0]
+            )
+
+        class _TcpLink:
+            def __init__(self):
+                self._body_data_index = np.array([0, 1, 2], dtype=np.int64)
+                self._objs = [None] * num_envs
+                self.px_body_type = "dynamic"
+
+        class _Agent:
+            def __init__(self):
+                self.tcp = _TcpLink()
+                self.tcp_pose_reads = 0
+
+            @property
+            def tcp_pose(self):
+                self.tcp_pose_reads += 1
+                raise AssertionError(
+                    "tcp_pose must not fire when the raw-buffer fast path is active"
+                )
+
+        agent = _Agent()
+        scene = self._make_scene(buf)
+
+        begin_frame_cache(scene)
+        try:
+            for env_idx in range(num_envs):
+                out = _tcp_pose_world_cached(agent, env_idx)
+                np.testing.assert_allclose(
+                    out,
+                    np.array([0.5 + env_idx, 0.6, 0.7, 1.0, 0.0, 0.0, 0.0]),
+                    atol=1e-6,
+                )
+        finally:
+            end_frame_cache()
+
+        self.assertEqual(
+            agent.tcp_pose_reads, 0,
+            "fast path leaked into the tcp_pose accessor",
+        )
+
+    def test_parallel_in_single_scene_disables_fast_path(self):
+        from teemo_sim_probe.adapters.privileged_state import (
+            begin_frame_cache, end_frame_cache, entity_pose_world_array,
+        )
+
+        num_envs = 2
+        buf = np.zeros((4, 13), dtype=np.float32)
+        scene = self._make_scene(buf)
+        scene.parallel_in_single_scene = True
+
+        class _P:
+            def __init__(self, p, q):
+                self.p, self.q = p, q
+
+        class _Entity:
+            def __init__(self):
+                self._body_data_index = np.array([0, 1], dtype=np.int64)
+                self._objs = [None] * num_envs
+                self.px_body_type = "dynamic"
+                self._batched = np.tile(
+                    np.array([1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0]), (num_envs, 1),
+                )
+                self.pose_reads = 0
+
+            @property
+            def pose(self):
+                self.pose_reads += 1
+                b = self._batched
+                return _P(b[:, :3], b[:, 3:])
+
+        entity = _Entity()
+
+        begin_frame_cache(scene)
+        try:
+            entity_pose_world_array(entity, 0)
+            entity_pose_world_array(entity, 1)
+        finally:
+            end_frame_cache()
+
+        self.assertEqual(
+            entity.pose_reads, 1,
+            "fast path must be disabled under parallel_in_single_scene "
+            "and fall back through .pose exactly once per frame",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
