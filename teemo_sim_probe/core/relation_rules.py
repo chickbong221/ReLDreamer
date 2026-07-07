@@ -488,6 +488,19 @@ def _object_pairs(graph: Graph) -> List[Tuple[Node, Node]]:
     return out
 
 
+def _pair_planar_distance(a: Node, b: Node) -> Optional[float]:
+    """Center-to-center planar distance in metres, or None when either pose
+    is missing. Uses the object-frame origin; conservative for the physics
+    short-circuit because true contact distance is always <= center
+    distance + summed extents."""
+    if a.pose_world is None or b.pose_world is None:
+        return None
+    return float(np.linalg.norm(
+        np.asarray(a.pose_world[:2], dtype=float)
+        - np.asarray(b.pose_world[:2], dtype=float)
+    ))
+
+
 def object_object_edges(
     graph: Graph, state: PrivilegedState, cfg: dict
 ) -> List[Edge]:
@@ -505,6 +518,13 @@ def object_object_edges(
     """
     eps_contact = cfg["contact"]["eps_force"]
     min_vertical_ratio = cfg["support"].get("min_vertical_force_ratio", 0.5)
+    # Skip the (expensive) GPU pair-force query when object centers are
+    # farther apart than any physically possible contact distance. Two rigid
+    # bodies cannot exert a contact force at planar distance greater than
+    # roughly the sum of their bounding half-extents; for ManiSkill scenes
+    # nothing exceeds ~1 m, so a 2 m default is byte-identical to the
+    # un-gated path. Set to 0 (or negative) in cfg to disable.
+    pair_force_max_distance = float(cfg.get("pair_force_max_distance", 2.0))
 
     aff_set = cfg.get("affordance_set")
     edges: List[Edge] = []
@@ -537,6 +557,14 @@ def object_object_edges(
                     break
         if contain_emitted:
             continue
+
+        # Physics short-circuit: pairs whose centers exceed the max plausible
+        # contact distance cannot produce a support / contact edge. Skipping
+        # eliminates the SAPIEN GPU query without changing edge output.
+        if pair_force_max_distance > 0.0:
+            planar = _pair_planar_distance(a, b)
+            if planar is not None and planar > pair_force_max_distance:
+                continue
 
         # Priorities 2 and 3: force-driven support / contact.
         ea = _resolve_entity(a, state)
