@@ -79,25 +79,28 @@ class Logger:
 _LIBC = None
 
 
-def _trim_native_heap() -> None:
+def _trim_native_heap() -> bool:
     """Return freed-but-retained glibc heap pages to the OS (Linux only).
 
     Small-object churn grows arenas glibc rarely shrinks, so RSS climbs
     linearly with zero Python-level retention; malloc_trim(0) releases it.
+    Returns whether the trim actually ran, so logs show if it is inert
+    (e.g. non-Linux platform).
     """
     global _LIBC
     if not sys.platform.startswith("linux"):
-        return
+        return False
     if _LIBC is None:
         import ctypes
         try:
             _LIBC = ctypes.CDLL("libc.so.6")
         except OSError:
-            return
+            return False
     try:
         _LIBC.malloc_trim(0)
+        return True
     except Exception:
-        pass
+        return False
 
 
 class _RamLogger:
@@ -307,12 +310,21 @@ def train(config: dict) -> None:
                 _log_env_stats(logger, envs, "train", global_step)
             if loss_metrics is not None:
                 _log_losses(logger, loss_metrics, global_step)
-            _trim_native_heap()
+            trimmed = _trim_native_heap()
             ram = ram_logger.log(logger, global_step)
             ram_str = (f" rss={ram[0] / 1024:.1f}GB avail={ram[1] / 1024:.1f}GB"
                        if ram else "")
             print(f"[sac] step={global_step}/{total_steps} "
                   f"replay={len(replay)}{ram_str}", flush=True)
+            if graph_train is not None:
+                import gc
+                stats = graph_train.cache_stats()
+                stats["py_objects"] = len(gc.get_objects())
+                stats["malloc_trim"] = int(trimmed)
+                for k, v in stats.items():
+                    logger.scalar(f"leak/{k}", v, global_step)
+                print("[leak] " + " ".join(f"{k}={v}" for k, v in stats.items()),
+                      flush=True)
 
         if eval_every > 0 and global_step - last_eval >= eval_every:
             last_eval = global_step

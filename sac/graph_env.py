@@ -154,6 +154,36 @@ class GraphObsBuilder:
             "graph_n_edges":      (),
         }
 
+    def cache_stats(self) -> Dict[str, int]:
+        """Sizes of every container that could grow without bound, for leak
+        triage: logged at the train log interval, a linear counter here names
+        the leak directly."""
+        stats: Dict[str, int] = {}
+        scene = getattr(self.env.unwrapped, "scene", None)
+        if scene is not None:
+            d = getattr(scene, "__dict__", {})
+            for key in (
+                "_teemo_sidxs_cache", "_teemo_sliced_views",
+                "_teemo_row_sliced_views", "_teemo_resolve_cache",
+                "_teemo_per_env_seg_maps",
+            ):
+                v = d.get(key)
+                if v is not None:
+                    stats[key.replace("_teemo_", "")] = len(v)
+            for key in ("pairwise_contact_queries", "actor_views"):
+                v = getattr(scene, key, None)
+                if v is not None:
+                    stats[key] = len(v)
+        stats["match_key"] = sum(len(b._match_key_cache) for b in self.builders)
+        stats["edge_history"] = sum(len(b._edge_history) for b in self.builders)
+        stats["selector_history"] = sum(
+            len(b.selector._history) for b in self.builders
+        )
+        stats["temporal_values"] = sum(
+            len(b.temporal._values) for b in self.builders
+        )
+        return stats
+
     def _zero_obs(self, device: torch.device) -> Dict[str, torch.Tensor]:
         out: Dict[str, torch.Tensor] = {}
         for k, shape in self.obs_spec_shapes.items():
