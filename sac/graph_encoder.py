@@ -1,26 +1,22 @@
-"""Graph encoder for SAC.
+"""sg2im-style graph encoder.
 
-Structure per Q1-Q7 design:
-  node token    = Emb(c_i)                           -- category only
-  edge token    = Emb(r_k)                           -- flat (relation:label)
-  L layers of MaskedGraphTripleConv (sg2im-style)
-  staleness    = alpha_i = exp(-tau_i / K_soft), appended AFTER the last conv
-  readout      = MLP([x_ee ; MeanPool(X_obj)])
-
-Padding is masked out of the graph conv (scatter_add uses edge_valid so invalid
-triples contribute zero to pooled features and to the divisor) and out of the
-readout mean.
+Padded backing tensors (B, N_max) / (B, E_max) plus n_nodes/n_edges counts are
+converted to a flat sg2im-style batch (obj_vecs, pred_vecs, edges, node_to_sample)
+inside forward. Categorical predicates only. L layers of GraphTripleConv on
+the flat batch, followed by ee-keyed segmented-softmax attention with a
+log(conf) bias on the pre-softmax logits, then MLP([x_ee ; x_obj_attended]).
 """
 
 from __future__ import annotations
 
+import math
 from typing import Dict, List
 
 import torch
 import torch.nn as nn
 
 
-def _mlp(dims: List[int], last_act: bool = True) -> nn.Sequential:
+def _mlp(dims: List[int], last_act: bool = False) -> nn.Sequential:
     layers: List[nn.Module] = []
     for i in range(len(dims) - 1):
         layers.append(nn.Linear(dims[i], dims[i + 1]))
@@ -29,68 +25,54 @@ def _mlp(dims: List[int], last_act: bool = True) -> nn.Sequential:
     return nn.Sequential(*layers)
 
 
-class MaskedGraphTripleConv(nn.Module):
-    """sg2im GraphTripleConv with an edge_valid mask.
-
-    Invalid triples multiply their post-net1 subject/predicate/object outputs
-    by 0 before scatter_add, and contribute 0 to the pooling divisor. Padded
-    nodes with no incoming valid triples end up pooled = 0.
-    """
+class GraphTripleConv(nn.Module):
+    """Flat sg2im GraphTripleConv: (O, D), (T, D), (T, 2) -> (O, D), (T, D)."""
 
     def __init__(self, input_dim: int, output_dim: int, hidden_dim: int = 512):
         super().__init__()
-        self.input_dim = input_dim
-        self.output_dim = output_dim
         self.hidden_dim = hidden_dim
+        self.output_dim = output_dim
         self.net1 = _mlp(
-            [3 * input_dim, hidden_dim, 2 * hidden_dim + output_dim],
-            last_act=False,
+            [3 * input_dim, hidden_dim, 2 * hidden_dim + output_dim], last_act=False,
         )
         self.net2 = _mlp([hidden_dim, hidden_dim, output_dim], last_act=False)
 
     def forward(
         self,
-        obj_vecs: torch.Tensor,     # (B, N, D_in)
-        pred_vecs: torch.Tensor,    # (B, T, D_in)
-        edges: torch.Tensor,        # (B, T, 2) long -- [s_idx, o_idx]
-        edge_valid: torch.Tensor,   # (B, T) float
+        obj_vecs: torch.Tensor,   # (O, D_in)
+        pred_vecs: torch.Tensor,  # (T, D_in)
+        edges: torch.Tensor,      # (T, 2) long
     ):
-        B, N, D_in = obj_vecs.shape
-        T = pred_vecs.size(1)
+        O = obj_vecs.size(0)
+        T = pred_vecs.size(0)
         H, D_out = self.hidden_dim, self.output_dim
+        dtype, device = obj_vecs.dtype, obj_vecs.device
 
-        s_idx = edges[..., 0]                                  # (B, T)
-        o_idx = edges[..., 1]                                  # (B, T)
-        s_gather = s_idx.unsqueeze(-1).expand(-1, -1, D_in)
-        o_gather = o_idx.unsqueeze(-1).expand(-1, -1, D_in)
-        cur_s = torch.gather(obj_vecs, 1, s_gather)            # (B, T, D_in)
-        cur_o = torch.gather(obj_vecs, 1, o_gather)            # (B, T, D_in)
+        s_idx = edges[:, 0]
+        o_idx = edges[:, 1]
 
-        t_vecs = torch.cat([cur_s, pred_vecs, cur_o], dim=-1)  # (B, T, 3*D_in)
-        new_t = self.net1(t_vecs)                              # (B, T, 2H + D_out)
+        cur_s = obj_vecs[s_idx]
+        cur_o = obj_vecs[o_idx]
+        new_t = self.net1(torch.cat([cur_s, pred_vecs, cur_o], dim=-1))
 
-        m = edge_valid.unsqueeze(-1)
-        new_s = new_t[..., :H] * m
-        new_p = new_t[..., H:H + D_out] * m
-        new_o = new_t[..., H + D_out:2 * H + D_out] * m
+        new_s = new_t[:, :H]
+        new_p = new_t[:, H:H + D_out]
+        new_o = new_t[:, H + D_out:2 * H + D_out]
 
-        pooled = torch.zeros(B, N, H, device=obj_vecs.device, dtype=obj_vecs.dtype)
-        pooled.scatter_add_(1, s_idx.unsqueeze(-1).expand(-1, -1, H), new_s)
-        pooled.scatter_add_(1, o_idx.unsqueeze(-1).expand(-1, -1, H), new_o)
+        pooled = torch.zeros(O, H, dtype=dtype, device=device)
+        pooled.scatter_add_(0, s_idx.unsqueeze(-1).expand(-1, H), new_s)
+        pooled.scatter_add_(0, o_idx.unsqueeze(-1).expand(-1, H), new_o)
 
-        counts = torch.zeros(B, N, device=obj_vecs.device, dtype=obj_vecs.dtype)
-        counts.scatter_add_(1, s_idx, edge_valid)
-        counts.scatter_add_(1, o_idx, edge_valid)
-        counts = counts.clamp(min=1.0).unsqueeze(-1)
-        pooled = pooled / counts
+        counts = torch.zeros(O, dtype=dtype, device=device)
+        ones = torch.ones(T, dtype=dtype, device=device)
+        counts.scatter_add_(0, s_idx, ones)
+        counts.scatter_add_(0, o_idx, ones)
+        pooled = pooled / counts.clamp(min=1.0).unsqueeze(-1)
 
-        new_obj = self.net2(pooled)                            # (B, N, D_out)
-        return new_obj, new_p
+        return self.net2(pooled), new_p
 
 
 class GraphEncoder(nn.Module):
-    """Two-layer masked triple conv + [x_ee ; MeanPool(X_obj)] readout."""
-
     def __init__(
         self,
         node_vocab_size: int,
@@ -102,48 +84,97 @@ class GraphEncoder(nn.Module):
     ):
         super().__init__()
         self.out_dim = out_dim
-        # padding_idx=0 forces the pad row to a zero embedding with no grad.
+        self.embed_dim = embed_dim
         self.node_emb = nn.Embedding(node_vocab_size, embed_dim, padding_idx=0)
         self.edge_emb = nn.Embedding(edge_vocab_size, embed_dim, padding_idx=0)
         self.convs = nn.ModuleList([
-            MaskedGraphTripleConv(embed_dim, embed_dim, hidden_dim=hidden_dim)
+            GraphTripleConv(embed_dim, embed_dim, hidden_dim=hidden_dim)
             for _ in range(num_layers)
         ])
-        readout_in = 2 * (embed_dim + 1)
-        self.readout = _mlp([readout_in, out_dim, out_dim], last_act=False)
+        self.attn_scale = 1.0 / math.sqrt(embed_dim)
+        self.readout = _mlp([2 * embed_dim, out_dim, out_dim], last_act=False)
 
     def forward(self, obs: Dict[str, torch.Tensor]) -> torch.Tensor:
         node_ids = obs["graph_node_ids"].long()
-        node_valid = obs["graph_node_valid"].float()
-        ee_mask = obs["graph_node_ee_mask"].float()
+        node_ee = obs["graph_node_ee_mask"].float()
         node_conf = obs["graph_node_conf"].float()
         edge_src = obs["graph_edge_src"].long()
         edge_dst = obs["graph_edge_dst"].long()
         edge_pred = obs["graph_edge_pred"].long()
-        edge_valid = obs["graph_edge_valid"].float()
+        n_nodes = obs["graph_n_nodes"].long()
+        n_edges = obs["graph_n_edges"].long()
 
-        obj_vecs = self.node_emb(node_ids)                  # (B, N, D)
-        pred_vecs = self.edge_emb(edge_pred)                # (B, T, D)
-        edges = torch.stack([edge_src, edge_dst], dim=-1)   # (B, T, 2)
+        B, N_max = node_ids.shape
+        E_max = edge_src.size(1)
+        device = node_ids.device
+        D = self.embed_dim
+
+        node_arange = torch.arange(N_max, device=device).unsqueeze(0)
+        node_mask = node_arange < n_nodes.unsqueeze(1)              # (B, N_max)
+        node_ids_flat = node_ids[node_mask]                          # (O,)
+        node_conf_flat = node_conf[node_mask]
+        node_ee_flat = node_ee[node_mask]
+
+        O_total = int(node_ids_flat.size(0))
+        if O_total == 0:
+            return torch.zeros(B, self.out_dim, device=device, dtype=node_conf.dtype)
+
+        sample_grid_n = torch.arange(B, device=device).unsqueeze(1).expand(-1, N_max)
+        node_to_sample = sample_grid_n[node_mask]                    # (O,)
+
+        node_offset = torch.zeros(B, device=device, dtype=torch.long)
+        node_offset[1:] = n_nodes[:-1].cumsum(0)
+
+        edge_arange = torch.arange(E_max, device=device).unsqueeze(0)
+        edge_mask = edge_arange < n_edges.unsqueeze(1)               # (B, E_max)
+        edge_src_local = edge_src[edge_mask]
+        edge_dst_local = edge_dst[edge_mask]
+        edge_pred_flat = edge_pred[edge_mask]
+
+        sample_grid_e = torch.arange(B, device=device).unsqueeze(1).expand(-1, E_max)
+        edge_to_sample = sample_grid_e[edge_mask]
+        per_edge_offset = node_offset[edge_to_sample]
+        edge_src_flat = edge_src_local + per_edge_offset
+        edge_dst_flat = edge_dst_local + per_edge_offset
+
+        obj_vecs = self.node_emb(node_ids_flat)                      # (O, D)
+        pred_vecs = self.edge_emb(edge_pred_flat)                    # (T, D)
+        edges = torch.stack([edge_src_flat, edge_dst_flat], dim=-1)  # (T, 2)
 
         for conv in self.convs:
-            obj_vecs, pred_vecs = conv(obj_vecs, pred_vecs, edges, edge_valid)
+            obj_vecs, pred_vecs = conv(obj_vecs, pred_vecs, edges)
 
-        obj_vecs = torch.cat([obj_vecs, node_conf.unsqueeze(-1)], dim=-1)  # (B, N, D+1)
+        ee_indices = torch.nonzero(node_ee_flat > 0.5, as_tuple=False).squeeze(-1)
+        x_ee = obj_vecs[ee_indices]                                  # (B, D)
 
-        ee_denom = ee_mask.sum(dim=1, keepdim=True).clamp(min=1.0)
-        x_ee = (obj_vecs * ee_mask.unsqueeze(-1)).sum(dim=1) / ee_denom
+        query_per_node = x_ee[node_to_sample]                        # (O, D)
+        scores = (query_per_node * obj_vecs).sum(-1) * self.attn_scale
+        scores = scores + torch.log(node_conf_flat.clamp(min=1e-8))
+        scores = scores.masked_fill(node_ee_flat > 0.5, float("-inf"))
 
-        obj_mask = node_valid * (1.0 - ee_mask)
-        obj_denom = obj_mask.sum(dim=1, keepdim=True).clamp(min=1.0)
-        x_obj = (obj_vecs * obj_mask.unsqueeze(-1)).sum(dim=1) / obj_denom
+        sample_max = torch.full((B,), float("-inf"), device=device, dtype=scores.dtype)
+        sample_max = sample_max.scatter_reduce(
+            0, node_to_sample, scores.detach(), reduce="amax", include_self=True,
+        )
+        sample_max = torch.where(
+            torch.isinf(sample_max), torch.zeros_like(sample_max), sample_max,
+        )
+        exp_scores = (scores - sample_max[node_to_sample]).exp()
+        denom = torch.zeros(B, device=device, dtype=exp_scores.dtype)
+        denom.scatter_add_(0, node_to_sample, exp_scores)
+        attn = exp_scores / denom[node_to_sample].clamp(min=1e-8)    # (O,)
+
+        weighted = obj_vecs * attn.unsqueeze(-1)
+        x_obj = torch.zeros(B, D, device=device, dtype=obj_vecs.dtype)
+        x_obj.scatter_add_(0, node_to_sample.unsqueeze(-1).expand(-1, D), weighted)
 
         return self.readout(torch.cat([x_ee, x_obj], dim=-1))
 
 
 GRAPH_OBS_KEYS = (
-    "graph_node_ids", "graph_node_valid", "graph_node_ee_mask", "graph_node_conf",
-    "graph_edge_src", "graph_edge_dst", "graph_edge_pred", "graph_edge_valid",
+    "graph_node_ids", "graph_node_ee_mask", "graph_node_conf",
+    "graph_edge_src", "graph_edge_dst", "graph_edge_pred",
+    "graph_n_nodes", "graph_n_edges",
 )
 
 

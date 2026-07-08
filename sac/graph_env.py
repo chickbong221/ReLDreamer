@@ -104,6 +104,7 @@ class GraphObsBuilder:
         cameras: List[str],
         primary_camera: str,
         bypass_teemo: bool = False,
+        staleness_enabled: bool = True,
     ):
         self.env = env
         self.num_envs = int(num_envs)
@@ -113,6 +114,7 @@ class GraphObsBuilder:
         self.e_max = int(e_max)
         self.k_soft = float(k_soft)
         self.bypass_teemo = bool(bypass_teemo)
+        self.staleness_enabled = bool(staleness_enabled)
         self.cameras = list(cameras)
         if primary_camera not in self.cameras:
             raise ValueError(
@@ -142,13 +144,13 @@ class GraphObsBuilder:
         """Per-env shapes for each graph key, consumed by the replay buffer."""
         return {
             "graph_node_ids":     (self.n_max,),
-            "graph_node_valid":   (self.n_max,),
             "graph_node_ee_mask": (self.n_max,),
             "graph_node_conf":    (self.n_max,),
             "graph_edge_src":     (self.e_max,),
             "graph_edge_dst":     (self.e_max,),
             "graph_edge_pred":    (self.e_max,),
-            "graph_edge_valid":   (self.e_max,),
+            "graph_n_nodes":      (),
+            "graph_n_edges":      (),
         }
 
     def _zero_obs(self, device: torch.device) -> Dict[str, torch.Tensor]:
@@ -178,6 +180,7 @@ class GraphObsBuilder:
         return pack_graph(
             graph, self.node_vocab, self.edge_vocab,
             n_max=self.n_max, e_max=self.e_max, k_soft=self.k_soft,
+            staleness_enabled=self.staleness_enabled,
         )
 
     def read_rgb(self, env_idx: int) -> np.ndarray:
@@ -347,4 +350,5 @@ def build_graph_obs(
         cameras=list(cameras),
         primary_camera=primary_camera,
         bypass_teemo=bool(graph_cfg.get("bypass_teemo", False)),
+        staleness_enabled=bool(graph_cfg.get("staleness_enabled", True)),
     )

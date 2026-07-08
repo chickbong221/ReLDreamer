@@ -63,10 +63,11 @@ from teemo_sim_probe.core.whitelist import (
 )
 
 
-# Quantile used to aggregate per-relation samples across all rollouts. Lower
-# than 1.0 so a single bad frame (autoreset transient, physics blow-up) can't
-# pin the bin edges to absurd values.
-_MINER_QUANTILE = 0.9
+# Quantile used to aggregate per-relation samples across all rollouts. Well
+# below 1.0 so bin edges reflect a typical operating range rather than the
+# demo's peak motion; also shields against transient outliers (autoreset
+# jumps, physics blow-ups).
+_MINER_QUANTILE = 0.6
 # Per-relation sanity ceiling. Anything above this is treated as a numerical
 # blow-up rather than a meaningful EE-operating range. Tuned for Fetch in a
 # kitchen scene (max reach ~1.5 m planar; ~1.2 m vertical).

@@ -200,7 +200,7 @@ def load_whitelist(path: str) -> Whitelist:
 # 5-label unsigned: 4 edges at max/5, 2*max/5, 3*max/5, 4*max/5.
 # 5-label signed:   4 edges at -3*max/5, -max/5, max/5, 3*max/5.
 # Sensitive 5-label signed changes keep the same fast outer thresholds but
-# shrink the stable center band to +/-max/10.
+# shrink the stable center band to +/-max/12.
 # Compatibility absolute edges are fixed because the score is already in [0,1].
 
 
@@ -221,8 +221,8 @@ def _equal_width_5_signed(max_v: float) -> Optional[List[float]]:
 def _sensitive_width_5_signed(max_v: float) -> Optional[List[float]]:
     if max_v <= 0 or not math.isfinite(max_v):
         return None
-    return [-3.0 * max_v / 5.0, -max_v / 10.0,
-            max_v / 10.0, 3.0 * max_v / 5.0]
+    return [-3.0 * max_v / 5.0, -max_v / 12.0,
+            max_v / 12.0, 3.0 * max_v / 5.0]
 
 
 # Relations and the kind of bin-derivation they use.
