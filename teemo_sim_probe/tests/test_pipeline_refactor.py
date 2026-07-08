@@ -126,9 +126,9 @@ class OneHopWhitelistTests(unittest.TestCase):
         self.assertAlmostEqual(bins["height-offset"][1], -0.06, places=6)
         self.assertAlmostEqual(bins["height-offset"][2], 0.06, places=6)
         self.assertAlmostEqual(bins["height-offset"][3], 0.18, places=6)
-        # Change relations use a narrower stable band: +/-v/10.
-        self.assertAlmostEqual(bins["planar-distance-change"][1], -0.01, places=6)
-        self.assertAlmostEqual(bins["planar-distance-change"][2], 0.01, places=6)
+        # Change relations use a narrower stable band: +/-v/12.
+        self.assertAlmostEqual(bins["planar-distance-change"][1], -0.10 / 12.0, places=6)
+        self.assertAlmostEqual(bins["planar-distance-change"][2], 0.10 / 12.0, places=6)
         # Compatibility absolute bins are always [1/3, 2/3].
         self.assertAlmostEqual(bins["grasp-compatibility"][0], 1.0 / 3.0, places=6)
         self.assertAlmostEqual(bins["contact-compatibility"][1], 2.0 / 3.0, places=6)
@@ -191,8 +191,8 @@ class OneHopWhitelistTests(unittest.TestCase):
         })
         bins = builder.payload()["bin_edges"]
         self.assertIn("grasp-compatibility-change", bins)
-        self.assertAlmostEqual(bins["grasp-compatibility-change"][1], -0.02)
-        self.assertAlmostEqual(bins["grasp-compatibility-change"][2], 0.02)
+        self.assertAlmostEqual(bins["grasp-compatibility-change"][1], -0.20 / 12.0)
+        self.assertAlmostEqual(bins["grasp-compatibility-change"][2], 0.20 / 12.0)
 
 
 class StaleEdgeTests(unittest.TestCase):
