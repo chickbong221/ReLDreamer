@@ -75,7 +75,6 @@ def pack_graph(
         if not e.masked
         and e.src in node_id_to_slot
         and e.dst in node_id_to_slot
-        and not (staleness_enabled and e.stale and e.relation not in _PHYSICAL_STATE)
     ]
     candidates.sort(key=_edge_priority)
     kept = candidates[:e_max]

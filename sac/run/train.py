@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 import tempfile
 import time
 from typing import Dict, List, Optional
@@ -73,6 +74,30 @@ class Logger:
     def close(self):
         if self.tb is not None:
             self.tb.close()
+
+
+_LIBC = None
+
+
+def _trim_native_heap() -> None:
+    """Return freed-but-retained glibc heap pages to the OS (Linux only).
+
+    Small-object churn grows arenas glibc rarely shrinks, so RSS climbs
+    linearly with zero Python-level retention; malloc_trim(0) releases it.
+    """
+    global _LIBC
+    if not sys.platform.startswith("linux"):
+        return
+    if _LIBC is None:
+        import ctypes
+        try:
+            _LIBC = ctypes.CDLL("libc.so.6")
+        except OSError:
+            return
+    try:
+        _LIBC.malloc_trim(0)
+    except Exception:
+        pass
 
 
 class _RamLogger:
@@ -160,9 +185,10 @@ def train(config: dict) -> None:
             node_vocab_size=len(graph_train.node_vocab),
             edge_vocab_size=len(graph_train.edge_vocab),
             embed_dim=int(graph_raw.get("embed_dim", 64)),
-            hidden_dim=int(graph_raw.get("hidden_dim", 256)),
+            hidden_dim=int(graph_raw.get("hidden_dim", 512)),
             out_dim=int(graph_raw.get("out_dim", 128)),
             num_layers=int(graph_raw.get("num_layers", 2)),
+            actor_gradient=bool(graph_raw.get("actor_gradient", False)),
         )
 
     agent = SACAgent(
@@ -281,6 +307,7 @@ def train(config: dict) -> None:
                 _log_env_stats(logger, envs, "train", global_step)
             if loss_metrics is not None:
                 _log_losses(logger, loss_metrics, global_step)
+            _trim_native_heap()
             ram = ram_logger.log(logger, global_step)
             ram_str = (f" rss={ram[0] / 1024:.1f}GB avail={ram[1] / 1024:.1f}GB"
                        if ram else "")

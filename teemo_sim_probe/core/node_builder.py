@@ -10,7 +10,7 @@ or articulation link cannot be discarded before the whitelist sees it.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -44,21 +44,23 @@ def _is_link(entity) -> bool:
     return type(entity).__name__ == "Link"
 
 
-def _is_robot_link(entity, robot_links: set) -> bool:
+def _is_robot_link(entity, robot_links: set, link_names=None) -> bool:
     if not _is_link(entity):
         return False
     if entity in robot_links:
         return True
     # Fallback by name match (merged views can break identity equality).
-    names = {getattr(l, "name", None) for l in robot_links}
-    return getattr(entity, "name", None) in names
+    if link_names is None:
+        link_names = {getattr(l, "name", None) for l in robot_links}
+    return getattr(entity, "name", None) in link_names
 
 
-def _is_ee_link(entity, ee_links: List[Any]) -> bool:
+def _is_ee_link(entity, ee_links: List[Any], link_names=None) -> bool:
     if entity in ee_links:
         return True
-    ee_names = {getattr(l, "name", None) for l in ee_links}
-    return getattr(entity, "name", None) in ee_names
+    if link_names is None:
+        link_names = {getattr(l, "name", None) for l in ee_links}
+    return getattr(entity, "name", None) in link_names
 
 
 def canonical_object_key(entity) -> str:
@@ -117,9 +119,17 @@ def _ingest_camera(
     masks: MaskAccumulator,
     *,
     need_masks: bool,
+    admit: Optional[Callable[[Any], bool]] = None,
 ) -> None:
-    """Union one camera's segmentation into the shared node dict."""
+    """Union one camera's segmentation into the shared node dict.
+
+    ``admit`` is an optional early whitelist gate: entities it rejects are
+    skipped before node construction. It must admit a superset of what the
+    downstream ``apply_whitelist`` keeps so the final graph is unchanged.
+    """
     ids, counts = np.unique(seg, return_counts=True)
+    robot_link_names = getattr(state, "robot_link_names", None)
+    ee_link_names = getattr(state, "ee_link_names", None)
     for seg_id, count in zip(ids, counts):
         seg_id = int(seg_id)
         if seg_id == 0 or count <= 0:
@@ -128,13 +138,16 @@ def _ingest_camera(
         if entity is None:
             continue
 
-        if _is_robot_link(entity, state.robot_links):
-            if _is_ee_link(entity, state.ee_links):
+        if _is_robot_link(entity, state.robot_links, robot_link_names):
+            if _is_ee_link(entity, state.ee_links, ee_link_names):
                 if need_masks:
                     masks.add("ee", mask_for_id(seg, seg_id))
                 nodes["ee"].visible = True
                 nodes["ee"].segmentation_ids.append(seg_id)
                 area_by_key["ee"] += int(count)
+            continue
+
+        if admit is not None and not admit(entity):
             continue
 
         key = canonical_object_key(entity)
@@ -159,6 +172,7 @@ def build_nodes(
     camera_override: Optional[str] = None,
     primary_camera: Optional[str] = None,
     need_masks: bool = True,
+    admit: Optional[Callable[[Any], bool]] = None,
 ) -> Tuple[Dict[str, Node], MaskAccumulator, str, np.ndarray]:
     """Return (nodes_by_id, masks, camera_name, rgb).
 
@@ -196,6 +210,7 @@ def build_nodes(
         _ingest_camera(
             cam_seg, state, nodes, area_by_key, masks,
             need_masks=need_masks and cam_name == cam,
+            admit=admit,
         )
 
     nodes["ee"].pixel_area = area_by_key["ee"]

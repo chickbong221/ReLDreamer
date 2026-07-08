@@ -3,8 +3,8 @@
 Padded backing tensors (B, N_max) / (B, E_max) plus n_nodes/n_edges counts are
 converted to a flat sg2im-style batch (obj_vecs, pred_vecs, edges, node_to_sample)
 inside forward. Categorical predicates only. L layers of GraphTripleConv on
-the flat batch, followed by ee-keyed segmented-softmax attention with a
-log(conf) bias on the pre-softmax logits, then MLP([x_ee ; x_obj_attended]).
+the flat batch, followed by a parametric attention readout with a learned
+pool query and Q/K/V projections over [node_conf ; obj_vec] inputs.
 """
 
 from __future__ import annotations
@@ -23,6 +23,12 @@ def _mlp(dims: List[int], last_act: bool = False) -> nn.Sequential:
         if last_act or i < len(dims) - 2:
             layers.append(nn.ReLU(inplace=True))
     return nn.Sequential(*layers)
+
+
+def _orthogonal_init(m: nn.Module) -> None:
+    if isinstance(m, nn.Linear):
+        nn.init.orthogonal_(m.weight.data)
+        m.bias.data.fill_(0.0)
 
 
 class GraphTripleConv(nn.Module):
@@ -78,7 +84,7 @@ class GraphEncoder(nn.Module):
         node_vocab_size: int,
         edge_vocab_size: int,
         embed_dim: int = 64,
-        hidden_dim: int = 256,
+        hidden_dim: int = 512,
         out_dim: int = 128,
         num_layers: int = 2,
     ):
@@ -91,12 +97,19 @@ class GraphEncoder(nn.Module):
             GraphTripleConv(embed_dim, embed_dim, hidden_dim=hidden_dim)
             for _ in range(num_layers)
         ])
+
+        self.pool_query = nn.Parameter(torch.randn(embed_dim) * 0.02)
+        self.W_K = nn.Linear(embed_dim + 1, embed_dim)
+        self.W_V = nn.Linear(embed_dim + 1, embed_dim)
+        self.W_O = nn.Linear(embed_dim, embed_dim)
+        for m in (self.W_K, self.W_V, self.W_O):
+            m.apply(_orthogonal_init)
+
         self.attn_scale = 1.0 / math.sqrt(embed_dim)
-        self.readout = _mlp([2 * embed_dim, out_dim, out_dim], last_act=False)
+        self.readout = _mlp([embed_dim, out_dim, out_dim], last_act=False)
 
     def forward(self, obs: Dict[str, torch.Tensor]) -> torch.Tensor:
         node_ids = obs["graph_node_ids"].long()
-        node_ee = obs["graph_node_ee_mask"].float()
         node_conf = obs["graph_node_conf"].float()
         edge_src = obs["graph_edge_src"].long()
         edge_dst = obs["graph_edge_dst"].long()
@@ -112,8 +125,7 @@ class GraphEncoder(nn.Module):
         node_arange = torch.arange(N_max, device=device).unsqueeze(0)
         node_mask = node_arange < n_nodes.unsqueeze(1)              # (B, N_max)
         node_ids_flat = node_ids[node_mask]                          # (O,)
-        node_conf_flat = node_conf[node_mask]
-        node_ee_flat = node_ee[node_mask]
+        node_conf_flat = node_conf[node_mask]                        # (O,)
 
         O_total = int(node_ids_flat.size(0))
         if O_total == 0:
@@ -144,13 +156,11 @@ class GraphEncoder(nn.Module):
         for conv in self.convs:
             obj_vecs, pred_vecs = conv(obj_vecs, pred_vecs, edges)
 
-        ee_indices = torch.nonzero(node_ee_flat > 0.5, as_tuple=False).squeeze(-1)
-        x_ee = obj_vecs[ee_indices]                                  # (B, D)
+        x_in = torch.cat([node_conf_flat.unsqueeze(-1), obj_vecs], dim=-1)  # (O, D+1)
+        K = self.W_K(x_in)                                           # (O, D)
+        V = self.W_V(x_in)                                           # (O, D)
 
-        query_per_node = x_ee[node_to_sample]                        # (O, D)
-        scores = (query_per_node * obj_vecs).sum(-1) * self.attn_scale
-        scores = scores + torch.log(node_conf_flat.clamp(min=1e-8))
-        scores = scores.masked_fill(node_ee_flat > 0.5, float("-inf"))
+        scores = (K * self.pool_query.unsqueeze(0)).sum(-1) * self.attn_scale
 
         sample_max = torch.full((B,), float("-inf"), device=device, dtype=scores.dtype)
         sample_max = sample_max.scatter_reduce(
@@ -164,11 +174,11 @@ class GraphEncoder(nn.Module):
         denom.scatter_add_(0, node_to_sample, exp_scores)
         attn = exp_scores / denom[node_to_sample].clamp(min=1e-8)    # (O,)
 
-        weighted = obj_vecs * attn.unsqueeze(-1)
-        x_obj = torch.zeros(B, D, device=device, dtype=obj_vecs.dtype)
-        x_obj.scatter_add_(0, node_to_sample.unsqueeze(-1).expand(-1, D), weighted)
+        weighted = V * attn.unsqueeze(-1)
+        pooled = torch.zeros(B, D, device=device, dtype=V.dtype)
+        pooled.scatter_add_(0, node_to_sample.unsqueeze(-1).expand(-1, D), weighted)
 
-        return self.readout(torch.cat([x_ee, x_obj], dim=-1))
+        return self.readout(self.W_O(pooled))
 
 
 GRAPH_OBS_KEYS = (

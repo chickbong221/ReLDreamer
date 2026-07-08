@@ -7,7 +7,7 @@ Pipeline: build_nodes -> apply_whitelist -> classify_pair_types
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -20,7 +20,7 @@ from .temporal_buffer import TemporalBuffer
 from .mask_extractor import MaskAccumulator
 from .selector import NodeSelector
 from .slot_manager import SlotManager
-from .whitelist import load_whitelist, resolve_whitelist_path
+from .whitelist import entity_match_key, load_whitelist, resolve_whitelist_path
 from ..adapters.privileged_state import get_privileged_state
 
 # Only physical-state relations survive on a frozen node. Spatial and
@@ -37,12 +37,14 @@ class GraphBuilder:
         env_idx: int = 0,
         env_id: str = "env",
         camera: Optional[str] = None,
+        staleness_enabled: bool = True,
     ):
         self.env = env
         self.cfg = cfg
         self.env_idx = env_idx
         self.env_id = env_id
         self.camera = camera
+        self.staleness_enabled = bool(staleness_enabled)
 
         self.temporal = TemporalBuffer(K=cfg["temporal"]["K"])
         self.selector = NodeSelector(cfg)
@@ -56,6 +58,8 @@ class GraphBuilder:
         self._first_unseen: Dict[str, int] = {}
         # Last fresh absolute edge per (src,dst,relation) -- replayed for frozen nodes.
         self._edge_history: Dict[Tuple[str, str, str], Edge] = {}
+        # entity -> whitelist match key, identity-guarded (ids recycle).
+        self._match_key_cache: Dict[int, Tuple[Any, Optional[str]]] = {}
 
     def reset_episode(self) -> None:
         self.selector.reset_episode()
@@ -64,6 +68,7 @@ class GraphBuilder:
         self._last_seen.clear()
         self._first_unseen.clear()
         self._edge_history.clear()
+        self._match_key_cache.clear()
         self.cfg.setdefault("_affordance_selection_cache", {}).clear()
         self._whitelist_key = None
 
@@ -110,6 +115,24 @@ class GraphBuilder:
         }
         self._whitelist_key = key
 
+    def _entity_admitted(self, entity) -> bool:
+        """Early whitelist gate for build_nodes: superset of apply_whitelist.
+
+        Instance-level target filtering still happens in apply_whitelist, so
+        this only skips entities whose match key is absent from the whitelist
+        -- exactly the nodes apply_whitelist would drop unconditionally.
+        """
+        wl = self.selector.whitelist
+        if wl is None:
+            return True
+        hit = self._match_key_cache.get(id(entity))
+        if hit is not None and hit[0] is entity:
+            key = hit[1]
+        else:
+            key = entity_match_key(entity)
+            self._match_key_cache[id(entity)] = (entity, key)
+        return wl.contains(key)
+
     def step(
         self, obs: dict, frame: int,
         *,
@@ -135,6 +158,9 @@ class GraphBuilder:
             camera_override=camera_override,
             primary_camera=primary_camera,
             need_masks=need_masks,
+            # Recording paths keep full masks/nodes for overlays; the training
+            # hot path skips node construction for never-admissible entities.
+            admit=None if need_masks else self._entity_admitted,
         )
 
         # Whitelist admission first, then episode-scoped persistence: a node
@@ -160,7 +186,8 @@ class GraphBuilder:
         nodes = self.selector.apply_whitelist(
             nodes, active_target_node_id=active_target_node_id,
         )
-        nodes = self.selector.merge_persistent(nodes, frame)
+        if self.staleness_enabled:
+            nodes = self.selector.merge_persistent(nodes, frame)
 
         for nid, n in nodes.items():
             if n.node_type == "ee":
@@ -222,7 +249,8 @@ class GraphBuilder:
         )
 
         build_absolute_edges(graph, state, self.cfg)
-        self._attach_stale_edges(graph, frame)
+        if self.staleness_enabled:
+            self._attach_stale_edges(graph, frame)
         self.temporal.update(graph)
         graph.edges.extend(self.temporal.temporal_edges(graph, self.cfg))
 

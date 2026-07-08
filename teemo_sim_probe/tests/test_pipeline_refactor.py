@@ -258,11 +258,21 @@ class Link:
         self.articulation = _Articulation()
 
 
+class _Actor:
+    def __init__(self, name):
+        self.name = name
+        self.pose = _Pose()
+
+
+# ``entity_kind`` dispatches on the literal class name.
+_Actor.__name__ = "Actor"
+
+
 class _State:
-    def __init__(self, link):
+    def __init__(self, link=None, seg_id_map=None):
         self.env_idx = 0
         self.tcp_pose_world = np.array([0, 0, 0, 1, 0, 0, 0], dtype=float)
-        self.seg_id_map = {7: link}
+        self.seg_id_map = seg_id_map if seg_id_map is not None else {7: link}
         self.robot_links = set()
         self.ee_links = []
 
@@ -279,6 +289,192 @@ class SupporterMaskTests(unittest.TestCase):
         self.assertIn(key, nodes)
         self.assertEqual(masks.area(key), 3)
         self.assertEqual(key, "link:cabinet-2/frl_apartment_drawer3")
+
+
+class WhitelistLoadCacheTests(unittest.TestCase):
+    """The per-episode whitelist re-bind must not re-parse JSON from disk."""
+
+    _PAYLOAD = {
+        "_schema_version": 4,
+        "subtask": "pick",
+        "target": "actor:024_bowl",
+        "members": {
+            "actor:024_bowl": {
+                "roles": ["interacted"],
+                "interaction_types": ["contact"],
+                "kind": "actor",
+            },
+        },
+    }
+
+    def _write(self, path, payload):
+        import json
+        with open(path, "w") as f:
+            json.dump(payload, f)
+
+    def test_unchanged_file_returns_cached_object(self):
+        import os
+        import tempfile
+        from teemo_sim_probe.core.whitelist import load_whitelist
+
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "pick_024_bowl.json")
+            self._write(path, self._PAYLOAD)
+            first = load_whitelist(path)
+            second = load_whitelist(path)
+            self.assertIs(first, second)
+
+    def test_modified_file_is_reloaded(self):
+        import copy
+        import os
+        import tempfile
+        from teemo_sim_probe.core.whitelist import load_whitelist
+
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "pick_024_bowl.json")
+            self._write(path, self._PAYLOAD)
+            first = load_whitelist(path)
+
+            updated = copy.deepcopy(self._PAYLOAD)
+            updated["members"]["link:cabinet/drawer"] = {
+                "roles": ["support"],
+                "interaction_types": ["support"],
+                "kind": "link",
+            }
+            self._write(path, updated)
+            st = os.stat(path)
+            os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
+
+            second = load_whitelist(path)
+            self.assertIsNot(first, second)
+            self.assertTrue(second.contains("link:cabinet/drawer"))
+            self.assertFalse(first.contains("link:cabinet/drawer"))
+
+
+class EntityMatchKeyTests(unittest.TestCase):
+    """entity_match_key must resolve exactly like the node-level match_key."""
+
+    def _assert_equivalent(self, entity):
+        from teemo_sim_probe.core.node_builder import make_object_node
+        from teemo_sim_probe.core.whitelist import entity_match_key, match_key
+
+        node = make_object_node(entity, _State(entity))
+        self.assertEqual(entity_match_key(entity), match_key(node))
+        self.assertIsNotNone(entity_match_key(entity))
+
+    def test_link_key_matches_node_key(self):
+        self._assert_equivalent(Link("frl_apartment_drawer3"))
+
+    def test_actor_key_matches_node_key(self):
+        self._assert_equivalent(_Actor("env-0_024_bowl-3"))
+
+
+class AdmitGateTests(unittest.TestCase):
+    """The early admit gate must not change the post-apply_whitelist graph."""
+
+    def _selector(self, whitelist):
+        from teemo_sim_probe.core.selector import NodeSelector
+
+        selector = NodeSelector({"selection": {"n_slots": 4, "k_persist": 0}})
+        selector.set_whitelist(whitelist)
+        return selector
+
+    def test_gated_nodes_equal_ungated_after_whitelist(self):
+        from teemo_sim_probe.core.node_builder import build_nodes
+        from teemo_sim_probe.core.whitelist import Whitelist, entity_match_key
+
+        admitted = Link("frl_apartment_drawer3")
+        rejected = Link("frl_apartment_wall")
+        state_kwargs = dict(seg_id_map={7: admitted, 9: rejected})
+        seg = np.array([[0, 7], [9, 9]], dtype=np.int32)
+
+        wl = Whitelist(
+            subtask="pick",
+            target="actor:024_bowl",
+            by_key={entity_match_key(admitted): {"support"}},
+            interaction_types={entity_match_key(admitted): {"support"}},
+        )
+        admit = lambda e: wl.contains(entity_match_key(e))
+
+        gated, _, _, _ = build_nodes(
+            {}, _State(**state_kwargs), seg_override=seg,
+            rgb_override=np.zeros((2, 2, 3), dtype=np.uint8),
+            need_masks=False, admit=admit,
+        )
+        ungated, _, _, _ = build_nodes(
+            {}, _State(**state_kwargs), seg_override=seg,
+            rgb_override=np.zeros((2, 2, 3), dtype=np.uint8),
+            need_masks=False,
+        )
+
+        # The gate skips node construction for the never-admissible entity.
+        self.assertNotIn(entity_match_key(rejected), gated)
+        self.assertIn(entity_match_key(rejected), ungated)
+
+        kept_gated = self._selector(wl).apply_whitelist(gated)
+        kept_ungated = self._selector(wl).apply_whitelist(ungated)
+        self.assertEqual(sorted(kept_gated), sorted(kept_ungated))
+        for nid in kept_gated:
+            self.assertEqual(
+                kept_gated[nid].attributes.get("whitelist_roles"),
+                kept_ungated[nid].attributes.get("whitelist_roles"),
+            )
+            self.assertEqual(
+                kept_gated[nid].pixel_area, kept_ungated[nid].pixel_area,
+            )
+
+    def test_graph_builder_gate_admits_when_no_whitelist(self):
+        from teemo_sim_probe.core.graph_builder import GraphBuilder
+
+        builder = GraphBuilder.__new__(GraphBuilder)
+        builder._match_key_cache = {}
+        builder.selector = type("_S", (), {"whitelist": None})()
+        self.assertTrue(builder._entity_admitted(Link("anything")))
+
+    def test_graph_builder_gate_caches_match_key(self):
+        from unittest import mock
+        from teemo_sim_probe.core.graph_builder import GraphBuilder
+        from teemo_sim_probe.core.whitelist import Whitelist, entity_match_key
+
+        link = Link("frl_apartment_drawer3")
+        key = entity_match_key(link)
+        wl = Whitelist(by_key={key: {"support"}})
+
+        builder = GraphBuilder.__new__(GraphBuilder)
+        builder._match_key_cache = {}
+        builder.selector = type("_S", (), {"whitelist": wl})()
+
+        with mock.patch(
+            "teemo_sim_probe.core.graph_builder.entity_match_key",
+            side_effect=entity_match_key,
+        ) as spy:
+            self.assertTrue(builder._entity_admitted(link))
+            self.assertTrue(builder._entity_admitted(link))
+        self.assertEqual(spy.call_count, 1)
+
+
+class LinkNameCacheTests(unittest.TestCase):
+    def test_robot_link_names_cached_on_scene(self):
+        from teemo_sim_probe.adapters.privileged_state import _robot_link_names
+
+        calls = []
+
+        class _Robot:
+            def __init__(self):
+                self.scene = type("_Scene", (), {})()
+
+            def get_links(self):
+                calls.append(1)
+                return [Link("l_wheel_link"), Link("r_wheel_link")]
+
+        agent = type("_Agent", (), {})()
+        agent.robot = _Robot()
+
+        first = _robot_link_names(agent)
+        second = _robot_link_names(agent)
+        self.assertIs(first, second)
+        self.assertEqual(first, frozenset({"l_wheel_link", "r_wheel_link"}))
+        self.assertEqual(len(calls), 1)
 
 
 class _GraphEnvStub:

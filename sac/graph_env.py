@@ -127,7 +127,8 @@ class GraphObsBuilder:
             cfg_i["_affordance_selection_cache"] = {}
             self.builders.append(
                 GraphBuilder(env, cfg_i, env_idx=i, env_id=f"env{i}",
-                             camera=primary_camera)
+                             camera=primary_camera,
+                             staleness_enabled=self.staleness_enabled)
             )
         self._frames = np.zeros(self.num_envs, dtype=np.int64)
         # Set of env indices whose latest graph + primary-cam masks should be

@@ -98,6 +98,7 @@ class Encoder(nn.Module):
         state_projection: RLProjection,
         graph_encoder: Optional[nn.Module] = None,
         graph_projection: Optional[RLProjection] = None,
+        graph_actor_gradient: bool = False,
     ):
         super().__init__()
         self.cnns = cnns
@@ -105,6 +106,7 @@ class Encoder(nn.Module):
         self.state_projection = state_projection
         self.graph_encoder = graph_encoder
         self.graph_projection = graph_projection
+        self.graph_actor_gradient = bool(graph_actor_gradient)
         self.out_dim = (
             sum(p.out_dim for p in pixels_projections.values())
             + state_projection.out_dim
@@ -125,7 +127,7 @@ class Encoder(nn.Module):
         parts.append(self.state_projection(state))
         if self.graph_encoder is not None:
             g = self.graph_encoder(graph)
-            if detach:
+            if detach and not self.graph_actor_gradient:
                 g = g.detach()
             parts.append(self.graph_projection(g))
         return torch.cat(parts, dim=1)

@@ -44,10 +44,10 @@ import json
 import math
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from .affordance import canonical_affordance_key
-from .entity_identity import normalize_asset_key
+from .entity_identity import entity_kind, normalize_asset_key, stable_entity_key
 from .schema import Node
 
 
@@ -69,6 +69,28 @@ def match_key(node: Node) -> Optional[str]:
     if attrs.get("is_actor"):
         return normalize_asset_key(canonical_affordance_key(name) or name, "actor")
     if attrs.get("is_link") or attrs.get("is_articulation_link"):
+        return normalize_asset_key(name, "link")
+    return normalize_asset_key(name)
+
+
+def entity_match_key(entity) -> Optional[str]:
+    """Entity-level twin of ``match_key``: identical resolution, no Node.
+
+    Lets the runtime test whitelist admission before constructing a node
+    (and paying its pose read) for entities that can never pass the gate.
+    """
+    if entity is None:
+        return None
+    name = getattr(entity, "name", str(entity))
+    if not name:
+        return None
+    kind = entity_kind(entity)
+    stable = stable_entity_key(entity)
+    if stable:
+        return normalize_asset_key(str(stable), kind)
+    if kind == "actor":
+        return normalize_asset_key(canonical_affordance_key(name) or name, "actor")
+    if kind == "link":
         return normalize_asset_key(name, "link")
     return normalize_asset_key(name)
 
@@ -119,6 +141,12 @@ class Whitelist:
         return set(self.interaction_types.get(key, set()))
 
 
+# Parsed assets keyed by absolute path with an (mtime_ns, size) signature so
+# the per-episode whitelist re-bind does not re-parse JSON from disk. Cached
+# instances are shared across builders and must stay immutable.
+_WHITELIST_CACHE: Dict[str, Tuple[Tuple[int, int], Whitelist]] = {}
+
+
 def load_whitelist(path: str) -> Whitelist:
     """Load a per-subtask whitelist. Raises FileNotFoundError if missing."""
     if not path or not os.path.isfile(path):
@@ -126,6 +154,12 @@ def load_whitelist(path: str) -> Whitelist:
             f"per-subtask whitelist not found at {path!r}; mine it with "
             "tools/build_subtask_whitelists.py before running the probe"
         )
+    abspath = os.path.abspath(path)
+    st = os.stat(abspath)
+    sig = (st.st_mtime_ns, st.st_size)
+    hit = _WHITELIST_CACHE.get(abspath)
+    if hit is not None and hit[0] == sig:
+        return hit[1]
     with open(path, "r") as f:
         raw = json.load(f)
     if not isinstance(raw, dict):
@@ -183,7 +217,7 @@ def load_whitelist(path: str) -> Whitelist:
             if ok and parsed:
                 bin_edges[rel] = parsed
 
-    return Whitelist(
+    wl = Whitelist(
         subtask=str(raw.get("subtask", "") or ""),
         target=str(raw.get("target", "") or ""),
         by_key=by_key,
@@ -191,6 +225,8 @@ def load_whitelist(path: str) -> Whitelist:
         bin_edges=bin_edges,
         source_path=path,
     )
+    _WHITELIST_CACHE[abspath] = (sig, wl)
+    return wl
 
 
 # --------------------------------------------------------------------------- #

@@ -49,7 +49,8 @@ def _cnn_dict(pixels_obs_space: spaces.Dict, cfg: dict) -> nn.ModuleDict:
 
 
 def _encoder(cnns: nn.ModuleDict, state_dim: int, cfg: dict,
-              graph_enc: Optional[GraphEncoder]) -> Encoder:
+              graph_enc: Optional[GraphEncoder],
+              graph_actor_gradient: bool = False) -> Encoder:
     pixels_projections = nn.ModuleDict({
         k: RLProjection(cnn.out_dim, cfg["encoder_pixels_feature_dim"])
         for k, cnn in cnns.items()
@@ -60,7 +61,8 @@ def _encoder(cnns: nn.ModuleDict, state_dim: int, cfg: dict,
         if graph_enc is not None else None
     )
     return Encoder(cnns, pixels_projections, state_projection,
-                    graph_enc, graph_projection)
+                    graph_enc, graph_projection,
+                    graph_actor_gradient=graph_actor_gradient)
 
 
 class SACAgent(nn.Module):
@@ -98,25 +100,30 @@ class SACAgent(nn.Module):
                 )
             shared_graph = _mk_graph()
             target_graph = _mk_graph()
+            graph_actor_gradient = bool(graph_cfg.get("actor_gradient", False))
         else:
             shared_graph = target_graph = None
+            graph_actor_gradient = False
 
         self.actor = Actor(
-            _encoder(shared_cnns, state_dim, cfg, shared_graph),
+            _encoder(shared_cnns, state_dim, cfg, shared_graph,
+                     graph_actor_gradient=graph_actor_gradient),
             action_dim=action_dim,
             hidden_dims=cfg["actor_hidden_dims"],
             log_std_min=cfg["log_std_min"],
             log_std_max=cfg["log_std_max"],
         ).to(device)
         self.critic = Critic(
-            _encoder(shared_cnns, state_dim, cfg, shared_graph),
+            _encoder(shared_cnns, state_dim, cfg, shared_graph,
+                     graph_actor_gradient=graph_actor_gradient),
             action_dim=action_dim,
             hidden_dims=cfg["critic_hidden_dims"],
             layer_norm=bool(cfg["critic_layer_norm"]),
             dropout=cfg.get("critic_dropout"),
         ).to(device)
         self.critic_target = Critic(
-            _encoder(target_cnns, state_dim, cfg, target_graph),
+            _encoder(target_cnns, state_dim, cfg, target_graph,
+                     graph_actor_gradient=graph_actor_gradient),
             action_dim=action_dim,
             hidden_dims=cfg["critic_hidden_dims"],
             layer_norm=bool(cfg["critic_layer_norm"]),

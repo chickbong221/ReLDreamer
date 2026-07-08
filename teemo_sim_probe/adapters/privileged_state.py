@@ -57,6 +57,10 @@ class PrivilegedState:
 
     # Robot link set (for "is this a robot link?" tests).
     robot_links: set = field(default_factory=set)
+    # Scene-cached name sets mirroring ee_links / robot_links, so the node
+    # builder's per-entity name-fallback checks stop rebuilding sets per call.
+    ee_link_names: Optional[frozenset] = None
+    robot_link_names: Optional[frozenset] = None
 
     # MS-HAB active manipulation handles for this env_idx (any may be None).
     active_obj: Optional[Any] = None
@@ -247,7 +251,9 @@ _MISSING = object()
 _SCENE_CACHE_KEYS = (
     "_teemo_sidxs_cache",
     "_teemo_ee_links",
+    "_teemo_ee_link_names",
     "_teemo_robot_links",
+    "_teemo_robot_link_names",
     "_teemo_per_env_seg_maps",
     "_teemo_sliced_views",
     "_teemo_row_sliced_views",
@@ -490,6 +496,24 @@ def _robot_link_set(agent) -> set:
             return set()
 
     return _scene_scoped(agent, "_teemo_robot_links", _build)
+
+
+def get_ee_link_names(agent) -> frozenset:
+    def _build():
+        return frozenset(
+            getattr(l, "name", None) for l in get_ee_links(agent)
+        )
+
+    return _scene_scoped(agent, "_teemo_ee_link_names", _build)
+
+
+def _robot_link_names(agent) -> frozenset:
+    def _build():
+        return frozenset(
+            getattr(l, "name", None) for l in _robot_link_set(agent)
+        )
+
+    return _scene_scoped(agent, "_teemo_robot_link_names", _build)
 
 
 def _looks_like_mshab(env) -> bool:
@@ -924,6 +948,8 @@ def get_privileged_state(
         gripper_width=compute_gripper_width(agent, env_idx),
         seg_id_map=per_env_segmentation_id_map(e, env_idx),
         robot_links=_robot_link_set(agent),
+        ee_link_names=get_ee_link_names(agent),
+        robot_link_names=_robot_link_names(agent),
     )
 
     if state.is_mshab:

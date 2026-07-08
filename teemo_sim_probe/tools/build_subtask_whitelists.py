@@ -63,11 +63,20 @@ from teemo_sim_probe.core.whitelist import (
 )
 
 
-# Quantile used to aggregate per-relation samples across all rollouts. Well
-# below 1.0 so bin edges reflect a typical operating range rather than the
-# demo's peak motion; also shields against transient outliers (autoreset
-# jumps, physics blow-ups).
-_MINER_QUANTILE = 0.6
+# Change relations use a low quantile to shed transient outliers; absolute
+# relations use a high one to still cover the demo's operating range.
+_MINER_QUANTILE_CHANGE = 0.6
+_MINER_QUANTILE_ABSOLUTE = 0.9
+
+
+def _miner_quantile(relation: str) -> float:
+    return (
+        _MINER_QUANTILE_CHANGE
+        if relation.endswith("_change")
+        else _MINER_QUANTILE_ABSOLUTE
+    )
+
+
 # Per-relation sanity ceiling. Anything above this is treated as a numerical
 # blow-up rather than a meaningful EE-operating range. Tuned for Fetch in a
 # kitchen scene (max reach ~1.5 m planar; ~1.2 m vertical).
@@ -259,8 +268,8 @@ class _WhitelistBuilder:
     ) -> Tuple[Dict[str, float], Dict[str, float]]:
         """Return ``(robust_value, observed_max)`` per relation.
 
-        The robust value -- fed to ``derive_bin_edges`` -- is the configured
-        quantile across all raw samples. A per-relation ceiling caps numerical
+        Change relations use ``_MINER_QUANTILE_CHANGE``; absolute relations use
+        ``_MINER_QUANTILE_ABSOLUTE``. A per-relation ceiling caps numerical
         blow-ups so a single bad pickle cannot push the bin edges to absurd
         ranges.
         """
@@ -275,7 +284,7 @@ class _WhitelistBuilder:
                 samples.extend(extra_samples.get(k, ()))
             if not samples:
                 continue
-            value = float(np.quantile(samples, _MINER_QUANTILE))
+            value = float(np.quantile(samples, _miner_quantile(k)))
             obs = float(np.max(samples))
             ceiling = _BIN_VALUE_CEILING.get(k)
             if ceiling is not None and value > ceiling:
@@ -348,14 +357,15 @@ class _WhitelistBuilder:
         if not np.isfinite(value):
             return
         present.add(key)
+        absolute_key = key[2].replace('-', '_')
+        samples[absolute_key].append(float(value))
         buf = history.get(key)
         if buf is None:
             buf = deque(maxlen=self.temporal_k + 1)
             history[key] = buf
         buf.append(float(value))
         if len(buf) > self.temporal_k:
-            sample_key = f"{key[2].replace('-', '_')}_change"
-            samples[sample_key].append(abs(buf[-1] - buf[0]))
+            samples[f"{absolute_key}_change"].append(abs(buf[-1] - buf[0]))
 
     def _score_ee_object_compatibility(
         self,
@@ -400,7 +410,7 @@ class _WhitelistBuilder:
         contact_score = _compatibility_score(meas, norm, include_width=False)
         return grasp_score, contact_score
 
-    def _mine_compatibility_change_samples(
+    def _mine_compatibility_samples(
         self,
         bin_edges: Dict[str, List[float]],
     ) -> Dict[str, List[float]]:
@@ -623,7 +633,7 @@ class _WhitelistBuilder:
                 )
 
         robust, _observed = self._aggregate_bins()
-        compatibility_samples = self._mine_compatibility_change_samples(
+        compatibility_samples = self._mine_compatibility_samples(
             derive_bin_edges(robust)
         )
         robust, observed = self._aggregate_bins(compatibility_samples)

@@ -90,9 +90,11 @@ defaults:
     k_soft: 5.0
     e_max: 256
     embed_dim: 64
-    hidden_dim: 256
+    hidden_dim: 512
     out_dim: 128
     num_layers: 2
+    staleness_enabled: True
+    actor_gradient: False
 
 # ----------------------------------------------------------------------- #
 # Presets
