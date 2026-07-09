@@ -188,27 +188,6 @@ class GraphObsBuilder:
         stats["temporal_values"] = sum(
             len(b.temporal._values) for b in self.builders
         )
-        if torch.cuda.is_available():
-            stats["cuda_alloc_mb"] = int(torch.cuda.memory_allocated() >> 20)
-            stats["cuda_reserved_mb"] = int(torch.cuda.memory_reserved() >> 20)
-        # VmRSS = resident, VmData = anon+heap (glibc + PyTorch host caches +
-        # PhysX + wandb live here), VmSize = total virtual, VmHWM = peak RSS.
-        # Growing VmData with malloc_trim=0 = leak below glibc (mmap or C++
-        # new); growing cuda_reserved = PyTorch caching allocator drift.
-        try:
-            with open("/proc/self/status") as f:
-                for line in f:
-                    if not line.startswith("Vm"):
-                        continue
-                    key, _, rest = line.partition(":")
-                    if key in {"VmRSS", "VmData", "VmSize", "VmHWM"}:
-                        parts = rest.strip().split()
-                        if len(parts) >= 2 and parts[1] == "kB":
-                            stats[key.replace("Vm", "vm_").lower() + "_mb"] = (
-                                int(parts[0]) >> 10
-                            )
-        except OSError:
-            pass
         return stats
 
     def _zero_obs(self, device: torch.device) -> Dict[str, torch.Tensor]:

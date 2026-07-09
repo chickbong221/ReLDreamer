@@ -79,6 +79,31 @@ class Logger:
 _LIBC = None
 
 
+def _memory_stats() -> Dict[str, int]:
+    """CUDA allocator + /proc/self/status breakdown so we can attribute RSS
+    growth: cuda_reserved climbing = PyTorch caching drift; vm_data climbing
+    with malloc_trim=1 = live C++ heap that glibc cannot reclaim."""
+    stats: Dict[str, int] = {}
+    if torch.cuda.is_available():
+        stats["cuda_alloc_mb"] = int(torch.cuda.memory_allocated() >> 20)
+        stats["cuda_reserved_mb"] = int(torch.cuda.memory_reserved() >> 20)
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if not line.startswith("Vm"):
+                    continue
+                key, _, rest = line.partition(":")
+                if key in {"VmRSS", "VmData", "VmSize", "VmHWM"}:
+                    parts = rest.strip().split()
+                    if len(parts) >= 2 and parts[1] == "kB":
+                        stats[key.replace("Vm", "vm_").lower() + "_mb"] = (
+                            int(parts[0]) >> 10
+                        )
+    except OSError:
+        pass
+    return stats
+
+
 def _trim_native_heap() -> Optional[int]:
     """malloc_trim(0) retval: 1 if pages were released, 0 if nothing to free,
     None if the call was skipped (non-Linux or libc load failed). The retval
@@ -312,15 +337,15 @@ def train(config: dict) -> None:
                        if ram else "")
             print(f"[sac] step={global_step}/{total_steps} "
                   f"replay={len(replay)}{ram_str}", flush=True)
-            if graph_train is not None:
-                import gc
-                stats = graph_train.cache_stats()
-                stats["py_objects"] = len(gc.get_objects())
-                stats["malloc_trim"] = -1 if trimmed is None else trimmed
-                for k, v in stats.items():
-                    logger.scalar(f"leak/{k}", v, global_step)
-                print("[leak] " + " ".join(f"{k}={v}" for k, v in stats.items()),
-                      flush=True)
+            import gc
+            stats = graph_train.cache_stats() if graph_train is not None else {}
+            stats.update(_memory_stats())
+            stats["py_objects"] = len(gc.get_objects())
+            stats["malloc_trim"] = -1 if trimmed is None else trimmed
+            for k, v in stats.items():
+                logger.scalar(f"leak/{k}", v, global_step)
+            print("[leak] " + " ".join(f"{k}={v}" for k, v in stats.items()),
+                  flush=True)
 
         if eval_every > 0 and global_step - last_eval >= eval_every:
             last_eval = global_step
