@@ -34,6 +34,12 @@ from teemo_sim_probe.adapters.graph_vocab import (
 from teemo_sim_probe.configs.loader import load_config as load_teemo_config
 from teemo_sim_probe.core.graph_builder import GraphBuilder
 
+# ManiSkill caches one native PhysX GPU query per (obj1.name + obj2.name) pair
+# and never evicts. MS-HAB partial resets recreate merged actors under fresh
+# names, so stale entries accumulate (~122 KB each). Queries rebuild lazily on
+# the next contact lookup, so clearing past this cap is always safe.
+_CONTACT_QUERY_CAP = 2048
+
 
 def _verify_whitelist_coverage(env, whitelist_dir: str) -> None:
     """Fail at startup if any object-target plan lacks a mined whitelist.
@@ -290,6 +296,16 @@ class GraphObsBuilder:
         clear_privileged_state_caches(self.env)
         self._scene_cache_signature = sig
 
+    def _purge_contact_queries(self) -> None:
+        scene = getattr(self.env.unwrapped, "scene", None)
+        queries = getattr(scene, "pairwise_contact_queries", None)
+        if queries is None or len(queries) <= _CONTACT_QUERY_CAP:
+            return
+        queries.clear()
+        hashes = getattr(scene, "_pairwise_contact_query_unique_hashes", None)
+        if hashes is not None:
+            hashes.clear()
+
     def step(
         self, done_mask: Optional[torch.Tensor], device: torch.device,
     ) -> Dict[str, torch.Tensor]:
@@ -302,6 +318,7 @@ class GraphObsBuilder:
         segs_by_cam = self._read_batched_segs()
         if self.bypass_teemo:
             return self._zero_obs(device)
+        self._purge_contact_queries()
         begin_frame_cache(getattr(self.env.unwrapped, "scene", None))
         try:
             packed = [
