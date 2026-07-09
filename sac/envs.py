@@ -52,9 +52,13 @@ def build_env(
 
     task_plans = plan.plans
     n_bc = int(cfg.get("mshab_num_build_configs", 0) or 0)
-    if not is_eval and n_bc > 0 and n_bc < len(task_plans):
-        task_plans = sorted(task_plans, key=lambda p: p.build_config_name)[:n_bc]
-        print(f"[env] using {len(task_plans)}/{len(plan.plans)} build configs (train)")
+    if not is_eval and n_bc > 0:
+        all_names = sorted({p.build_config_name for p in plan.plans})
+        if n_bc < len(all_names):
+            keep = set(all_names[:n_bc])
+            task_plans = [p for p in plan.plans if p.build_config_name in keep]
+            print(f"[env] using {n_bc}/{len(all_names)} build configs "
+                  f"({len(task_plans)}/{len(plan.plans)} plans, train)")
 
     env_kwargs = dict(
         task_plans=task_plans,

@@ -59,7 +59,7 @@ defaults:
       mshab_split: train
       mshab_eval_split: val
       mshab_obj: all
-      mshab_num_build_configs: 32  # 0 → use all; positive → first N (by sorted build_config_name), train split only
+      mshab_num_build_configs: 32  # 0 → all; positive → first N distinct build configs (sorted), train split only
       mshab_stationary_head: True
       max_episode_steps: 100
       eval_max_episode_steps: 200
@@ -82,7 +82,7 @@ defaults:
   graph:
     enabled: False
     bypass_teemo: False
-    profile: tabletop
+    profile: room_scale
     thresholds_path: null
     whitelist_dir: null
     cameras: [fetch_head, fetch_hand]
