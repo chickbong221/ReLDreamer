@@ -79,28 +79,24 @@ class Logger:
 _LIBC = None
 
 
-def _trim_native_heap() -> bool:
-    """Return freed-but-retained glibc heap pages to the OS (Linux only).
-
-    Small-object churn grows arenas glibc rarely shrinks, so RSS climbs
-    linearly with zero Python-level retention; malloc_trim(0) releases it.
-    Returns whether the trim actually ran, so logs show if it is inert
-    (e.g. non-Linux platform).
-    """
+def _trim_native_heap() -> Optional[int]:
+    """malloc_trim(0) retval: 1 if pages were released, 0 if nothing to free,
+    None if the call was skipped (non-Linux or libc load failed). The retval
+    is the diagnostic signal: 0 across many logs means glibc heap is not the
+    leak source."""
     global _LIBC
     if not sys.platform.startswith("linux"):
-        return False
+        return None
     if _LIBC is None:
         import ctypes
         try:
             _LIBC = ctypes.CDLL("libc.so.6")
         except OSError:
-            return False
+            return None
     try:
-        _LIBC.malloc_trim(0)
-        return True
+        return int(_LIBC.malloc_trim(0))
     except Exception:
-        return False
+        return None
 
 
 class _RamLogger:
@@ -320,7 +316,7 @@ def train(config: dict) -> None:
                 import gc
                 stats = graph_train.cache_stats()
                 stats["py_objects"] = len(gc.get_objects())
-                stats["malloc_trim"] = int(trimmed)
+                stats["malloc_trim"] = -1 if trimmed is None else trimmed
                 for k, v in stats.items():
                     logger.scalar(f"leak/{k}", v, global_step)
                 print("[leak] " + " ".join(f"{k}={v}" for k, v in stats.items()),
