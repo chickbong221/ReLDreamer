@@ -38,6 +38,7 @@ class ManiSkill(embodied.Env):
       mshab_split='train',
       mshab_eval_split=None,
       mshab_obj='all',
+      mshab_num_build_configs=0,
       nonprivileged_obs=False,
       max_depth=20000.0,
       max_episode_steps=None,
@@ -105,7 +106,12 @@ class ManiSkill(embodied.Env):
       plan_data = plan_data_from_file(
           rearrange_dir / 'task_plans' / mshab_task / subtask / split / f'{mshab_obj}.json'
       )
-      make_kwargs['task_plans'] = plan_data.plans
+      task_plans = plan_data.plans
+      n_bc = int(mshab_num_build_configs or 0)
+      if not self._is_eval and n_bc > 0 and n_bc < len(task_plans):
+        task_plans = sorted(task_plans, key=lambda p: p.build_config_name)[:n_bc]
+        print(f'[env] using {len(task_plans)}/{len(plan_data.plans)} build configs (train)')
+      make_kwargs['task_plans'] = task_plans
       make_kwargs['scene_builder_cls'] = plan_data.dataset
       make_kwargs['spawn_data_fp'] = (
           rearrange_dir / 'spawn_data' / mshab_task / subtask / split / 'spawn_data.pt'

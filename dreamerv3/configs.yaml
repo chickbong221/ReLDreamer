@@ -51,6 +51,7 @@ defaults:
       mshab_split: train
       mshab_eval_split: val
       mshab_obj: all
+      mshab_num_build_configs: 40  # 0 → use all; positive → first N (by sorted build_config_name), train split only
       nonprivileged_obs: false
       max_episode_steps: 0       # 0 → use the registered default; mshab overrides to 100
       eval_max_episode_steps: 0  # 0 → reuse max_episode_steps; mshab overrides to 200

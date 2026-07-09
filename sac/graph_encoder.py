@@ -5,6 +5,10 @@ converted to a flat sg2im-style batch (obj_vecs, pred_vecs, edges, node_to_sampl
 inside forward. Categorical predicates only. L layers of GraphTripleConv on
 the flat batch, followed by a parametric attention readout with a learned
 pool query and Q/K/V projections over [node_conf ; obj_vec] inputs.
+
+Target conditioning: nodes matching ``graph_target_id`` get a learned marker
+added before message passing, and the pool query is shifted by the target's
+node embedding (zero when the target id is pad).
 """
 
 from __future__ import annotations
@@ -99,6 +103,7 @@ class GraphEncoder(nn.Module):
         ])
 
         self.pool_query = nn.Parameter(torch.randn(embed_dim) * 0.02)
+        self.target_marker = nn.Parameter(torch.randn(embed_dim) * 0.02)
         self.W_K = nn.Linear(embed_dim + 1, embed_dim)
         self.W_V = nn.Linear(embed_dim + 1, embed_dim)
         self.W_O = nn.Linear(embed_dim, embed_dim)
@@ -116,6 +121,7 @@ class GraphEncoder(nn.Module):
         edge_pred = obs["graph_edge_pred"].long()
         n_nodes = obs["graph_n_nodes"].long()
         n_edges = obs["graph_n_edges"].long()
+        target_id = obs["graph_target_id"].long()
 
         B, N_max = node_ids.shape
         E_max = edge_src.size(1)
@@ -150,6 +156,9 @@ class GraphEncoder(nn.Module):
         edge_dst_flat = edge_dst_local + per_edge_offset
 
         obj_vecs = self.node_emb(node_ids_flat)                      # (O, D)
+        # Valid node ids are >= 1, so a pad target (0) marks nothing.
+        is_target = (node_ids_flat == target_id[node_to_sample]).to(obj_vecs.dtype)
+        obj_vecs = obj_vecs + is_target.unsqueeze(-1) * self.target_marker
         pred_vecs = self.edge_emb(edge_pred_flat)                    # (T, D)
         edges = torch.stack([edge_src_flat, edge_dst_flat], dim=-1)  # (T, 2)
 
@@ -160,7 +169,10 @@ class GraphEncoder(nn.Module):
         K = self.W_K(x_in)                                           # (O, D)
         V = self.W_V(x_in)                                           # (O, D)
 
-        scores = (K * self.pool_query.unsqueeze(0)).sum(-1) * self.attn_scale
+        # Per-sample query: pad target embeds to zero (padding_idx), leaving
+        # the plain learned query.
+        q = self.pool_query.unsqueeze(0) + self.node_emb(target_id)  # (B, D)
+        scores = (K * q[node_to_sample]).sum(-1) * self.attn_scale
 
         sample_max = torch.full((B,), float("-inf"), device=device, dtype=scores.dtype)
         sample_max = sample_max.scatter_reduce(
@@ -184,7 +196,7 @@ class GraphEncoder(nn.Module):
 GRAPH_OBS_KEYS = (
     "graph_node_ids", "graph_node_ee_mask", "graph_node_conf",
     "graph_edge_src", "graph_edge_dst", "graph_edge_pred",
-    "graph_n_nodes", "graph_n_edges",
+    "graph_n_nodes", "graph_n_edges", "graph_target_id",
 )
 
 

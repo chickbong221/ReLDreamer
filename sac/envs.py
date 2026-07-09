@@ -1,12 +1,13 @@
 """Env builder for MS-HAB SAC. Mirrors mshab/envs/make.make_env.
 
 Graph reads segmentation; train adds it to depth, eval also renders RGB for
-the video overlay. Policy obs stays depth + state.
+the video overlay. Policy obs is depth + state, with a target-category
+one-hot appended to state via TargetIdReader.
 """
 
 from __future__ import annotations
 
-from typing import Dict, Mapping, Tuple
+from typing import Dict, List, Mapping, Tuple
 
 import numpy as np
 import torch
@@ -49,8 +50,14 @@ def build_env(
         / split / f"{cfg['mshab_obj']}.json"
     )
 
+    task_plans = plan.plans
+    n_bc = int(cfg.get("mshab_num_build_configs", 0) or 0)
+    if not is_eval and n_bc > 0 and n_bc < len(task_plans):
+        task_plans = sorted(task_plans, key=lambda p: p.build_config_name)[:n_bc]
+        print(f"[env] using {len(task_plans)}/{len(plan.plans)} build configs (train)")
+
     env_kwargs = dict(
-        task_plans=plan.plans,
+        task_plans=task_plans,
         scene_builder_cls=plan.dataset,
         spawn_data_fp=(
             rearrange_dir / "spawn_data" / cfg["mshab_task"] / subtask
@@ -98,6 +105,98 @@ def build_env(
         ignore_terminations=True,
     )
     return _StatsWrapper(venv, max_episode_steps=horizon)
+
+
+def build_target_vocab(task: str, cfg: dict) -> List[str]:
+    """Sorted target-category keys from the union of train+eval plan files.
+
+    Deterministic across runs and splits, so one-hot columns stay stable for
+    checkpoints and train/eval consistency.
+    """
+    from mani_skill import ASSET_DIR
+    from mshab.envs.planner import plan_data_from_file
+    from teemo_sim_probe.core.affordance import canonical_affordance_key
+
+    subtask = task.split("SubtaskTrain")[0].lower()
+    rearrange_dir = ASSET_DIR / "scene_datasets/replica_cad_dataset/rearrange"
+    splits = {cfg["mshab_split"], cfg.get("mshab_eval_split") or cfg["mshab_split"]}
+    keys = set()
+    for split in sorted(splits):
+        plan = plan_data_from_file(
+            rearrange_dir / "task_plans" / cfg["mshab_task"] / subtask
+            / split / f"{cfg['mshab_obj']}.json"
+        )
+        for p in plan.plans:
+            for st in getattr(p, "subtasks", []) or []:
+                key = canonical_affordance_key(getattr(st, "obj_id", None))
+                if key:
+                    keys.add(key)
+    if not keys:
+        raise ValueError(
+            f"target vocab: no obj_id keys found in task plans for task={task!r}"
+        )
+    return sorted(keys)
+
+
+def _to_np1d(x) -> np.ndarray:
+    if isinstance(x, torch.Tensor):
+        return x.detach().cpu().numpy().reshape(-1)
+    return np.asarray(x).reshape(-1)
+
+
+class TargetIdReader:
+    """Per-env one-hot of the current subtask's target category.
+
+    Reads the ORIGINAL obj_id from ``env.build_config_idx_to_task_plans``
+    (MS-HAB rewrites ``task_plan[ptr].obj_id`` to ``obj_<num>`` when merging
+    actors), mirroring teemo's privileged_state resolution. Only touches
+    plain env attributes -- never ``get_obs()``, which would re-run
+    ``evaluate`` and mutate subtask bookkeeping. Never raises: unresolved
+    envs get an all-zero row.
+    """
+
+    def __init__(self, env, keys: List[str], num_envs: int):
+        from teemo_sim_probe.core.affordance import canonical_affordance_key
+        self.env = env
+        self.keys = list(keys)
+        self.num_envs = int(num_envs)
+        self._col = {k: i for i, k in enumerate(self.keys)}
+        self._canonical = canonical_affordance_key
+
+    @property
+    def dim(self) -> int:
+        return len(self.keys)
+
+    def one_hot(self, device: torch.device) -> torch.Tensor:
+        out = torch.zeros(self.num_envs, len(self.keys), dtype=torch.float32)
+        base = self.env.unwrapped
+        try:
+            ptrs = _to_np1d(base.subtask_pointer)
+            task_plan_len = len(getattr(base, "task_plan", []) or [])
+            bcis = _to_np1d(base.build_config_idxs)
+            tpis = _to_np1d(base.task_plan_idxs)
+            bcitp = base.build_config_idx_to_task_plans
+        except Exception:
+            return out.to(device)
+        for i in range(self.num_envs):
+            try:
+                ptr = min(int(ptrs[i]), task_plan_len - 1)
+                tp_list = bcitp.get(int(bcis[i]))
+                subtasks = tp_list[int(tpis[i])].subtasks
+                if not (0 <= ptr < len(subtasks)):
+                    continue
+                key = self._canonical(getattr(subtasks[ptr], "obj_id", None))
+                col = self._col.get(key)
+                if col is not None:
+                    out[i, col] = 1.0
+            except Exception:
+                continue
+        return out.to(device)
+
+    def append_to(self, obs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        state = obs["state"]
+        obs["state"] = torch.cat([state, self.one_hot(state.device)], dim=-1)
+        return obs
 
 
 def adapt_obs(raw: Mapping, device: torch.device) -> Dict[str, torch.Tensor]:

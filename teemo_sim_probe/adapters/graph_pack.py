@@ -12,6 +12,7 @@ from typing import Dict, Tuple
 
 import numpy as np
 
+from ..core.affordance import canonical_affordance_key
 from ..core.schema import Graph
 from .graph_vocab import EdgeVocab, NodeVocab, node_key_for
 
@@ -88,6 +89,13 @@ def pack_graph(
         edge_dst[i] = node_id_to_slot[e.dst]
         edge_pred[i] = edge_vocab.encode(e.relation, e.label)
 
+    # Target category in node-vocab space so the encoder can match it against
+    # graph_node_ids. Unresolved target encodes to pad (0); an unknown key
+    # raises in NodeVocab.encode.
+    obj_id = graph.meta.get("active_obj_id")
+    key = canonical_affordance_key(str(obj_id)) if obj_id else None
+    target_id = node_vocab.encode(f"actor:{key}" if key else None)
+
     return {
         "graph_node_ids": node_ids,
         "graph_node_ee_mask": node_ee_mask,
@@ -97,11 +105,12 @@ def pack_graph(
         "graph_edge_pred": edge_pred,
         "graph_n_nodes": np.int32(n_nodes),
         "graph_n_edges": np.int32(len(kept)),
+        "graph_target_id": np.int32(target_id),
     }
 
 
 GRAPH_KEYS = (
     "graph_node_ids", "graph_node_ee_mask", "graph_node_conf",
     "graph_edge_src", "graph_edge_dst", "graph_edge_pred",
-    "graph_n_nodes", "graph_n_edges",
+    "graph_n_nodes", "graph_n_edges", "graph_target_id",
 )

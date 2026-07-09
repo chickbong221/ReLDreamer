@@ -244,6 +244,7 @@ class GraphBuilder:
             meta=dict(
                 is_mshab=state.is_mshab,
                 active_subtask=state.active_subtask_type,
+                active_obj_id=state.active_obj_id,
                 n_valid=sum(1 for n in ordered if n.valid_mask and n.node_type == "object"),
             ),
         )

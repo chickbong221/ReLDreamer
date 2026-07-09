@@ -25,7 +25,9 @@ import numpy as np
 import torch
 
 from ..agent import SACAgent, UpdateMetrics
-from ..envs import action_box, adapt_obs, build_env
+from ..envs import (
+    TargetIdReader, action_box, adapt_obs, build_env, build_target_vocab,
+)
 from ..graph_env import build_graph_obs
 from ..replay import PixelStateBatchReplayBuffer
 
@@ -195,8 +197,13 @@ def train(config: dict) -> None:
     graph_train = build_graph_obs(envs, graph_raw, num_envs=num_envs)
     graph_eval = build_graph_obs(eval_envs, graph_raw, num_envs=num_eval_envs)
 
+    target_keys = build_target_vocab(task, env_cfg)
+    print(f"[sac] target vocab ({len(target_keys)}): {target_keys}", flush=True)
+    target_train = TargetIdReader(envs, target_keys, num_envs=num_envs)
+    target_eval = TargetIdReader(eval_envs, target_keys, num_envs=num_eval_envs)
+
     raw_obs, _ = envs.reset(seed=int(config["seed"]))
-    obs = adapt_obs(raw_obs, device)
+    obs = target_train.append_to(adapt_obs(raw_obs, device))
     graph_obs = graph_train.reset(device) if graph_train is not None else None
     eval_envs.reset(seed=int(config["seed"]) + 1)
 
@@ -291,7 +298,7 @@ def train(config: dict) -> None:
             act = agent.act(obs["pixels"], obs["state"], graph_obs, deterministic=False)
 
         next_raw, rew, term, trunc, _ = envs.step(act)
-        next_obs = adapt_obs(next_raw, device)
+        next_obs = target_train.append_to(adapt_obs(next_raw, device))
         done = term | trunc
         graph_next = graph_train.step(done, device) if graph_train is not None else None
 
@@ -350,7 +357,7 @@ def train(config: dict) -> None:
         if eval_every > 0 and global_step - last_eval >= eval_every:
             last_eval = global_step
             _run_eval(
-                agent, eval_envs, graph_eval, logger, device,
+                agent, eval_envs, graph_eval, target_eval, logger, device,
                 eval_max_steps=eval_max_steps,
                 step=global_step,
                 wandb_enabled="wandb" in config["logger"]["outputs"],
@@ -425,7 +432,7 @@ def _log_losses(logger: Logger, m: UpdateMetrics, step: int) -> None:
     logger.scalar("target_entropy", m.target_entropy, step)
 
 
-def _run_eval(agent, eval_envs, graph_eval, logger, device, *,
+def _run_eval(agent, eval_envs, graph_eval, target_eval, logger, device, *,
                eval_max_steps: int, step: int, wandb_enabled: bool) -> None:
     do_video = graph_eval is not None and wandb_enabled
     tmp_dir = None
@@ -453,7 +460,7 @@ def _run_eval(agent, eval_envs, graph_eval, logger, device, *,
             hand_cam = graph_eval.secondary_camera
 
         eval_raw, _ = eval_envs.reset()
-        obs = adapt_obs(eval_raw, device)
+        obs = target_eval.append_to(adapt_obs(eval_raw, device))
         graph_obs = graph_eval.reset(device) if graph_eval is not None else None
 
         def _masks_from_seg(graph, seg: np.ndarray) -> "MaskAccumulator":
@@ -502,7 +509,7 @@ def _run_eval(agent, eval_envs, graph_eval, logger, device, *,
                     obs["pixels"], obs["state"], graph_obs, deterministic=True,
                 )
             next_raw, _, term, trunc, _ = eval_envs.step(act)
-            obs = adapt_obs(next_raw, device)
+            obs = target_eval.append_to(adapt_obs(next_raw, device))
             done = term | trunc
             if graph_eval is not None:
                 graph_obs = graph_eval.step(done, device)

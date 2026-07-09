@@ -158,6 +158,7 @@ class GraphObsBuilder:
             "graph_edge_pred":    (self.e_max,),
             "graph_n_nodes":      (),
             "graph_n_edges":      (),
+            "graph_target_id":    (),
         }
 
     def cache_stats(self) -> Dict[str, int]:
