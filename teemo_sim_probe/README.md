@@ -263,6 +263,23 @@ python -m teemo_sim_probe.run_mshab_probe \
     --steps 200 --save-every 2 --video
 ```
 
+### Raw RGB rollout (no segmentation)
+
+Use `--rgb-only` to run the pretrained checkpoint without requesting a
+segmentation texture or building graphs. The mode discovers every RGB sensor
+exposed by the environment and saves one PNG per camera per step. It defaults
+to 200 steps, so each camera directory contains `frame_0000.png` through
+`frame_0199.png`:
+
+```bash
+python -m teemo_sim_probe.run_mshab_probe \
+    --ckpt-dir mshab_checkpoints/rl/set_table/pick/024_bowl \
+    --rgb-only --out teemo_sim_probe/outputs/rgb_rollout
+```
+
+For the standard Fetch setup this produces `fetch_head/` and `fetch_hand/`,
+each with 200 raw RGB PNGs. Pass `--steps N` to request a different count.
+
 After a schema bump (currently rollout `v6` / whitelist `v4` / affordances
 `v3`), re-run steps 1 → 2 → 3 with `--no-skip-done`. The runtime fails loud
 at episode start when no matching whitelist exists for `(subtask, target)`.

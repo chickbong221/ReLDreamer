@@ -88,6 +88,27 @@ def read_unwrapped_sensor(env, camera: str, env_idx: int = 0):
     return seg, depth, rgb
 
 
+def read_unwrapped_rgbs(env, env_idx: int = 0) -> Dict[str, np.ndarray]:
+    """Read every RGB sensor without requiring a segmentation texture.
+
+    Observation wrappers used by MS-HAB remove the camera dictionaries before
+    the policy sees them, so RGB export must read the unwrapped environment.
+    Unlike :func:`read_unwrapped_sensor`, this helper also works when the env
+    was created with ``obs_mode="rgb+depth"`` and segmentation is disabled.
+    """
+    full = env.unwrapped.get_obs()
+    sensor_data = full.get("sensor_data", {})
+    frames: Dict[str, np.ndarray] = {}
+    for camera, camera_obs in sensor_data.items():
+        if "rgb" not in camera_obs:
+            continue
+        rgb = _to_np(camera_obs["rgb"])[env_idx]
+        if rgb.dtype != np.uint8:
+            rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+        frames[str(camera)] = rgb
+    return frames
+
+
 def depth_to_gray_rgb(depth: np.ndarray) -> np.ndarray:
     """Turn a [H,W] depth map into a [H,W,3] uint8 grayscale backdrop."""
     d = depth.astype(np.float32)

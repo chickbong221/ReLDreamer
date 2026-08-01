@@ -1,9 +1,10 @@
 """Run the TEEMO sim-probe on MS-HAB checkpoints.
 
 Design:
-  * Env built in obs_mode="rgb+depth+segmentation": the depth wrapper +
-    framestack feed the policy the depth/state obs it was trained on, while
-    RGB and segmentation ride along in unwrapped sensor_data for the probe.
+  * Probe mode builds the env in obs_mode="rgb+depth+segmentation". RGB-only
+    mode uses "rgb+depth", so segmentation is neither rendered nor processed.
+    In both modes, the depth wrapper + framestack feed the policy the
+    depth/state obs it was trained on.
   * Wrapper stack copied from make_env: FetchDepthObservationWrapper(cat_state)
     -> FrameStack(...) -> FetchActionWrapper -> ManiSkillVectorEnv
     -> VectorRecordEpisodeStatistics.
@@ -15,12 +16,18 @@ Usage:
     python -m teemo_sim_probe.run_mshab_probe \
         --ckpt-dir mshab_checkpoints/rl/tidy_house/pick/all \
         --steps 60 --video
+
+    # Save 200 raw PNG frames from every available RGB sensor.
+    python -m teemo_sim_probe.run_mshab_probe \
+        --ckpt-dir mshab_checkpoints/rl/tidy_house/pick/all \
+        --rgb-only --out teemo_sim_probe/outputs/rgb_rollout
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import re
 import tempfile
 
 import numpy as np
@@ -28,7 +35,8 @@ import numpy as np
 from .configs.loader import load_config
 from .core.graph_builder import GraphBuilder
 from .core.mask_extractor import (
-    read_unwrapped_sensor, depth_to_gray_rgb, depth_to_color_rgb,
+    read_unwrapped_sensor, read_unwrapped_rgbs,
+    depth_to_gray_rgb, depth_to_color_rgb,
 )
 from .viz.overlay import render_overlay
 from .viz.graph_draw import render_graph
@@ -39,7 +47,7 @@ from .adapters.policy_loader import load_policy, detect_algo
 from .adapters.privileged_state import get_privileged_state
 
 
-def parse_args():
+def parse_args(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--ckpt-dir",
                    default="mshab_checkpoints/rl/tidy_house/pick/all",
@@ -55,7 +63,10 @@ def parse_args():
                         "Defaults to ckpt path/config, then all.")
     p.add_argument("--plan-index", type=int, default=0,
                    help="which plan from the selected task-plan JSON to run")
-    p.add_argument("--steps", type=int, default=60)
+    p.add_argument(
+        "--steps", type=int, default=None,
+        help="rollout frames (default: 60 in probe mode, 200 with --rgb-only)",
+    )
     p.add_argument("--probe-cameras", nargs="+",
                    default=["fetch_head", "fetch_hand"],
                    help="cameras to build overlays/graphs for")
@@ -92,8 +103,20 @@ def parse_args():
     p.add_argument("--out", default=os.path.join(os.path.dirname(__file__),
                                                  "outputs", "mshab"))
     p.add_argument("--video", action="store_true")
+    p.add_argument(
+        "--rgb-only", action="store_true",
+        help="disable segmentation/graph generation and save one raw PNG per "
+             "step for every RGB sensor",
+    )
     p.add_argument("--seed", type=int, default=0)
-    return p.parse_args()
+    args = p.parse_args(argv)
+    if args.rgb_only and args.video:
+        p.error("--rgb-only cannot be combined with --video")
+    if args.steps is None:
+        args.steps = 200 if args.rgb_only else 60
+    if args.steps <= 0:
+        p.error("--steps must be greater than zero")
+    return args
 
 
 def main():
@@ -134,13 +157,14 @@ def main():
 
     env_id = f"{subtask.capitalize()}SubtaskTrain-v0"
 
-    # Build the env in rgb+depth+segmentation. The depth wrapper only reads the
-    # depth texture, so the policy obs is unchanged; the probe reads segmentation
-    # (for masks) and rgb (for the overlay backdrop) from the unwrapped env.
+    # The checkpoint consumes depth/state through the wrapper in either mode.
+    # RGB-only deliberately omits the segmentation texture at environment
+    # creation time; probe mode retains it for mask and graph construction.
+    obs_mode = "rgb+depth" if args.rgb_only else "rgb+depth+segmentation"
     env = gym.make(
         env_id,
         num_envs=1,
-        obs_mode="rgb+depth+segmentation",
+        obs_mode=obs_mode,
         sim_backend="gpu",
         robot_uids="fetch",
         control_mode="pd_joint_delta_pos",
@@ -194,6 +218,14 @@ def main():
     eval_obs, _ = venv.reset(seed=args.seed, options=dict(reconfigure=True))
     policy = load_policy(args.ckpt_dir, venv, eval_obs, device=args.device)
     print(f"[policy] kind={policy.kind}")
+
+    if args.rgb_only:
+        print("[output] raw RGB PNG mode (segmentation disabled)")
+        try:
+            _export_rgb_rollout(venv, policy, eval_obs, args)
+        finally:
+            venv.close()
+        return
 
     cfg = load_config("room_scale")
     _apply_ablation_overrides(cfg, args)
@@ -297,6 +329,66 @@ def main():
 
     venv.close()
     print(f"wrote {args.steps} frames to {args.out}")
+
+
+def _export_rgb_rollout(venv, policy, obs, args) -> None:
+    """Run the loaded checkpoint and save every available RGB camera each step."""
+    cameras = None
+    camera_dirs = {}
+
+    for frame in range(args.steps):
+        rgb_frames = read_unwrapped_rgbs(venv, env_idx=0)
+        if cameras is None:
+            cameras = list(rgb_frames)
+            if not cameras:
+                raise RuntimeError(
+                    "RGB-only mode found no RGB cameras in env sensor_data"
+                )
+            for camera in cameras:
+                safe_camera = _safe_path_component(camera)
+                camera_dir = os.path.join(args.out, safe_camera)
+                os.makedirs(camera_dir, exist_ok=True)
+                camera_dirs[camera] = camera_dir
+            print(f"[rgb] cameras={', '.join(cameras)}")
+
+        missing = [camera for camera in cameras if camera not in rgb_frames]
+        if missing:
+            raise RuntimeError(
+                f"RGB cameras disappeared at frame {frame}: {missing}"
+            )
+
+        for camera in cameras:
+            _save_rgb_png(
+                rgb_frames[camera],
+                os.path.join(camera_dirs[camera], f"frame_{frame:04d}.png"),
+            )
+
+        action = policy.act(obs)
+        obs, _reward, _terminated, _truncated, _info = venv.step(action)
+
+    print(
+        f"wrote {args.steps} RGB PNGs for each of {len(cameras)} cameras "
+        f"to {args.out}"
+    )
+
+
+def _safe_path_component(value: str) -> str:
+    """Make an environment camera uid safe to use as one directory name."""
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value)).strip("._")
+    return safe or "camera"
+
+
+def _save_rgb_png(rgb: np.ndarray, path: str) -> str:
+    """Save an HxWx3 array as a truecolor RGB PNG without plotting."""
+    from PIL import Image
+
+    image = np.asarray(rgb)
+    if image.ndim != 3 or image.shape[-1] != 3:
+        raise ValueError(f"expected an HxWx3 RGB frame, got shape {image.shape}")
+    if image.dtype != np.uint8:
+        image = np.clip(image, 0, 255).astype(np.uint8)
+    Image.fromarray(image, mode="RGB").save(path, format="PNG")
+    return path
 
 
 def _apply_ablation_overrides(cfg: dict, args) -> None:
