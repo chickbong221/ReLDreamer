@@ -36,7 +36,7 @@ def parse_args():
     p.add_argument("--overlay-size", type=float, default=6.0)
     p.add_argument("--height", type=int, default=256)
     p.add_argument("--k-persist", type=int, default=None)
-    p.add_argument("--n-slots", type=int, default=None)
+    p.add_argument("--n-max", type=int, default=None)
     p.add_argument("--whitelist-dir", default=None,
                    help="Override the per-subtask whitelist directory.")
     p.add_argument("--out", default=os.path.join(os.path.dirname(__file__),
@@ -124,8 +124,8 @@ def _apply_ablation_overrides(cfg: dict, args) -> None:
     sel = cfg["selection"]
     if args.k_persist is not None:
         sel["k_persist"] = int(args.k_persist)
-    if args.n_slots is not None:
-        sel["n_slots"] = int(args.n_slots)
+    if args.n_max is not None:
+        sel["n_max"] = int(args.n_max)
     if args.whitelist_dir is not None:
         cfg["whitelist_dir"] = args.whitelist_dir
 

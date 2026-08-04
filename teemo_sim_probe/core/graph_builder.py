@@ -1,7 +1,7 @@
-"""Per-frame node selection and relation orchestration.
+"""Per-frame vertex maintenance and fact orchestration.
 
-Pipeline: build_nodes -> apply_whitelist -> classify_pair_types
--> overflow_truncate -> slot assign -> absolute + temporal edges.
+Pipeline: build_nodes -> apply_whitelist -> merge_persistent -> update_feats
+-> registry.assign -> absolute facts -> retained facts -> temporal labels.
 """
 
 from __future__ import annotations
@@ -13,19 +13,19 @@ import numpy as np
 
 from .affordance import canonical_affordance_key
 from .entity_identity import stable_entity_key, stable_node_id
-from .schema import Edge, Graph, Node, padding_node
-from .node_builder import build_nodes, classify_pair_types
+from .schema import Edge, Graph, Node
+from .node_builder import build_nodes
 from .relation_rules import build_absolute_edges
 from .temporal_buffer import TemporalBuffer
 from .mask_extractor import MaskAccumulator
-from .selector import NodeSelector
-from .slot_manager import SlotManager
+from .selector import EntityRegistry, NodeSelector
 from .whitelist import entity_match_key, load_whitelist, resolve_whitelist_path
 from ..adapters.privileged_state import get_privileged_state
 
-# Only physical-state relations survive on a frozen node. Spatial and
-# compatibility edges would replay stale geometry, so we drop them.
-_STALE_REPLAY_RELATIONS = frozenset({"contact", "grasp", "support", "contain"})
+# A node that left the view keeps only its most recently observed
+# object--object physical state. Spatial and affordance facts need current
+# perceptual evidence and are omitted instead.
+_STALE_REPLAY_RELATIONS = frozenset({"contact", "support", "contain"})
 
 
 class GraphBuilder:
@@ -37,6 +37,7 @@ class GraphBuilder:
         env_idx: int = 0,
         env_id: str = "env",
         camera: Optional[str] = None,
+        camera_order: Optional[List[str]] = None,
         staleness_enabled: bool = True,
     ):
         self.env = env
@@ -44,11 +45,12 @@ class GraphBuilder:
         self.env_idx = env_idx
         self.env_id = env_id
         self.camera = camera
+        self.camera_order = list(camera_order) if camera_order else None
         self.staleness_enabled = bool(staleness_enabled)
 
         self.temporal = TemporalBuffer(K=cfg["temporal"]["K"])
         self.selector = NodeSelector(cfg)
-        self.slots = SlotManager(n_slots=int(cfg["selection"]["n_slots"]))
+        self.registry = EntityRegistry(n_max=int(cfg["selection"]["n_max"]))
         self.cfg.setdefault("_affordance_selection_cache", {})
 
         self._whitelist_dir: Optional[str] = cfg.get("whitelist_dir")
@@ -56,14 +58,15 @@ class GraphBuilder:
 
         self._last_seen: Dict[str, int] = {}
         self._first_unseen: Dict[str, int] = {}
-        # Last fresh absolute edge per (src,dst,relation) -- replayed for frozen nodes.
+        # Last observed fact per (src,dst,relation) -- replayed while an
+        # endpoint is out of view.
         self._edge_history: Dict[Tuple[str, str, str], Edge] = {}
         # entity -> whitelist match key, identity-guarded (ids recycle).
         self._match_key_cache: Dict[int, Tuple[Any, Optional[str]]] = {}
 
     def reset_episode(self) -> None:
         self.selector.reset_episode()
-        self.slots.reset_episode()
+        self.registry.reset_episode()
         self.temporal = TemporalBuffer(K=self.cfg["temporal"]["K"])
         self._last_seen.clear()
         self._first_unseen.clear()
@@ -104,15 +107,11 @@ class GraphBuilder:
             )
         wl = load_whitelist(path)
         self.selector.set_whitelist(wl)
-        # Push per-(subtask, target) bin edges and the per-member interaction-
-        # type table into cfg so relation_rules and temporal_buffer pick them
-        # up. cfg["profile"] remains the fallback for any relation the asset
-        # omits; cfg["compat_norm"] (from thresholds.yaml or runtime defaults)
-        # is untouched.
+        # Push per-(subtask, target) bin edges into cfg so relation_rules and
+        # the temporal buffer pick them up. cfg["profile"] remains the fallback
+        # for any relation the asset omits; cfg["compat_norm"] (from
+        # thresholds.yaml or runtime defaults) is untouched.
         self.cfg["bin_edges"] = dict(wl.bin_edges or {})
-        self.cfg["interaction_types"] = {
-            k: set(v) for k, v in (wl.interaction_types or {}).items()
-        }
         self._whitelist_key = key
 
     def _entity_admitted(self, entity) -> bool:
@@ -137,7 +136,7 @@ class GraphBuilder:
         self, obs: dict, frame: int,
         *,
         episode_boundary: bool = False,
-        seg_override=None, seg_overrides=None,
+        seg_override=None, seg_overrides=None, depth_overrides=None,
         rgb_override=None, camera_override=None, primary_camera=None,
         need_masks: bool = True,
     ) -> Tuple[Graph, MaskAccumulator, str, np.ndarray]:
@@ -154,19 +153,24 @@ class GraphBuilder:
             camera=self.camera,
             seg_override=seg_override,
             seg_overrides=seg_overrides,
+            depth_overrides=depth_overrides,
             rgb_override=rgb_override,
             camera_override=camera_override,
             primary_camera=primary_camera,
+            camera_order=self.camera_order,
             need_masks=need_masks,
             # Recording paths keep full masks/nodes for overlays; the training
             # hot path skips node construction for never-admissible entities.
             admit=None if need_masks else self._entity_admitted,
         )
+        n_cams = len(self.camera_order) if self.camera_order else (
+            len(seg_overrides) if seg_overrides else 1
+        )
 
         # Whitelist admission first, then episode-scoped persistence: a node
-        # that was ever seen (post-whitelist) and is still admissible stays as
-        # a frozen snapshot for the rest of the episode. Non-whitelisted
-        # entities are never persisted.
+        # that was ever seen (post-whitelist) and is still admissible stays in
+        # the vertex set for the rest of the episode. Non-whitelisted entities
+        # are never persisted.
         active_target_node_id: Optional[str] = None
         if state.active_obj is not None:
             # Fail open if active-object resolution fell back to the merged
@@ -188,6 +192,7 @@ class GraphBuilder:
         )
         if self.staleness_enabled:
             nodes = self.selector.merge_persistent(nodes, frame)
+        self.selector.update_feats(nodes, n_cams)
 
         for nid, n in nodes.items():
             if n.node_type == "ee":
@@ -201,40 +206,19 @@ class GraphBuilder:
             else:
                 n.steps_since_seen = frame - self._last_seen[nid]
 
-        classify_pair_types(nodes, self.cfg)
-
-        selected_ids = self.selector.overflow_truncate(nodes)
-        assignments = self.slots.assign(selected_ids)
+        nodes = self.registry.assign(nodes)
 
         expired = self.selector.evict_expired(frame)
         if expired:
             self.temporal.purge(expired)
         for nid in expired:
+            self.registry.release(nid)
             self._last_seen.pop(nid, None)
             self._first_unseen.pop(nid, None)
             for key in [k for k in self._edge_history if nid in k[:2]]:
                 del self._edge_history[key]
 
-        # Final order: ee, then slots (by slot_id), padded.
-        ee_node = nodes.get("ee")
-        slot_to_node: Dict[int, Node] = {}
-        for ent_id in selected_ids:
-            n = nodes.get(ent_id)
-            if n is None:
-                continue
-            sa = assignments[ent_id]
-            n.slot_id = sa.slot_id
-            n.entity_id = ent_id
-            n.valid_mask = True
-            n.reset_flag = sa.reset_flag
-            slot_to_node[sa.slot_id] = n
-
-        ordered: List[Node] = []
-        if ee_node is not None:
-            ordered.append(ee_node)
-        for s in range(self.slots.n_slots):
-            n = slot_to_node.get(s)
-            ordered.append(n if n is not None else padding_node(s))
+        ordered = sorted(nodes.values(), key=lambda n: n.index)
 
         graph = Graph(
             frame=frame,
@@ -245,35 +229,33 @@ class GraphBuilder:
                 is_mshab=state.is_mshab,
                 active_subtask=state.active_subtask_type,
                 active_obj_id=state.active_obj_id,
-                n_valid=sum(1 for n in ordered if n.valid_mask and n.node_type == "object"),
+                n_objects=sum(1 for n in ordered if n.node_type == "object"),
+                n_visible=sum(1 for n in ordered if n.visible),
             ),
         )
 
         build_absolute_edges(graph, state, self.cfg)
         if self.staleness_enabled:
             self._attach_stale_edges(graph, frame)
-        self.temporal.update(graph)
-        graph.edges.extend(self.temporal.temporal_edges(graph, self.cfg))
+        self.temporal.annotate(graph, self.cfg)
 
         self.selector.commit(nodes, frame)
         return graph, masks, cam, rgb
 
     def _attach_stale_edges(self, graph: Graph, frame: int) -> None:
-        """Cache fresh edges; replay last observed edge (tagged stale) for frozen nodes."""
-        by_id = {n.node_id: n for n in graph.nodes if n.valid_mask}
-        fresh_ids = {nid for nid, n in by_id.items() if not n.frozen_pose}
-        stale_ids = set(by_id) - fresh_ids
+        """Cache observed object--object physical facts and replay the last one
+        for pairs whose endpoint left the view. Both polarities are retained so
+        a later negative-to-positive transition stays legible."""
+        by_id = {n.node_id: n for n in graph.nodes}
+        visible_objects = {
+            nid for nid, n in by_id.items()
+            if n.node_type == "object" and n.visible
+        }
 
-        # Only refresh cache for edges between two fresh nodes.
-        for key in list(self._edge_history):
-            if key[0] in fresh_ids and key[1] in fresh_ids:
-                del self._edge_history[key]
         for edge in graph.edges:
-            if edge.temporal or edge.stale:
+            if edge.stale or edge.relation not in _STALE_REPLAY_RELATIONS:
                 continue
-            if edge.relation not in _STALE_REPLAY_RELATIONS:
-                continue
-            if edge.src in fresh_ids and edge.dst in fresh_ids:
+            if edge.src in visible_objects and edge.dst in visible_objects:
                 key = (edge.src, edge.dst, edge.relation)
                 self._edge_history[key] = replace(
                     edge, stale=False, observed_frame=frame, age=0,
@@ -285,7 +267,7 @@ class GraphBuilder:
                 continue
             if cached.src not in by_id or cached.dst not in by_id:
                 continue
-            if cached.src not in stale_ids and cached.dst not in stale_ids:
+            if cached.src in visible_objects and cached.dst in visible_objects:
                 continue
             observed = cached.observed_frame
             age = max(1, frame - observed) if observed is not None else 1

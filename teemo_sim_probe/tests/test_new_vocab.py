@@ -1,64 +1,78 @@
-"""Coverage for the post-rewrite TEEMO relation vocabulary.
+"""Hyper-relational fact emission, vocabularies, and packing.
 
-* Geometric ``contain`` detection (PegInsertionSide template).
-* Obj-obj ``contact-compatibility`` scorer.
-* ``support-compatibility`` scorer.
-* ``contain-compatibility`` scorer.
-* No-no-* paired labels on physical-state edges (only positive labels emit).
-* Temporal change edge for one of the new compat relations.
+Covers what the new contract guarantees: physical-state relations co-fire,
+admissibility is whitelist-gated, the affordance near gate picks a label rather
+than deleting a fact, and delta appears only where mu^rho and history allow.
 """
 
 import unittest
 
 import numpy as np
 
-from teemo_sim_probe.core.affordance import (
-    AffordanceSet,
-    BottomComponent,
-    ContactComponent,
-    ContainComponent,
-    KeyComponent,
-    SupportComponent,
-)
-from teemo_sim_probe.core.containment import (
-    contain_compatibility,
-    contain_holds,
-    obj_contact_compatibility,
-    support_compatibility,
+from teemo_sim_probe.adapters.graph_pack import pack_graph
+from teemo_sim_probe.adapters.graph_vocab import (
+    GraphVocab,
+    EntityVocab,
+    build_absolute_vocab,
+    build_relation_vocab,
+    build_temporal_vocab,
 )
 from teemo_sim_probe.core.relation_rules import (
-    ALL_LABELS,
-    ee_object_spatial_event_edges,
-    object_object_edges,
-    object_object_compatibility_edges,
+    ABS_LABELS,
+    HOLDS,
+    NOT_HOLDS,
+    RELATION_TYPES,
+    TEMPORAL_RELATIONS,
+    UNOBSERVED,
+    ee_object_physical_edges,
+    ee_object_spatial_edges,
+    object_object_physical_edges,
 )
-from teemo_sim_probe.core.schema import Edge, Graph, Node
+from teemo_sim_probe.core.schema import Graph, Node
 from teemo_sim_probe.core.temporal_buffer import TemporalBuffer
 
 
-# --------------------------------------------------------------------------- #
-# Helpers
-# --------------------------------------------------------------------------- #
-def _ee_node():
+BINS = {
+    "planar-distance": [0.1, 0.2, 0.3, 0.4],
+    "height-offset": [-0.3, -0.1, 0.1, 0.3],
+    "planar-distance-change": [-0.3, -0.1, 0.1, 0.3],
+}
+
+
+def _cfg(**over):
+    cfg = {
+        "bin_edges": dict(BINS),
+        "contact": {"eps_force": 0.05},
+        "grasp": {"max_angle": 30.0},
+        "support": {"min_vertical_force_ratio": 0.5},
+        "temporal": {"K": 2},
+        "affordances": {},
+        "pair_force_max_distance": 2.0,
+    }
+    cfg.update(over)
+    return cfg
+
+
+def _ee(pose=(0.0, 0.0, 0.0)):
     return Node(
-        node_id="ee", node_type="ee", name="end_effector",
-        pose_world=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+        node_id="ee", node_type="ee", name="end_effector", visible=True,
+        pose_world=[*pose, 1.0, 0.0, 0.0, 0.0],
     )
 
 
-def _obj_node(node_id, pose):
+def _obj(node_id, pose, types=("contact", "grasp"), visible=True):
     return Node(
-        node_id=node_id, node_type="object", name=node_id,
-        pose_world=list(pose),
-        segmentation_ids=[hash(node_id) & 0xffff],
-        attributes={"is_actor": True},
+        node_id=node_id, node_type="object", name=node_id, visible=visible,
+        pose_world=[*pose, 1.0, 0.0, 0.0, 0.0],
+        segmentation_ids=[abs(hash(node_id)) & 0xffff],
+        attributes={"is_actor": True, "whitelist_key": f"actor:{node_id}",
+                    "interaction_types": list(types)},
     )
 
 
 class _StubState:
-    def __init__(self, *, force_vector=(0.0, 0.0, 0.0),
-                 grasping=False, contact_force=0.0,
-                 tcp=(0.0, 0.0, 0.0)):
+    def __init__(self, *, force_vector=(0.0, 0.0, 0.0), grasping=False,
+                 contact_force=0.0, tcp=(0.0, 0.0, 0.0)):
         self.force_vector = np.asarray(force_vector, dtype=float)
         self._grasping = bool(grasping)
         self._contact_force = float(contact_force)
@@ -76,350 +90,167 @@ class _StubState:
         return self._grasping
 
 
-# --------------------------------------------------------------------------- #
-# Geometric contain (PegInsertion template)
-# --------------------------------------------------------------------------- #
-class ContainGeometricTests(unittest.TestCase):
-    def _hole(self, opening_radius=0.02, depth=0.10):
-        return ContainComponent(
-            entry_anchor_obj_frame=np.array([0.0, 0.0, 0.0]),
-            entry_axis_obj_frame=np.array([1.0, 0.0, 0.0]),
-            opening_radius=opening_radius,
-            depth=depth,
-        )
-
-    def _key(self):
-        return KeyComponent(
-            key_anchor_obj_frame=np.array([0.0, 0.0, 0.0]),
-            key_axis_obj_frame=np.array([1.0, 0.0, 0.0]),
-        )
-
-    def test_key_inside_hole_returns_true(self):
-        container = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
-        # Peg head at x=0.05 in world: 5 cm past entry along the hole axis.
-        containee = [0.05, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
-        self.assertTrue(
-            contain_holds(container, self._hole(), containee, self._key()),
-        )
-
-    def test_key_radially_off_axis_returns_false(self):
-        container = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
-        # Radially 5 cm off-axis -- well outside opening_radius=2 cm.
-        containee = [0.05, 0.0, 0.05, 1.0, 0.0, 0.0, 0.0]
-        self.assertFalse(
-            contain_holds(container, self._hole(), containee, self._key()),
-        )
-
-    def test_key_before_entry_returns_false(self):
-        container = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
-        # Peg head at x=-0.01: outside the [0, depth] interval.
-        containee = [-0.01, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
-        self.assertFalse(
-            contain_holds(container, self._hole(), containee, self._key()),
-        )
+def _graph(*nodes):
+    return Graph(frame=0, env_id="e", camera="c", nodes=list(nodes))
 
 
-# --------------------------------------------------------------------------- #
-# Obj-obj contact compatibility
-# --------------------------------------------------------------------------- #
-class ObjContactCompatTests(unittest.TestCase):
-    def test_perfect_match_at_aligned_anchors(self):
-        a = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
-        b = [0.1, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
-        # A's contact anchor at (+0.05, 0, 0); B's at (-0.05, 0, 0); both
-        # transform to (0.05, 0, 0) in world.
-        a_comps = [ContactComponent(np.array([0.05, 0.0, 0.0]),
-                                    np.array([1.0, 0.0, 0.0]))]
-        b_comps = [ContactComponent(np.array([-0.05, 0.0, 0.0]),
-                                    np.array([-1.0, 0.0, 0.0]))]
-        meas = obj_contact_compatibility(a, a_comps, b, b_comps)
-        self.assertIsNotNone(meas)
-        self.assertAlmostEqual(meas.pos_mismatch, 0.0, places=6)
-        # Anti-parallel outward normals -> 0 mismatch.
-        self.assertAlmostEqual(meas.orient_mismatch, 0.0, places=6)
+class PhysicalStateTests(unittest.TestCase):
 
-    def test_returns_none_when_either_side_empty(self):
-        a = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
-        b = [0.1, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
-        a_comps = [ContactComponent(np.array([0.05, 0.0, 0.0]))]
-        self.assertIsNone(obj_contact_compatibility(a, a_comps, b, []))
-        self.assertIsNone(obj_contact_compatibility(a, [], b, a_comps))
+    def test_contact_and_grasp_cofire(self):
+        g = _graph(_ee(), _obj("bowl", (0.05, 0.0, 0.0)))
+        state = _StubState(grasping=True, contact_force=5.0)
+        by_rel = {e.relation: e for e in ee_object_physical_edges(g, state, _cfg())}
+        self.assertEqual(by_rel["grasp"].label, HOLDS)
+        self.assertEqual(by_rel["contact"].label, HOLDS)
 
+    def test_negative_state_is_emitted_not_dropped(self):
+        g = _graph(_ee(), _obj("bowl", (0.9, 0.0, 0.0)))
+        state = _StubState(grasping=False, contact_force=0.0)
+        by_rel = {e.relation: e for e in ee_object_physical_edges(g, state, _cfg())}
+        self.assertEqual(by_rel["grasp"].label, NOT_HOLDS)
+        self.assertEqual(by_rel["contact"].label, NOT_HOLDS)
 
-# --------------------------------------------------------------------------- #
-# Support compatibility
-# --------------------------------------------------------------------------- #
-class SupportCompatTests(unittest.TestCase):
-    def test_centered_on_surface_zero_xy(self):
-        supporter = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
-        supported = [0.0, 0.0, 0.04, 1.0, 0.0, 0.0, 0.0]
-        sup_comps = [SupportComponent(
-            surface_anchor_obj_frame=np.array([0.0, 0.0, 0.04]),
-            surface_normal_obj_frame=np.array([0.0, 0.0, 1.0]),
-            footprint_radius=0.05,
-        )]
-        bot_comps = [BottomComponent(
-            bottom_anchor_obj_frame=np.array([0.0, 0.0, 0.0]),
-            bottom_normal_obj_frame=np.array([0.0, 0.0, -1.0]),
-        )]
-        meas = support_compatibility(supporter, sup_comps, supported, bot_comps)
-        self.assertIsNotNone(meas)
-        self.assertAlmostEqual(meas.xy_mismatch, 0.0, places=6)
-        self.assertAlmostEqual(meas.vertical_mismatch, 0.0, places=6)
-        self.assertAlmostEqual(meas.orient_mismatch, 0.0, places=6)
+    def test_missing_token_makes_the_fact_inadmissible(self):
+        g = _graph(_ee(), _obj("counter", (0.2, 0.0, 0.0), types=("contact",)))
+        edges = ee_object_physical_edges(g, _StubState(), _cfg())
+        self.assertEqual({e.relation for e in edges}, {"contact"})
 
-    def test_within_footprint_clips_to_zero_xy(self):
-        supporter = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
-        # supported's bottom anchor at world (0.02, 0.0, 0.04). Surface
-        # anchor in supporter local = (0, 0, 0.04). In-plane delta = 2 cm <
-        # footprint_radius=5 cm -> clipped to 0.
-        supported = [0.02, 0.0, 0.04, 1.0, 0.0, 0.0, 0.0]
-        sup_comps = [SupportComponent(
-            surface_anchor_obj_frame=np.array([0.0, 0.0, 0.04]),
-            surface_normal_obj_frame=np.array([0.0, 0.0, 1.0]),
-            footprint_radius=0.05,
-        )]
-        bot_comps = [BottomComponent(
-            bottom_anchor_obj_frame=np.array([0.0, 0.0, 0.0]),
-            bottom_normal_obj_frame=np.array([0.0, 0.0, -1.0]),
-        )]
-        meas = support_compatibility(supporter, sup_comps, supported, bot_comps)
-        self.assertIsNotNone(meas)
-        self.assertAlmostEqual(meas.xy_mismatch, 0.0, places=6)
+    def test_invisible_endpoint_emits_nothing(self):
+        g = _graph(_ee(), _obj("bowl", (0.05, 0.0, 0.0), visible=False))
+        self.assertEqual(ee_object_physical_edges(g, _StubState(), _cfg()), [])
+        self.assertEqual(ee_object_spatial_edges(g, _StubState(), _cfg()), [])
+
+    def test_support_direction_from_force_sign(self):
+        a = _obj("counter", (0.0, 0.0, 0.0), types=("contact", "support"))
+        b = _obj("bowl", (0.0, 0.0, 0.1), types=("contact", "support"))
+        state = _StubState(force_vector=(0.0, 0.0, -8.0))
+        edges = object_object_physical_edges(_graph(a, b), state, _cfg())
+        support = {(e.src, e.dst): e.label for e in edges
+                   if e.relation == "support"}
+        self.assertEqual(support[("counter", "bowl")], HOLDS)
+        self.assertEqual(support[("bowl", "counter")], NOT_HOLDS)
+
+    def test_support_and_contact_cofire(self):
+        a = _obj("counter", (0.0, 0.0, 0.0), types=("contact", "support"))
+        b = _obj("bowl", (0.0, 0.0, 0.1), types=("contact", "support"))
+        state = _StubState(force_vector=(0.0, 0.0, -8.0))
+        edges = object_object_physical_edges(_graph(a, b), state, _cfg())
+        self.assertEqual(
+            [e.label for e in edges if e.relation == "contact"], [HOLDS])
 
 
-# --------------------------------------------------------------------------- #
-# Runtime obj-obj compatibility gating
-# --------------------------------------------------------------------------- #
-class ObjectObjectCompatibilityGateTests(unittest.TestCase):
-    def _cfg(self, *, support_enabled=True, support_subtasks=("place",)):
-        aff_set = AffordanceSet(
-            contact_by_object={
-                "knife": [ContactComponent(
-                    anchor_obj_frame=np.array([0.05, 0.0, 0.0]),
-                    outward_normal_obj_frame=np.array([1.0, 0.0, 0.0]),
-                )],
-                "onion": [ContactComponent(
-                    anchor_obj_frame=np.array([-0.05, 0.0, 0.0]),
-                    outward_normal_obj_frame=np.array([-1.0, 0.0, 0.0]),
-                )],
-            },
-            support_by_object={
-                "link:drawer": [SupportComponent(
-                    surface_anchor_obj_frame=np.array([0.0, 0.0, 0.04]),
-                    surface_normal_obj_frame=np.array([0.0, 0.0, 1.0]),
-                    footprint_radius=0.10,
-                )],
-            },
-            bottom_by_object={
-                "actor:bowl": [BottomComponent(
-                    bottom_anchor_obj_frame=np.array([0.0, 0.0, 0.0]),
-                    bottom_normal_obj_frame=np.array([0.0, 0.0, -1.0]),
-                )],
-            },
-        )
-        return {
-            "contact": {"eps_force": 0.05},
-            "grasp": {"max_angle": 30, "tcp_approach_axis_local": [0, 0, 1]},
-            "bin_edges": {
-                "planar-distance": [0.10, 0.20, 0.50, 1.00],
-                "contact-compatibility": [1.0 / 3.0, 2.0 / 3.0],
-                "support-compatibility": [1.0 / 3.0, 2.0 / 3.0],
-            },
-            "interaction_types": {
-                "actor:knife": {"contact"},
-                "actor:onion": {"contact"},
-                "link:drawer": {"support"},
-                "actor:bowl": {"support"},
-            },
-            "affordance_set": aff_set,
-            "affordances": {
-                "object_object_contact_compatibility": True,
-                "object_object_support_compatibility": support_enabled,
-                "object_object_support_compatibility_subtasks": list(support_subtasks),
-            },
-        }
+class TemporalLabelTests(unittest.TestCase):
 
-    def test_contact_compat_stays_enabled_for_tool_object_pairs(self):
-        knife = _obj_node("actor:knife", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
-        onion = _obj_node("actor:onion", (0.10, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
-        knife.attributes.update({"entity_key": "actor:knife", "whitelist_key": "actor:knife"})
-        onion.attributes.update({"entity_key": "actor:onion", "whitelist_key": "actor:onion"})
-        graph = Graph(0, "env", "cam", nodes=[knife, onion])
+    def _run(self, distances, cfg):
+        buf = TemporalBuffer(K=cfg["temporal"]["K"])
+        labels = []
+        for d in distances:
+            g = _graph(_ee(), _obj("bowl", (d, 0.0, 0.0)))
+            g.edges.extend(ee_object_spatial_edges(g, _StubState(), cfg))
+            g.edges.extend(ee_object_physical_edges(g, _StubState(), cfg))
+            buf.annotate(g, cfg)
+            labels.append({e.relation: e.temp_label for e in g.edges})
+        return labels
 
-        edges = object_object_compatibility_edges(graph, _StubState(), self._cfg())
+    def test_physical_state_never_carries_a_change(self):
+        labels = self._run([0.5, 0.4, 0.3, 0.2], _cfg())
+        self.assertTrue(all(f["contact"] is None for f in labels))
+        self.assertTrue(all(f["grasp"] is None for f in labels))
 
-        self.assertIn("contact-compatibility", {e.relation for e in edges})
+    def test_change_needs_k_plus_one_samples(self):
+        labels = self._run([0.5, 0.4, 0.3, 0.2], _cfg())
+        self.assertIsNone(labels[0]["planar-distance"])
+        self.assertIsNone(labels[1]["planar-distance"])
+        self.assertIsNotNone(labels[2]["planar-distance"])
 
-    def test_support_compat_is_off_by_default_for_passive_support_pairs(self):
-        drawer = _obj_node("link:drawer", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
-        bowl = _obj_node("actor:bowl", (0.0, 0.0, 0.04, 1.0, 0.0, 0.0, 0.0))
-        drawer.attributes.update({"entity_key": "link:drawer", "whitelist_key": "link:drawer"})
-        bowl.attributes.update({"entity_key": "actor:bowl", "whitelist_key": "actor:bowl"})
-        graph = Graph(
-            0, "env", "cam", nodes=[drawer, bowl],
-            meta={"active_subtask": "pick"},
-        )
-
-        edges = object_object_compatibility_edges(graph, _StubState(), self._cfg())
-
-        self.assertNotIn("support-compatibility", {e.relation for e in edges})
-
-    def test_support_compat_is_enabled_for_place_when_allowlisted(self):
-        drawer = _obj_node("link:drawer", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
-        bowl = _obj_node("actor:bowl", (0.0, 0.0, 0.04, 1.0, 0.0, 0.0, 0.0))
-        drawer.attributes.update({"entity_key": "link:drawer", "whitelist_key": "link:drawer"})
-        bowl.attributes.update({"entity_key": "actor:bowl", "whitelist_key": "actor:bowl"})
-        graph = Graph(
-            0, "env", "cam", nodes=[drawer, bowl],
-            meta={"active_subtask": "place"},
-        )
-
-        edges = object_object_compatibility_edges(graph, _StubState(), self._cfg())
-
-        self.assertIn("support-compatibility", {e.relation for e in edges})
+    def test_approach_reads_as_a_decrease(self):
+        labels = self._run([0.9, 0.7, 0.5, 0.3], _cfg())
+        self.assertTrue(labels[-1]["planar-distance"].startswith("decrease"))
 
 
-# --------------------------------------------------------------------------- #
-# Contain compatibility
-# --------------------------------------------------------------------------- #
-class ContainCompatTests(unittest.TestCase):
-    def test_inside_hole_zero_mismatches(self):
-        container = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
-        # Peg head at x=0.04 inside [0, depth=0.10].
-        containee = [0.04, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
-        con_comps = [ContainComponent(
-            entry_anchor_obj_frame=np.array([0.0, 0.0, 0.0]),
-            entry_axis_obj_frame=np.array([1.0, 0.0, 0.0]),
-            opening_radius=0.02,
-            depth=0.10,
-        )]
-        key_comps = [KeyComponent(
-            key_anchor_obj_frame=np.array([0.0, 0.0, 0.0]),
-            key_axis_obj_frame=np.array([1.0, 0.0, 0.0]),
-        )]
-        meas = contain_compatibility(container, con_comps, containee, key_comps)
-        self.assertIsNotNone(meas)
-        self.assertAlmostEqual(meas.radial_mismatch, 0.0, places=6)
-        self.assertAlmostEqual(meas.axial_mismatch, 0.0, places=6)
-        self.assertAlmostEqual(meas.orient_mismatch, 0.0, places=6)
-
-
-# --------------------------------------------------------------------------- #
-# No-no-* paired labels on physical-state edges
-# --------------------------------------------------------------------------- #
-class PhysicalStateLabelTests(unittest.TestCase):
-    def _cfg(self):
-        return {
-            "contact": {"eps_force": 0.05},
-            "grasp": {"max_angle": 30, "tcp_approach_axis_local": [0, 0, 1]},
-            "bin_edges": {
-                "planar-distance": [0.05, 0.10, 0.20, 0.40],
-                "height-offset": [-0.20, -0.10, 0.10, 0.20],
-            },
-            "interaction_types": {},
-        }
-
-    def test_no_contact_when_force_below_eps(self):
-        cfg = self._cfg()
-        node = _obj_node("actor:bowl", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
-        graph = Graph(0, "env", "cam", nodes=[_ee_node(), node])
-        edges = ee_object_spatial_event_edges(
-            graph, _StubState(contact_force=0.01), cfg,
-        )
-        rels = {e.relation for e in edges}
-        self.assertNotIn("contact", rels)
-        self.assertNotIn("grasp", rels)
-
-    def test_grasp_emits_only_positive_label(self):
-        cfg = self._cfg()
-        node = _obj_node("actor:bowl", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
-        graph = Graph(0, "env", "cam", nodes=[_ee_node(), node])
-        edges = ee_object_spatial_event_edges(
-            graph, _StubState(grasping=True, contact_force=2.0), cfg,
-        )
-        grasp = [e for e in edges if e.relation == "grasp"]
-        self.assertEqual(len(grasp), 1)
-        self.assertEqual(grasp[0].label, "grasp")
-
-
-# --------------------------------------------------------------------------- #
-# Vocabulary completeness sanity-check
-# --------------------------------------------------------------------------- #
 class VocabularyTests(unittest.TestCase):
-    def test_new_compat_relations_registered(self):
-        for rel in (
-            "support-compatibility", "contain-compatibility",
-            "support-compatibility-change", "contain-compatibility-change",
-        ):
-            self.assertIn(rel, ALL_LABELS)
-            self.assertEqual(len(ALL_LABELS[rel]), 3 if "change" not in rel else 5)
 
-    def test_no_transition_labels(self):
-        # *-transition is removed from the vocabulary entirely.
-        for rel in ALL_LABELS:
-            self.assertFalse(rel.endswith("-transition"))
+    def test_every_relation_has_labels(self):
+        for name in RELATION_TYPES:
+            self.assertTrue(ABS_LABELS[name])
 
+    def test_unobserved_is_affordance_only(self):
+        for name in RELATION_TYPES:
+            has = UNOBSERVED in ABS_LABELS[name]
+            self.assertEqual(has, name.endswith("-compatibility"))
 
-# --------------------------------------------------------------------------- #
-# Temporal: new compat relation produces a change edge
-# --------------------------------------------------------------------------- #
-class TemporalNewCompatTests(unittest.TestCase):
-    KEY = ("actor:a", "actor:b", "support-compatibility")
-
-    def _push(self, buf, frame, value):
-        ee = _ee_node()
-        a = _obj_node("actor:a", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
-        b = _obj_node("actor:b", (0.05, 0.0, 0.05, 1.0, 0.0, 0.0, 0.0))
-        edge = Edge("actor:a", "actor:b", "support-compatibility",
-                    "partial-match", float(value))
-        graph = Graph(frame, "env", "cam", nodes=[ee, a, b], edges=[edge])
-        buf.update(graph)
-
-    def test_history_accumulates(self):
-        buf = TemporalBuffer(K=2)
-        self._push(buf, 0, 0.5)
-        self._push(buf, 1, 0.3)
-        self._push(buf, 2, 0.1)
-        self.assertEqual(len(buf._values[self.KEY]), 3)
-
-
-# --------------------------------------------------------------------------- #
-# Geometric contain through `object_object_edges`
-# --------------------------------------------------------------------------- #
-class ObjectObjectContainEdgeTests(unittest.TestCase):
-    def test_emits_contain_when_descriptors_present(self):
-        a = _obj_node("actor:box", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
-        b = _obj_node("actor:peg", (0.05, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
-        aff_set = AffordanceSet(
-            contain_by_object={
-                "box": [ContainComponent(
-                    entry_anchor_obj_frame=np.array([0.0, 0.0, 0.0]),
-                    entry_axis_obj_frame=np.array([1.0, 0.0, 0.0]),
-                    opening_radius=0.02, depth=0.10,
-                )],
-            },
-            key_by_object={
-                "peg": [KeyComponent(
-                    key_anchor_obj_frame=np.array([0.0, 0.0, 0.0]),
-                    key_axis_obj_frame=np.array([1.0, 0.0, 0.0]),
-                )],
-            },
+    def test_temporal_family_matches_mu(self):
+        self.assertEqual(
+            TEMPORAL_RELATIONS,
+            frozenset(n for n in RELATION_TYPES
+                      if n.endswith("-compatibility")
+                      or n in ("planar-distance", "height-offset")),
         )
-        # Make sure the lookup hits canonical_affordance_key("actor:box") = "box".
-        a.attributes["mshab_obj_id"] = "box"
-        b.attributes["mshab_obj_id"] = "peg"
-        cfg = {
-            "contact": {"eps_force": 0.05},
-            "support": {"eps_z": 0.02, "min_vertical_force_ratio": 0.5},
-            "affordance_set": aff_set,
-        }
-        graph = Graph(0, "env", "cam", nodes=[a, b])
-        edges = object_object_edges(graph, _StubState(), cfg)
-        contain_edges = [e for e in edges if e.relation == "contain"]
-        self.assertEqual(len(contain_edges), 1)
-        self.assertEqual(contain_edges[0].src, "actor:box")
-        self.assertEqual(contain_edges[0].dst, "actor:peg")
+
+    def test_index_zero_is_pad_everywhere(self):
+        for vocab in (build_relation_vocab(), build_absolute_vocab(),
+                      build_temporal_vocab()):
+            self.assertEqual(vocab.encode(None), 0)
+            self.assertNotIn(0, vocab.token_to_id.values())
+
+
+def _vocab(keys):
+    entity = EntityVocab(token_to_id={k: i for i, k in enumerate(keys)})
+    relation = build_relation_vocab()
+    absolute = build_absolute_vocab()
+    temporal = build_temporal_vocab()
+    abs_valid = np.zeros((len(relation), len(absolute)), bool)
+    temp_valid = np.zeros((len(relation),), bool)
+    for name in RELATION_TYPES:
+        rid = relation.encode(name)
+        for label in ABS_LABELS[name]:
+            abs_valid[rid, absolute.encode(label)] = True
+        temp_valid[rid] = name in TEMPORAL_RELATIONS
+    return GraphVocab(entity, relation, absolute, temporal, abs_valid, temp_valid)
+
+
+class PackingTests(unittest.TestCase):
+
+    def _packed(self, n_max=4, e_max=8):
+        ee = _ee()
+        obj = _obj("bowl", (0.05, 0.0, 0.0))
+        ee.feat = [1.0, 2.0]
+        obj.feat = [3.0, 4.0]
+        g = _graph(ee, obj)
+        cfg = _cfg()
+        state = _StubState(grasping=True, contact_force=5.0)
+        g.edges.extend(ee_object_spatial_edges(g, state, cfg))
+        g.edges.extend(ee_object_physical_edges(g, state, cfg))
+        TemporalBuffer(K=cfg["temporal"]["K"]).annotate(g, cfg)
+        vocab = _vocab(["<pad>", "<ee>", "actor:bowl"])
+        return pack_graph(g, vocab, n_max=n_max, e_max=e_max, n_feat=2)
+
+    def test_dtypes_stay_narrow(self):
+        packed = self._packed()
+        self.assertEqual(packed["graph_edge_src"].dtype, np.uint8)
+        self.assertEqual(packed["graph_edge_abs"].dtype, np.uint8)
+        self.assertEqual(packed["graph_node_ent"].dtype, np.uint16)
+        self.assertEqual(packed["graph_node_feat"].dtype, np.float32)
+
+    def test_padding_is_masked_out(self):
+        packed = self._packed()
+        self.assertEqual(int(packed["graph_n_nodes"]), 2)
+        self.assertTrue((packed["graph_node_valid"][:2] == 1).all())
+        self.assertTrue((packed["graph_node_valid"][2:] == 0).all())
+        n_edges = int(packed["graph_n_edges"])
+        self.assertTrue((packed["graph_edge_valid"][n_edges:] == 0).all())
+
+    def test_physical_rows_carry_no_temporal_mask(self):
+        packed = self._packed()
+        rel = build_relation_vocab()
+        physical = {rel.encode(n) for n in ("contact", "grasp")}
+        for i in range(int(packed["graph_n_edges"])):
+            if int(packed["graph_edge_rel"][i]) in physical:
+                self.assertEqual(int(packed["graph_edge_temp_mask"][i]), 0)
+
+    def test_endpoints_must_fit_a_byte(self):
+        with self.assertRaises(ValueError):
+            self._packed(n_max=300)
 
 
 if __name__ == "__main__":

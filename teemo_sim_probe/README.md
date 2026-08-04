@@ -40,45 +40,60 @@ MS-HAB is read-only; all integration lives under `teemo_sim_probe/adapters/`.
 
 Two node types:
 
-* `ee` -- end effector (tcp + finger1 + finger2 folded into one node).
+* `ee` -- end effector (tcp + finger1 + finger2 folded into one node), always
+  vertex index 0.
 * `object` -- every non-robot actor or articulation link.
+
+The vertex set is append-only per episode: an index is handed out on first
+sight and never reused or reordered, so a node that leaves the view keeps its
+position, its last pose, and its retained appearance. Each node carries
+`(feat, kappa, visible)` where `feat` is the mean masked depth per camera in
+metres, retained per camera while unseen.
 
 A node appears only if (a) an ee link touched it during a successful demo
 and (b) it is listed in the active per-`(subtask, target)` whitelist.
 
 ### Relation vocabulary
 
-| Family | Pair type | Relation | Labels |
-|---|---|---|---|
-| **Physical state** | ee--obj | `grasp` | `grasp` |
-|  | ee--obj, obj--obj | `contact` | `contact` |
-|  | obj--obj | `support` | `support` |
-|  | obj--obj | `contain` | `contain` |
-| **Spatial** | ee--obj | `planar-distance` | `near` / `medium` / `far` |
-|  | ee--obj | `height-offset` | `below` / `level` / `above` |
-| **Affordance** | ee--obj | `grasp-compatibility` | `match` / `partial-match` / `poor-match` |
-|  | ee--obj, obj--obj | `contact-compatibility` | (same) |
-|  | obj--obj | `support-compatibility` | (same) |
-|  | obj--obj | `contain-compatibility` | (same) |
+One fact per admissible `(src, relation, dst)`, carrying an absolute state
+`sigma` and, where the family defines one, a change `delta` over a `K`-frame
+window.
 
-Every spatial and affordance relation has a `*-change` sibling, binned over
-a `K`-frame window into a 5-way signed label (`*-fast`, `*-slow`, stable,
-opposite slow/fast). Physical-state edges have no transitions: consecutive
-absolute frames are sufficient.
+| Family | Pair type | Relation | `sigma` | `delta` |
+|---|---|---|---|---|
+| **Physical state** | ee--obj | `grasp` | `not-holds` / `holds` | -- |
+|  | ee--obj, obj--obj | `contact` | (same) | -- |
+|  | obj--obj (directed) | `support` | (same) | -- |
+|  | obj--obj (directed) | `contain` | (same) | -- |
+| **Spatial** | ee--obj | `planar-distance` | 5 distance bins | 5-way signed |
+|  | ee--obj | `height-offset` | 5 height bins | 5-way signed |
+| **Affordance** | ee--obj | `grasp-compatibility` | `match` / `partial-match` / `poor-match` / `unobserved` | 5-way signed |
+|  | ee--obj, obj--obj | `contact-compatibility` | (same) | (same) |
+|  | obj--obj (directed) | `support-compatibility` | (same) | (same) |
+|  | obj--obj (directed) | `contain-compatibility` | (same) | (same) |
+
+`delta` is a shared signed vocabulary (`decrease-fast` .. `increase-fast`);
+index 0 is always the most negative change, so it reads as approaching for
+distances and as fitting better for mismatch scores.
 
 ### Gating rules
 
-1. **One physical-state edge per pair.** ee--obj: `grasp`, else `contact`.
-   obj--obj: strict priority `contain > support > contact`.
-2. **Spatial is object-center**, computed only for `ee--obj`.
-3. **Affordance compatibility is `near`-only.** If the endpoint centers do
-   not bin to `near`, no compat edge is emitted.
-4. **Whitelist gates compatibility per object.** A compat edge fires only
-   when both endpoints' `interaction_types` carry the matching token
-   (`contact` / `grasp` / `support` / `contain`).
-5. **Contact-compat is masked under grasp.** The edge still emits with
-   `masked=True` and `suppressed_by_grasp=True` so the temporal buffer drops
-   its history; the parallel physical-state `contact` edge is not emitted.
+1. **Both endpoints must be visible.** The only exception is object--object
+   physical state, which is retained at its last observed value -- both
+   polarities -- while an endpoint is out of view.
+2. **Physical-state relations are independent.** A grasped object reports
+   `grasp: holds` and `contact: holds` at once; a supported object in contact
+   with its supporter reports both. There is no priority chain.
+3. **Whitelist `interaction_types` gate admissibility.** ee--obj checks the
+   object's tokens, obj--obj checks both endpoints'.
+4. **Spatial is object-center**, ungated, for every visible `ee--obj` pair.
+5. **The affordance near gate picks a label, not a fact.** The score is
+   measured for every admissible instance; failing the gate emits
+   `unobserved` while still accumulating the change, so an approach is visible
+   before the absolute label flips. Object--object pairs beyond
+   `object_object_compat_max_distance` skip scoring entirely.
+6. **`delta` is masked** only for the physical-state family and for facts with
+   fewer than `K + 1` samples.
 
 ### Compatibility scoring
 

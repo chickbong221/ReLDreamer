@@ -44,6 +44,7 @@ class ManiSkill(embodied.Env):
       max_episode_steps=None,
       eval_max_episode_steps=None,
       frame_stack=1,
+      graph=None,
       **kwargs,
   ):
     import gymnasium as gym
@@ -54,11 +55,16 @@ class ManiSkill(embodied.Env):
 
     self._num_envs = int(num_envs)
     self._obs_mode = obs_mode
+    self._rgb_obs = 'rgb' in obs_mode
     self._num_frames = int(num_frames)
     self._device = 'cuda'
     self._is_eval = bool(is_eval)
     self._max_depth = float(max_depth)
     self._mshab_active = mshab_task is not None and mshab_task != 'none'
+    # MSHab depth path. 'depth+segmentation' takes the same wrappers as plain
+    # 'depth'; the extra texture only feeds the scene graph.
+    self._depth_obs = self._mshab_active and 'depth' in obs_mode
+    self._graph_cfg = dict(graph or {})
     # 0/None → keep the env's registered default; positive → override.
     # Eval gets its own horizon to mirror mshab/configs/sac_pick.yml
     # (train 100, eval 200) — falls back to max_episode_steps if unset.
@@ -138,7 +144,7 @@ class ManiSkill(embodied.Env):
       from embodied.envs.obs_wrappers import NonPrivilegedObsWrapper
       env = NonPrivilegedObsWrapper(env)
 
-    if 'rgb' in obs_mode:
+    if self._rgb_obs:
       # Matches TD-MPC2's RGB path: flatten RGBD observation into rgb + state.
       env = FlattenRGBDObservationWrapper(
           env, rgb=True, depth=False, state=True)
@@ -149,7 +155,7 @@ class ManiSkill(embodied.Env):
     # {state, fetch_head_depth, fetch_hand_depth} with the depth tensors
     # permuted to channel-first. FetchActionWrapper zeros the two head joints
     # (stationary_head=True matches sac_pick.yml).
-    if self._mshab_active and obs_mode == 'depth':
+    if self._depth_obs:
       from mshab.envs.wrappers import (
           FetchActionWrapper,
           FetchDepthObservationWrapper,
@@ -179,12 +185,18 @@ class ManiSkill(embodied.Env):
       vec_kwargs['max_episode_steps'] = self._max_episode_steps_override
     self._env = ManiSkillVectorEnv(env, **vec_kwargs)
 
+    from teemo_sim_probe.adapters.graph_obs import build_graph_obs
+    self._graph = build_graph_obs(
+        self._env, self._graph_cfg, num_envs=self._num_envs)
+
     # Warm reset to discover obs/act shapes.
     obs, _ = self._env.reset(seed=seed)
     obs = self._obs_to_dict(obs)
     self._setup_spaces(obs)
+    self._graph_obs = (
+        self._graph.reset() if self._graph is not None else {})
 
-    if 'rgb' in obs_mode and self._num_frames > 1:
+    if self._rgb_obs and self._num_frames > 1:
       self._setup_frame_stack(obs)
 
     # Track per-env done to compute is_first on the next step.
@@ -202,6 +214,13 @@ class ManiSkill(embodied.Env):
   def num_envs(self):
     return self._num_envs
 
+  @property
+  def graph_vocab_sizes(self):
+    """Whitelist-dependent vocabulary sizes the agent cannot derive itself."""
+    if self._graph is None:
+      return {}
+    return {'entity_vocab': self._graph.vocab.sizes['entity']}
+
   # ------------------------------------------------------------------ #
   #  Shape discovery
   # ------------------------------------------------------------------ #
@@ -211,7 +230,7 @@ class ManiSkill(embodied.Env):
     state = self._extract_state(obs)
     self._state_dim = state.shape[-1]
 
-    if 'rgb' in self._obs_mode:
+    if self._rgb_obs:
       rgb = obs['rgb']
       self._img_h = rgb.shape[1]
       self._img_w = rgb.shape[2]
@@ -222,8 +241,7 @@ class ManiSkill(embodied.Env):
           self._img_c * self._num_frames,
       )
 
-    if self._obs_mode == 'depth':
-      assert self._mshab_active, 'depth obs_mode is only supported with mshab'
+    if self._depth_obs:
       # FetchDepthObservationWrapper permutes to [N, 1, H, W].
       d = obs['fetch_head_depth']
       self._depth_h = d.shape[-2]
@@ -257,9 +275,9 @@ class ManiSkill(embodied.Env):
         'log/success_at_end': elements.Space(np.float32, ()),
         'log/fail_once': elements.Space(np.float32, ()),
     }
-    if 'rgb' in self._obs_mode:
+    if self._rgb_obs:
       spaces['image'] = elements.Space(np.uint8, self._img_shape)
-    if self._obs_mode == 'depth':
+    if self._depth_obs:
       # Store raw millimetres as uint16 to match MSHab's SAC replay buffer
       # (mshab/mshab/agents/sac/replay.py). This is 4x smaller than float32
       # and 2x larger than uint8 but lossless at 1 mm precision.
@@ -268,6 +286,10 @@ class ManiSkill(embodied.Env):
           np.uint16, self._depth_shape, 0, hi)
       spaces['depth_hand'] = elements.Space(
           np.uint16, self._depth_shape, 0, hi)
+    if self._graph is not None:
+      dtypes = self._graph.obs_spec_dtypes
+      for key, shape in self._graph.obs_spec_shapes.items():
+        spaces[key] = elements.Space(dtypes[key], shape)
     return spaces
 
   @property
@@ -297,7 +319,7 @@ class ManiSkill(embodied.Env):
       obs, _ = self._env.reset(options={'env_idx': reset_idx})
       obs = self._obs_to_dict(obs)
 
-      if 'rgb' in self._obs_mode and self._num_frames > 1:
+      if self._rgb_obs and self._num_frames > 1:
         rgb = obs['rgb'].float() / 255.0
         self._frame_buf[reset_idx] = (
             rgb[reset_idx]
@@ -309,6 +331,8 @@ class ManiSkill(embodied.Env):
       is_first = reset_mask.copy()
       self._prev_done[reset_mask] = False
       self._last_episode_metrics = {}
+      if self._graph is not None:
+        self._graph_obs = self._graph.step(is_first=is_first)
 
       return self._make_obs(
           obs,
@@ -358,6 +382,11 @@ class ManiSkill(embodied.Env):
 
     is_first = self._prev_done.copy()
     self._prev_done = done.copy()
+    if self._graph is not None:
+      # The vector env auto-resets inside step(), so a done env's sensors
+      # already belong to the next episode; those frames re-emit the previous
+      # graph rather than one built from the wrong episode.
+      self._graph_obs = self._graph.step(is_first=is_first, is_last=done)
 
     return self._make_obs(
         obs,
@@ -438,12 +467,13 @@ class ManiSkill(embodied.Env):
         'log/success_at_end': np.zeros(self._num_envs, dtype=np.float32),
         'log/fail_once': np.zeros(self._num_envs, dtype=np.float32),
     }
-    if 'rgb' in self._obs_mode:
+    if self._rgb_obs:
       out['image'] = self._stack_frames(obs)
-    if self._obs_mode == 'depth':
+    if self._depth_obs:
       depth_head, depth_hand = self._extract_depth(obs)
       out['depth_head'] = depth_head
       out['depth_hand'] = depth_hand
+    out.update(self._graph_obs)
     if log_metrics:
       out.update(log_metrics)
     return out

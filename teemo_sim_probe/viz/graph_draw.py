@@ -31,42 +31,25 @@ _FAMILY_SPATIAL = "spatial"
 _FAMILY_AFFORDANCE = "affordance"
 
 _RELATION_FAMILY: Dict[str, str] = {
-    # Physical state (absolute only)
     "contact": _FAMILY_PHYSICAL_STATE,
     "grasp": _FAMILY_PHYSICAL_STATE,
     "support": _FAMILY_PHYSICAL_STATE,
     "contain": _FAMILY_PHYSICAL_STATE,
-    # Spatial
     "planar-distance": _FAMILY_SPATIAL,
     "height-offset": _FAMILY_SPATIAL,
-    "planar-distance-change": _FAMILY_SPATIAL,
-    "height-offset-change": _FAMILY_SPATIAL,
-    # Affordance compatibility
     "grasp-compatibility": _FAMILY_AFFORDANCE,
     "contact-compatibility": _FAMILY_AFFORDANCE,
     "support-compatibility": _FAMILY_AFFORDANCE,
     "contain-compatibility": _FAMILY_AFFORDANCE,
-    "grasp-compatibility-change": _FAMILY_AFFORDANCE,
-    "contact-compatibility-change": _FAMILY_AFFORDANCE,
-    "support-compatibility-change": _FAMILY_AFFORDANCE,
-    "contain-compatibility-change": _FAMILY_AFFORDANCE,
 }
 
-# Family ordering used both for chip-row ordering and (within a chip) the
-# absolute-then-temporal stacking.
 _FAMILY_ORDER = (_FAMILY_PHYSICAL_STATE, _FAMILY_SPATIAL, _FAMILY_AFFORDANCE)
 
-# Within a family, sort absolute relations by this order then temporal ones.
 _INTRA_FAMILY_ORDER = {
     _FAMILY_PHYSICAL_STATE: ("contact", "grasp", "support", "contain"),
-    _FAMILY_SPATIAL: ("planar-distance", "height-offset",
-                      "planar-distance-change", "height-offset-change"),
+    _FAMILY_SPATIAL: ("planar-distance", "height-offset"),
     _FAMILY_AFFORDANCE: ("grasp-compatibility", "contact-compatibility",
-                         "support-compatibility", "contain-compatibility",
-                         "grasp-compatibility-change",
-                         "contact-compatibility-change",
-                         "support-compatibility-change",
-                         "contain-compatibility-change"),
+                         "support-compatibility", "contain-compatibility"),
 }
 
 # Per-family chip styling. Affordance uses a green palette so it doesn't
@@ -78,7 +61,7 @@ _FAMILY_STYLE: Dict[str, Dict[str, str]] = {
 }
 
 # Chip layout scales with n_obj: small graphs use a large, easily readable
-# 13pt chip; busy graphs (near ``n_slots``) shrink the chip and push it
+# 13pt chip; busy graphs (near ``n_max``) shrink the chip and push it
 # outward along its edge to avoid piling up around ee. All chip-collision
 # constants scale off the chosen fontsize because they exist to detect
 # overlap between real chip rectangles.
@@ -111,8 +94,7 @@ def _radial_layout(
     graph: Graph, radius: float, node_r: float
 ) -> Dict[str, np.ndarray]:
     pos: Dict[str, np.ndarray] = {}
-    objects = [n.node_id for n in graph.nodes
-               if n.node_type == "object" and n.valid_mask]
+    objects = [n.node_id for n in graph.nodes if n.node_type == "object"]
     has_ee = graph.get_node("ee") is not None
     if has_ee:
         pos["ee"] = np.array([0.0, 0.0])
@@ -151,12 +133,9 @@ def _family_of(relation: str) -> Optional[str]:
 
 
 def _group_by_family(elist: List[Edge]) -> Dict[str, List[str]]:
-    """Bucket an edge group's labels by family in canonical intra-family order.
-
-    Absolute relations come before temporal ones within a family, both follow
-    ``_INTRA_FAMILY_ORDER``. Unknown relations are skipped silently.
-    """
-    grouped: Dict[str, List[Tuple[int, int, str]]] = {f: [] for f in _FAMILY_ORDER}
+    """Bucket facts by family in ``_INTRA_FAMILY_ORDER``, one chip line each.
+    A fact with a change label renders as ``sigma / delta``."""
+    grouped: Dict[str, List[Tuple[int, str]]] = {f: [] for f in _FAMILY_ORDER}
     for e in elist:
         family = _family_of(e.relation)
         if family is None:
@@ -166,21 +145,22 @@ def _group_by_family(elist: List[Edge]) -> Dict[str, List[str]]:
             rank = order.index(e.relation)
         except ValueError:
             rank = len(order)
-        temporal_rank = 1 if e.temporal else 0
-        grouped[family].append((temporal_rank, rank, str(e.label)))
+        text = str(e.label)
+        if e.temp_label:
+            text = f"{text} / {e.temp_label}"
+        grouped[family].append((rank, text))
 
     out: Dict[str, List[str]] = {}
     for family in _FAMILY_ORDER:
         items = sorted(grouped[family])
         if items:
-            out[family] = [label for _t, _r, label in items]
+            out[family] = [text for _r, text in items]
     return out
 
 
 def render_graph(
     graph: Graph,
     out_path: str,
-    drawable_only: bool = True,
     colormap: Optional[ColorMap] = None,
 ) -> str:
     import matplotlib
@@ -191,8 +171,7 @@ def render_graph(
     cmap = colormap or ColorMap()
     cmap.assign_all(graph.node_ids())
 
-    n_obj = sum(1 for n in graph.nodes
-                if n.node_type == "object" and n.valid_mask)
+    n_obj = sum(1 for n in graph.nodes if n.node_type == "object")
     chip = _chip_layout(n_obj)
 
     # Square canvas that matches the overlay panels (6" @ 200 dpi -> 1200 px)
@@ -223,9 +202,8 @@ def render_graph(
     fig.subplots_adjust(left=0.02, right=0.98, top=0.93, bottom=0.02)
 
     # ----------------------------------------------------------------- edges
-    drawn = [e for e in graph.edges if (not e.masked or not drawable_only)]
     by_pair: Dict[Tuple[str, str], List[Edge]] = {}
-    for e in drawn:
+    for e in graph.edges:
         if e.src not in pos or e.dst not in pos:
             continue
         by_pair.setdefault((e.src, e.dst), []).append(e)
@@ -243,9 +221,7 @@ def render_graph(
         a1 = p1 - u * node_r
         is_stale = any(e.stale for e in elist)
         is_directed_physical = any(
-            (not e.temporal) and e.relation in ("support", "contain")
-            and not e.masked
-            for e in elist
+            e.relation in ("support", "contain") for e in elist
         )
 
         if is_directed_physical:
@@ -337,17 +313,17 @@ def render_graph(
     # ----------------------------------------------------------------- nodes
     for node in graph.nodes:
         nid = node.node_id
-        if nid not in pos or not node.valid_mask:
+        if nid not in pos:
             continue
         x, y = pos[nid]
-        if node.frozen_pose:
+        if node.visible:
+            face = cmap.color(nid)
+            edge_col = "white"
+            linestyle = "solid"
+        else:
             face = (0.29, 0.56, 0.89)
             edge_col = "#1c3d6e"
             linestyle = (0, (3, 2))
-        else:
-            face = cmap.color(nid)
-            edge_col = "#000000" if node.persistent else "white"
-            linestyle = "solid"
 
         alpha = 0.55 if not node.visible else 1.0
         circ = Circle(

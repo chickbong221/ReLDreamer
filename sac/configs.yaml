@@ -86,9 +86,8 @@ defaults:
     thresholds_path: null
     whitelist_dir: null
     cameras: [fetch_head, fetch_hand]
-    n_slots: 10
-    k_persist: 5
-    k_soft: 5.0
+    n_max: 11
+    k_persist: -1
     e_max: 256
     embed_dim: 64
     hidden_dim: 512

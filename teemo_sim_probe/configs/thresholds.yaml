@@ -35,8 +35,11 @@ affordances:
   object_object_compatibility: true
   object_object_contact_compatibility: true
   object_object_support_compatibility: true
-  object_object_support_compatibility_subtasks: [place]
   object_object_contain_compatibility: true
+  # Beyond this centre distance an obj-obj pair skips scoring and reports
+  # unobserved with no value, so no change is accumulated for a pair that is
+  # nowhere near interacting. ee-obj is never distance-gated.
+  object_object_compat_max_distance: 2.0
 
 # Compatibility normalization. Each per-component mismatch (metres for pos /
 # width / xy / vertical / radial / axial, radians for orient) is clipped to
@@ -66,8 +69,8 @@ whitelists:
   dir: subtask_whitelists
 
 selection:
-  n_slots: 10                       # hard slot capacity
-  k_persist: 5                      # frames a whitelisted entity stays after last seen; -1 = whole episode, 0 = disabled, N>0 = evict after N frames unseen
+  n_max: 11                         # vertex capacity including the ee node
+  k_persist: -1                     # frames a node stays after last seen; -1 = whole episode, 0 = disabled
 
 profiles:
 

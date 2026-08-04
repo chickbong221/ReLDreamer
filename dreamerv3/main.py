@@ -143,13 +143,19 @@ def make_agent(config):
   notlog = lambda k: not k.startswith('log/')
   obs_space = {k: v for k, v in env.obs_space.items() if notlog(k)}
   act_space = {k: v for k, v in env.act_space.items() if k != 'reset'}
+  # Only the env knows how many entity types the mined whitelists cover.
+  agent_config = config.agent
+  sizes = getattr(env, 'graph_vocab_sizes', None) or {}
+  if sizes:
+    agent_config = agent_config.update(
+        {f'graph.{k}': v for k, v in sizes.items()})
   env.close()
   if config.random_agent:
     return embodied.RandomAgent(obs_space, act_space)
   cpdir = elements.Path(config.logdir)
   cpdir = cpdir.parent if config.replicas > 1 else cpdir
   return Agent(obs_space, act_space, elements.Config(
-      **config.agent,
+      **agent_config,
       logdir=config.logdir,
       seed=config.seed,
       jax=config.jax,

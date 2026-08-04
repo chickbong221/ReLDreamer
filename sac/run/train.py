@@ -212,9 +212,12 @@ def train(config: dict) -> None:
 
     graph_agent_cfg: Optional[dict] = None
     if graph_enabled:
+        sizes = graph_train.vocab.sizes
         graph_agent_cfg = dict(
-            node_vocab_size=len(graph_train.node_vocab),
-            edge_vocab_size=len(graph_train.edge_vocab),
+            entity_vocab_size=sizes["entity"],
+            relation_vocab_size=sizes["relation"],
+            abs_vocab_size=sizes["absolute"],
+            temp_vocab_size=sizes["temporal"],
             embed_dim=int(graph_raw.get("embed_dim", 64)),
             hidden_dim=int(graph_raw.get("hidden_dim", 512)),
             out_dim=int(graph_raw.get("out_dim", 128)),
@@ -243,7 +246,7 @@ def train(config: dict) -> None:
     graph_shapes = graph_dtypes = None
     if graph_enabled:
         graph_shapes = graph_train.obs_spec_shapes
-        graph_dtypes = {k: v.detach().cpu().numpy().dtype for k, v in graph_obs.items()}
+        graph_dtypes = graph_train.obs_spec_dtypes
     replay = PixelStateBatchReplayBuffer(
         pixels_obs_space=replay_pixels_space,
         state_obs_dim=state_dim,
@@ -467,7 +470,7 @@ def _run_eval(agent, eval_envs, graph_eval, target_eval, logger, device, *,
             H, W = seg.shape
             masks = MaskAccumulator(H, W)
             for node in graph.nodes:
-                if not node.valid_mask or not node.segmentation_ids:
+                if not node.segmentation_ids:
                     continue
                 m = np.isin(seg, node.segmentation_ids)
                 if bool(m.any()):

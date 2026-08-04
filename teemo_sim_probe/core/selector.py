@@ -1,42 +1,128 @@
-"""Whitelist admission, role-aware capacity, and optional persistence helpers.
+"""Whitelist admission, appearance retention, and the append-only vertex index.
 
 Pipeline per frame:
 
-    apply_whitelist(candidates, whitelist)     # hard eligibility gate
-    -> overflow_truncate(eligible, n_slots)    # role-aware, then distance/id
+    apply_whitelist(candidates)   # hard eligibility gate
+    -> merge_persistent(...)      # re-inject nodes that left the view
+    -> update_feats(...)          # per-camera appearance, retained while unseen
+    -> EntityRegistry.assign(...) # append-only vertex index
 
-No scoring or secondary contact-based admission path exists. Distance is used
-only to break capacity ties within a whitelist-role priority.
+No scoring or secondary contact-based admission path exists. Whitelist role
+priority is consulted only when the registry is at capacity.
 """
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional, Tuple
-
-import numpy as np
+from typing import Dict, Iterable, List, Optional
 
 from .persistence import _snapshot
 from .schema import Node
 from .whitelist import Whitelist, match_key
 
 
-def _planar_dist(a: Node, b_xy: Optional[np.ndarray]) -> float:
-    if b_xy is None or a.pose_world is None:
-        return float("inf")
-    return float(np.linalg.norm(np.asarray(a.pose_world[:2], dtype=float) - b_xy))
+def _role_rank(node: Node) -> int:
+    roles = set(node.attributes.get("whitelist_roles") or [])
+    if "interacted" in roles:
+        return 0
+    if "support" in roles:
+        return 1
+    return 2
+
+
+class EntityRegistry:
+    """Append-only vertex index. One instance per episode.
+
+    ``ee`` always holds index 0. Object indices are handed out on first sight
+    and never reused or reordered while the episode runs, so a node that leaves
+    and later re-enters the view keeps its position and its retained
+    appearance.
+    """
+
+    def __init__(self, n_max: int):
+        self.n_max = int(n_max)
+        self._index: Dict[str, int] = {}
+        self._free: List[int] = []
+        self._next = 1  # 0 is reserved for the end effector
+        self.overflow_drops = 0
+
+    def reset_episode(self) -> None:
+        self._index.clear()
+        self._free.clear()
+        self._next = 1
+        self.overflow_drops = 0
+
+    def __len__(self) -> int:
+        return len(self._index)
+
+    def index_of(self, entity_id: str) -> Optional[int]:
+        return self._index.get(entity_id)
+
+    def assign(self, nodes: Dict[str, Node]) -> Dict[str, Node]:
+        """Index every object node, dropping the lowest-priority overflow.
+
+        Returns the admitted subset. Capacity is only reachable when the active
+        whitelist admits more instances than ``n_max``; the candidate replaces a
+        resident only when it outranks the worst one, and the displaced entry
+        releases its index.
+        """
+        admitted: Dict[str, Node] = {}
+        pending: List[str] = []
+        for ent_id, node in nodes.items():
+            if node.node_type == "ee":
+                node.index = 0
+                admitted[ent_id] = node
+                continue
+            idx = self._index.get(ent_id)
+            if idx is None:
+                pending.append(ent_id)
+                continue
+            node.index = idx
+            admitted[ent_id] = node
+
+        capacity = self.n_max - 1  # excluding the end effector
+        for ent_id in sorted(pending, key=lambda k: (_role_rank(nodes[k]), k)):
+            node = nodes[ent_id]
+            if len(self._index) >= capacity:
+                worst = self._worst_resident(admitted)
+                if worst is None or _role_rank(nodes[ent_id]) >= _role_rank(
+                    admitted[worst]
+                ):
+                    self.overflow_drops += 1
+                    continue
+                self.release(worst)
+                admitted.pop(worst, None)
+            idx = self._free.pop(0) if self._free else self._next
+            if idx == self._next:
+                self._next += 1
+            self._index[ent_id] = idx
+            node.index = idx
+            admitted[ent_id] = node
+        return admitted
+
+    def _worst_resident(self, admitted: Dict[str, Node]) -> Optional[str]:
+        candidates = [k for k, n in admitted.items() if n.node_type != "ee"]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda k: (_role_rank(admitted[k]), k))
+
+    def release(self, entity_id: str) -> None:
+        idx = self._index.pop(entity_id, None)
+        if idx is not None:
+            self._free.append(idx)
+            self._free.sort()
 
 
 class NodeSelector:
-    """Stateful selector. One instance per camera/episode.
+    """Stateful selector. One instance per episode.
 
     Holds the active subtask's ``Whitelist``. GraphBuilder may update it when
-    MS-HAB advances to another subtask.
+    MS-HAB advances to another subtask. Sole owner of appearance retention.
     """
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
         sel = cfg["selection"]
-        self.n_slots = int(sel["n_slots"])
+        self.n_max = int(sel["n_max"])
         self.k_persist = int(sel["k_persist"])
 
         # Active whitelist; set by GraphBuilder before selection. None
@@ -45,24 +131,27 @@ class NodeSelector:
         # "admit everything" fallback.
         self._whitelist: Optional[Whitelist] = None
 
-        # Frozen snapshots of recently visible nodes (keyed by entity_id).
         self._history: Dict[str, Node] = {}
         self._last_seen: Dict[str, int] = {}
+        # entity_id -> per-camera mean masked depth, last observed value per slot.
+        self._feat: Dict[str, List[float]] = {}
 
     # ---------------------------------------------------------------- reset
     def reset_episode(self) -> None:
         self._history.clear()
         self._last_seen.clear()
+        self._feat.clear()
 
-    # ---------------------------------------------------------------- R8 / R13
+    # ---------------------------------------------------------------- persistence
     def merge_persistent(
         self, fresh: Dict[str, Node], frame: int
     ) -> Dict[str, Node]:
-        """Inject frozen snapshots for E_domain entities seen within k_persist
-        frames that are missing from the current frame's visible set.
+        """Re-inject nodes seen within ``k_persist`` frames that are missing
+        from the current frame's visible set.
 
         ``k_persist == 0`` disables persistence entirely; ``k_persist < 0``
-        means "never evict" -- the node stays for the whole episode once seen.
+        means "never evict" -- the node stays for the whole episode once seen,
+        which is the configuration the scene graph is defined against.
         """
         if self.k_persist == 0:
             return fresh
@@ -83,13 +172,37 @@ class NodeSelector:
                 segmentation_ids=[],
                 pixel_area=0,
                 pose_world=list(snap.pose_world) if snap.pose_world else None,
-                persistent=True,
+                feat=list(snap.feat) if snap.feat else None,
+                index=snap.index,
                 steps_since_seen=frame - last,
                 source=snap.source,
-                frozen_pose=True,
                 attributes=dict(snap.attributes),
             )
         return merged
+
+    # ---------------------------------------------------------------- appearance
+    def update_feats(self, nodes: Dict[str, Node], n_cams: int) -> None:
+        """Fill each node's per-camera appearance, retaining unseen slots.
+
+        ``node.feat`` arrives from the node builder as a list with ``None`` in
+        every camera slot that saw no pixels this frame. Those slots fall back
+        to the entity's last observed value, or zero when it has never been
+        seen by that camera.
+        """
+        for ent_id, node in nodes.items():
+            prev = self._feat.get(ent_id)
+            cur = node.feat
+            merged = [0.0] * n_cams
+            for c in range(n_cams):
+                value = cur[c] if cur is not None and c < len(cur) else None
+                if value is None:
+                    if prev is not None and c < len(prev):
+                        value = prev[c]
+                    else:
+                        value = 0.0
+                merged[c] = float(value)
+            self._feat[ent_id] = merged
+            node.feat = merged
 
     # ---------------------------------------------------------------- whitelist
     def set_whitelist(self, whitelist: Whitelist) -> None:
@@ -100,14 +213,13 @@ class NodeSelector:
     def whitelist(self) -> Optional[Whitelist]:
         return self._whitelist
 
-    # ---------------------------------------------------------------- selection
     def apply_whitelist(
         self, nodes: Dict[str, Node],
         *,
         active_target_node_id: Optional[str] = None,
     ) -> Dict[str, Node]:
         """Hard gate: keep ``ee`` plus every node whose ``match_key`` is in the
-        active whitelist. Everything else is dropped before slot assignment.
+        active whitelist. Everything else is dropped before indexing.
 
         When ``active_target_node_id`` is provided, actor candidates whose role
         contains ``interacted`` must additionally match that exact instance --
@@ -145,35 +257,9 @@ class NodeSelector:
                 continue
             n.attributes["whitelist_key"] = key
             n.attributes["whitelist_roles"] = sorted(roles)
+            n.attributes["interaction_types"] = sorted(wl.types(key))
             kept[nid] = n
         return kept
-
-    def overflow_truncate(
-        self, nodes: Dict[str, Node],
-    ) -> List[str]:
-        """Return at most ``n_slots`` eligible entity_ids.
-
-        Interacted entities are retained first, direct supporters second, and
-        distance plus node id break ties within a role. The ee node is tracked
-        separately.
-        """
-        ee = nodes.get("ee")
-        ee_xy: Optional[np.ndarray] = None
-        if ee is not None and ee.pose_world is not None:
-            ee_xy = np.asarray(ee.pose_world[:2], dtype=float)
-
-        candidates: List[Tuple[int, float, str]] = []
-        for ent_id, n in nodes.items():
-            if n.node_type == "ee":
-                continue
-            roles = set(n.attributes.get("whitelist_roles") or [])
-            role_rank = (
-                0 if "interacted" in roles else (1 if "support" in roles else 2)
-            )
-            d = _planar_dist(n, ee_xy)
-            candidates.append((role_rank, d, ent_id))
-        candidates.sort(key=lambda t: (t[0], t[1], t[2]))
-        return [ent_id for _rank, _d, ent_id in candidates[: self.n_slots]]
 
     # ---------------------------------------------------------------- commit
     def commit(self, nodes: Dict[str, Node], frame: int) -> None:
@@ -189,14 +275,13 @@ class NodeSelector:
         for ent_id in evicted_ids:
             self._history.pop(ent_id, None)
             self._last_seen.pop(ent_id, None)
+            self._feat.pop(ent_id, None)
 
     def evict_expired(self, frame: int) -> List[str]:
         """Drop history entries whose age exceeds ``k_persist`` frames.
 
-        An unselected node is not dropped immediately; only entries unseen
-        longer than the retention window expire. ``k_persist < 0`` means
-        "never evict within an episode"; ``k_persist == 0`` disables
-        persistence and nothing is retained to evict.
+        ``k_persist < 0`` means "never evict within an episode"; ``k_persist
+        == 0`` disables persistence and nothing is retained to evict.
         """
         if self.k_persist <= 0:
             return []
@@ -204,7 +289,5 @@ class NodeSelector:
         for ent_id, last in list(self._last_seen.items()):
             if (frame - last) > self.k_persist:
                 expired.append(ent_id)
-        for ent_id in expired:
-            self._history.pop(ent_id, None)
-            self._last_seen.pop(ent_id, None)
+        self.evict(expired)
         return expired

@@ -1,116 +1,131 @@
-"""Ragged-friendly per-frame graph packing.
+"""Hyper-relational per-frame packing.
 
-Node prefix is compact: ee at index 0, valid objects at 1..n_nodes-1. Edges
-reference these compact positions. Stale edges survive only for physical-state
-relations.
+Nodes fill a compact prefix in vertex-index order, ee first; each fact is one
+row of (relation, absolute, temporal). Arrays use the narrowest dtype holding
+their vocabulary since these land in the replay buffer every step; the encoder
+casts back to int32 on read.
 """
 
 from __future__ import annotations
 
-import math
 from typing import Dict, Tuple
 
 import numpy as np
 
 from ..core.affordance import canonical_affordance_key
+from ..core.relation_rules import (
+    AFFORDANCE_RELATIONS,
+    PHYSICAL_RELATIONS,
+    TEMPORAL_RELATIONS,
+)
 from ..core.schema import Graph
-from .graph_vocab import EdgeVocab, NodeVocab, node_key_for
+from .graph_vocab import GraphVocab, entity_key_for
 
 
-_PHYSICAL_STATE = frozenset({"contact", "grasp", "support", "contain"})
-_COMPAT = frozenset({
-    "grasp-compatibility", "contact-compatibility",
-    "support-compatibility", "contain-compatibility",
-})
+_PHYSICAL = frozenset(PHYSICAL_RELATIONS)
+_AFFORDANCE = frozenset(AFFORDANCE_RELATIONS)
 
 
 def _edge_priority(edge) -> Tuple[int, int]:
-    r = edge.relation
-    if r in _PHYSICAL_STATE:
-        cat = 0
-    elif r in _COMPAT:
-        cat = 1
-    elif r.endswith("-change"):
-        cat = 2
+    """Truncation order: physical state, then affordance, then spatial.
+    Observed facts outrank retained ones within a family."""
+    if edge.relation in _PHYSICAL:
+        family = 0
+    elif edge.relation in _AFFORDANCE:
+        family = 1
     else:
-        cat = 3
-    return (cat, int(edge.stale))
+        family = 2
+    return (family, int(edge.stale))
 
 
 def pack_graph(
     graph: Graph,
-    node_vocab: NodeVocab,
-    edge_vocab: EdgeVocab,
+    vocab: GraphVocab,
     *,
     n_max: int,
     e_max: int,
-    k_soft: float,
-    staleness_enabled: bool = True,
+    n_feat: int,
 ) -> Dict[str, np.ndarray]:
-    node_ids = np.zeros(n_max, dtype=np.int32)
-    node_ee_mask = np.zeros(n_max, dtype=np.float32)
-    node_conf = np.zeros(n_max, dtype=np.float32)
+    if n_max > 255:
+        raise ValueError(
+            f"n_max={n_max} exceeds 255; edge endpoints are packed as uint8"
+        )
 
-    k_soft = max(float(k_soft), 1e-6)
-    node_id_to_slot: Dict[str, int] = {}
+    node_ent = np.zeros(n_max, dtype=np.uint16)
+    node_vis = np.zeros(n_max, dtype=np.uint8)
+    node_valid = np.zeros(n_max, dtype=np.uint8)
+    node_feat = np.zeros((n_max, n_feat), dtype=np.float32)
+
+    position: Dict[str, int] = {}
     n_nodes = 0
     for node in graph.nodes:
-        if not node.valid_mask:
-            continue
         if n_nodes >= n_max:
             break
         i = n_nodes
-        node_ids[i] = node_vocab.encode(node_key_for(node))
-        if node.node_type == "ee":
-            node_ee_mask[i] = 1.0
-            node_conf[i] = 1.0
-        elif staleness_enabled:
-            node_conf[i] = float(math.exp(-float(node.steps_since_seen) / k_soft))
-        else:
-            node_conf[i] = 1.0
-        node_id_to_slot[node.node_id] = i
+        node_ent[i] = vocab.entity.encode(entity_key_for(node))
+        node_vis[i] = 1 if node.visible else 0
+        node_valid[i] = 1
+        if node.feat is not None:
+            width = min(n_feat, len(node.feat))
+            node_feat[i, :width] = np.asarray(node.feat[:width], dtype=np.float32)
+        position[node.node_id] = i
         n_nodes += 1
 
     candidates = [
         e for e in graph.edges
-        if not e.masked
-        and e.src in node_id_to_slot
-        and e.dst in node_id_to_slot
+        if e.src in position and e.dst in position
     ]
     candidates.sort(key=_edge_priority)
     kept = candidates[:e_max]
 
-    edge_src = np.zeros(e_max, dtype=np.int32)
-    edge_dst = np.zeros(e_max, dtype=np.int32)
-    edge_pred = np.zeros(e_max, dtype=np.int32)
+    edge_src = np.zeros(e_max, dtype=np.uint8)
+    edge_dst = np.zeros(e_max, dtype=np.uint8)
+    edge_rel = np.zeros(e_max, dtype=np.uint8)
+    edge_abs = np.zeros(e_max, dtype=np.uint8)
+    edge_temp = np.zeros(e_max, dtype=np.uint8)
+    edge_temp_mask = np.zeros(e_max, dtype=np.uint8)
+    edge_valid = np.zeros(e_max, dtype=np.uint8)
 
     for i, e in enumerate(kept):
-        edge_src[i] = node_id_to_slot[e.src]
-        edge_dst[i] = node_id_to_slot[e.dst]
-        edge_pred[i] = edge_vocab.encode(e.relation, e.label)
+        edge_src[i] = position[e.src]
+        edge_dst[i] = position[e.dst]
+        edge_rel[i] = vocab.relation.encode(e.relation)
+        edge_abs[i] = vocab.absolute.encode(e.label)
+        edge_valid[i] = 1
+        if e.relation in TEMPORAL_RELATIONS and e.temp_label is not None:
+            edge_temp[i] = vocab.temporal.encode(e.temp_label)
+            edge_temp_mask[i] = 1
 
-    # Target category in node-vocab space so the encoder can match it against
-    # graph_node_ids. Unresolved target encodes to pad (0); an unknown key
-    # raises in NodeVocab.encode.
+    # Active target in entity-vocab space so the encoder can match it against
+    # graph_node_ent. A target that is not representable as an entity type
+    # (articulation handles) encodes to pad.
     obj_id = graph.meta.get("active_obj_id")
     key = canonical_affordance_key(str(obj_id)) if obj_id else None
-    target_id = node_vocab.encode(f"actor:{key}" if key else None)
+    target_ent = vocab.entity.token_to_id.get(
+        f"actor:{key}" if key else None, vocab.entity.pad_id
+    )
 
     return {
-        "graph_node_ids": node_ids,
-        "graph_node_ee_mask": node_ee_mask,
-        "graph_node_conf": node_conf,
+        "graph_node_ent": node_ent,
+        "graph_node_vis": node_vis,
+        "graph_node_valid": node_valid,
+        "graph_node_feat": node_feat,
         "graph_edge_src": edge_src,
         "graph_edge_dst": edge_dst,
-        "graph_edge_pred": edge_pred,
+        "graph_edge_rel": edge_rel,
+        "graph_edge_abs": edge_abs,
+        "graph_edge_temp": edge_temp,
+        "graph_edge_temp_mask": edge_temp_mask,
+        "graph_edge_valid": edge_valid,
         "graph_n_nodes": np.int32(n_nodes),
         "graph_n_edges": np.int32(len(kept)),
-        "graph_target_id": np.int32(target_id),
+        "graph_target_ent": np.uint16(target_ent),
     }
 
 
 GRAPH_KEYS = (
-    "graph_node_ids", "graph_node_ee_mask", "graph_node_conf",
-    "graph_edge_src", "graph_edge_dst", "graph_edge_pred",
-    "graph_n_nodes", "graph_n_edges", "graph_target_id",
+    "graph_node_ent", "graph_node_vis", "graph_node_valid", "graph_node_feat",
+    "graph_edge_src", "graph_edge_dst", "graph_edge_rel", "graph_edge_abs",
+    "graph_edge_temp", "graph_edge_temp_mask", "graph_edge_valid",
+    "graph_n_nodes", "graph_n_edges", "graph_target_ent",
 )

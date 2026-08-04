@@ -21,8 +21,9 @@ from teemo_sim_probe.core.affordance import (
 )
 from teemo_sim_probe.core.persistence import _snapshot
 from teemo_sim_probe.core.relation_rules import (
-    ee_object_compatibility_edges,
-    ee_object_spatial_event_edges,
+    ee_object_affordance_edges,
+    ee_object_physical_edges,
+    ee_object_spatial_edges,
 )
 from teemo_sim_probe.core.schema import Edge, Graph, Node
 from teemo_sim_probe.core.temporal_buffer import TemporalBuffer
@@ -51,7 +52,7 @@ class _State:
         return self._grasping
 
 
-def _cfg(aff_set=None, *, interaction_types=None, bin_edges=None):
+def _cfg(aff_set=None, *, bin_edges=None):
     bins = bin_edges or {
         "planar-distance": [0.05, 0.10, 0.20, 0.40],
         "height-offset": [-0.20, -0.10, 0.10, 0.20],
@@ -67,7 +68,6 @@ def _cfg(aff_set=None, *, interaction_types=None, bin_edges=None):
         "contact": {"eps_force": 0.05},
         "grasp": {"max_angle": 30, "tcp_approach_axis_local": [0.0, 0.0, 1.0]},
         "bin_edges": bins,
-        "interaction_types": dict(interaction_types or {}),
         "compat_norm": {"pos": 0.10, "orient": 1.5707963267948966, "width": 0.04},
         "profile": {},
     }
@@ -79,8 +79,9 @@ def _obj_node(
     pose=(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0),
     mshab_id="024_bowl",
     whitelist_key=None,
+    types=("contact", "grasp"),
 ):
-    attrs = {"is_actor": True, "pair_type": "interactive_object"}
+    attrs = {"is_actor": True, "interaction_types": list(types)}
     if whitelist_key is not None:
         attrs["whitelist_key"] = whitelist_key
     node = Node(
@@ -277,32 +278,28 @@ class CompatibilityComponentsTests(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- #
-# Spatial / event edges (replaces previous interactive/static split)
+# Spatial and physical-state facts
 # --------------------------------------------------------------------------- #
-class SpatialEventEdgeTests(unittest.TestCase):
+class SpatialPhysicalFactTests(unittest.TestCase):
     def test_object_center_spatial_for_every_object(self):
         cfg = _cfg()
         # Object at (0.10, 0, 0); ee at origin -> planar-distance 0.10 ("medium").
         node = _obj_node(pose=(0.10, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
         graph = Graph(0, "env", "cam", nodes=[_ee(), node])
-        edges = ee_object_spatial_event_edges(graph, _State([0.0, 0.0, 0.0]), cfg)
+        edges = ee_object_spatial_edges(graph, _State([0.0, 0.0, 0.0]), cfg)
         rels = {(e.relation, e.label) for e in edges}
         self.assertIn(("planar-distance", "medium"), rels)
         self.assertIn(("height-offset", "level"), rels)
 
-    def test_grasp_suppresses_contact(self):
+    def test_grasp_and_contact_hold_together(self):
         cfg = _cfg()
         node = _obj_node()
         graph = Graph(0, "env", "cam", nodes=[_ee(), node])
-        edges = ee_object_spatial_event_edges(
+        edges = ee_object_physical_edges(
             graph, _State([0.0, 0.0, 0.0], grasping=True, contact_force=2.0), cfg,
         )
-        contact = [e for e in edges if e.relation == "contact"]
-        grasp = [e for e in edges if e.relation == "grasp"]
-        # One physical-state edge per pair: grasp wins, contact is dropped.
-        self.assertEqual(contact, [])
-        self.assertEqual(len(grasp), 1)
-        self.assertFalse(grasp[0].masked)
+        labels = {e.relation: e.label for e in edges}
+        self.assertEqual(labels, {"contact": "holds", "grasp": "holds"})
 
 
 # --------------------------------------------------------------------------- #
@@ -321,15 +318,12 @@ class CompatibilityEdgeTests(unittest.TestCase):
         })
 
     def test_emits_grasp_compat_when_whitelist_grasps(self):
-        cfg = _cfg(
-            self._aff_set(),
-            interaction_types={"actor:024_bowl": {"contact", "grasp"}},
-        )
+        cfg = _cfg(self._aff_set())
         node = _obj_node(whitelist_key="actor:024_bowl",
                          pose=(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
         state = _State([0.0, 0.0, 0.02], gripper_width=0.045)
         graph = Graph(0, "env", "cam", nodes=[_ee(), node])
-        edges = ee_object_compatibility_edges(graph, state, cfg)
+        edges = ee_object_affordance_edges(graph, state, cfg)
         rels = sorted(e.relation for e in edges)
         self.assertEqual(rels, ["contact-compatibility", "grasp-compatibility"])
         # Perfect alignment at the anchor -> normalized score 0 -> "match".
@@ -337,45 +331,37 @@ class CompatibilityEdgeTests(unittest.TestCase):
             self.assertEqual(e.label, "match")
 
     def test_skips_grasp_compat_without_whitelist_grasp(self):
-        cfg = _cfg(
-            self._aff_set(),
-            interaction_types={"actor:024_bowl": {"contact"}},  # contact only
-        )
-        node = _obj_node(whitelist_key="actor:024_bowl")
+        cfg = _cfg(self._aff_set())
+        node = _obj_node(whitelist_key="actor:024_bowl", types=("contact",))
         state = _State([0.0, 0.0, 0.02], gripper_width=0.045)
         graph = Graph(0, "env", "cam", nodes=[_ee(), node])
-        edges = ee_object_compatibility_edges(graph, state, cfg)
+        edges = ee_object_affordance_edges(graph, state, cfg)
         rels = {e.relation for e in edges}
         self.assertNotIn("grasp-compatibility", rels)
         self.assertIn("contact-compatibility", rels)
 
-    def test_skips_when_planar_distance_not_near(self):
-        cfg = _cfg(
-            self._aff_set(),
-            interaction_types={"actor:024_bowl": {"contact", "grasp"}},
-        )
-        # Far enough away that planar-distance label is neither "very-near" nor "near".
+    def test_far_object_is_unobserved_but_still_scored(self):
+        cfg = _cfg(self._aff_set())
+        # Far enough that planar-distance is neither "very-near" nor "near".
         node = _obj_node(whitelist_key="actor:024_bowl",
                          pose=(0.30, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
         state = _State([0.0, 0.0, 0.02], gripper_width=0.045)
         graph = Graph(0, "env", "cam", nodes=[_ee(), node])
-        self.assertEqual(ee_object_compatibility_edges(graph, state, cfg), [])
+        edges = ee_object_affordance_edges(graph, state, cfg)
+        self.assertEqual({e.label for e in edges}, {"unobserved"})
+        # The score still lands on the fact, so the change stays continuous
+        # across the gate.
+        self.assertTrue(all(e.raw_value is not None for e in edges))
 
-    def test_contact_compat_masked_under_grasp(self):
-        cfg = _cfg(
-            self._aff_set(),
-            interaction_types={"actor:024_bowl": {"contact", "grasp"}},
-        )
+    def test_contact_compat_survives_a_grasp(self):
+        cfg = _cfg(self._aff_set())
         node = _obj_node(whitelist_key="actor:024_bowl")
         state = _State([0.0, 0.0, 0.02], gripper_width=0.045, grasping=True)
         graph = Graph(0, "env", "cam", nodes=[_ee(), node])
-        edges = ee_object_compatibility_edges(graph, state, cfg)
+        edges = ee_object_affordance_edges(graph, state, cfg)
         contact_compat = [e for e in edges if e.relation == "contact-compatibility"]
         self.assertEqual(len(contact_compat), 1)
-        self.assertTrue(contact_compat[0].masked)
-        self.assertEqual(
-            contact_compat[0].attributes.get("suppressed_by_grasp"), True,
-        )
+        self.assertEqual(contact_compat[0].label, "match")
 
 
 # --------------------------------------------------------------------------- #
@@ -396,14 +382,14 @@ class PersistenceStrippingTests(unittest.TestCase):
 class TemporalAffordanceHistoryTests(unittest.TestCase):
     KEY = ("ee", "actor:024_bowl", "grasp-compatibility")
 
-    def _push(self, buf, frame, value):
-        ee = _ee()
+    def _push(self, buf, frame, value, label="partial-match"):
         node = _obj_node()
-        graph = Graph(frame, "env", "cam", nodes=[ee, node], edges=[
-            Edge("ee", node.node_id, "grasp-compatibility",
-                 "partial-match", float(value)),
+        graph = Graph(frame, "env", "cam", nodes=[_ee(), node], edges=[
+            Edge("ee", node.node_id, "grasp-compatibility", label,
+                 raw_value=None if value is None else float(value)),
         ])
-        buf.update(graph)
+        buf.annotate(graph, _cfg())
+        return graph
 
     def test_history_appends_across_frames(self):
         buf = TemporalBuffer(K=3)
@@ -412,14 +398,29 @@ class TemporalAffordanceHistoryTests(unittest.TestCase):
         self._push(buf, 2, 0.05)
         self.assertEqual(len(buf._values[self.KEY]), 3)
 
-    def test_history_drops_on_edge_disappearance(self):
+    def test_history_drops_when_the_fact_leaves(self):
         buf = TemporalBuffer(K=3)
         self._push(buf, 0, 0.10)
         self._push(buf, 1, 0.08)
-        ee = _ee()
         node = _obj_node()
-        graph = Graph(2, "env", "cam", nodes=[ee, node], edges=[])
-        buf.update(graph)
+        buf.annotate(
+            Graph(2, "env", "cam", nodes=[_ee(), node], edges=[]), _cfg())
+        self.assertNotIn(self.KEY, buf._values)
+
+    def test_history_survives_the_near_gate(self):
+        # Leaving the near gate relabels the fact but keeps scoring it, so the
+        # change stays continuous instead of restarting.
+        buf = TemporalBuffer(K=2)
+        self._push(buf, 0, 0.10)
+        self._push(buf, 1, 0.20, label="unobserved")
+        graph = self._push(buf, 2, 0.30, label="unobserved")
+        self.assertEqual(len(buf._values[self.KEY]), 3)
+        self.assertEqual(graph.edges[0].temp_label, "increase-slow")
+
+    def test_unscored_fact_drops_its_history(self):
+        buf = TemporalBuffer(K=3)
+        self._push(buf, 0, 0.10)
+        self._push(buf, 1, None, label="unobserved")
         self.assertNotIn(self.KEY, buf._values)
 
 

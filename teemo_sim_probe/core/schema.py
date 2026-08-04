@@ -1,7 +1,12 @@
-"""TEEMO manipulation-semantic-graph schema.
+"""TEEMO manipulation scene-graph schema.
 
-One graph per frame. Two node types only (``ee`` and ``object``). Edges carry
-both a discrete ``label`` and the raw continuous ``value``.
+One graph per frame. Two node types (``ee`` and ``object``). The vertex set is
+an append-only per-episode registry: ``index`` is assigned on first sight and
+never reused or reordered while the episode runs.
+
+Facts are hyper-relational: one :class:`Edge` per admissible ``(src, rel, dst)``
+instance carrying an absolute state ``label`` and, for families that define one,
+a temporal-change ``temp_label`` over the last ``K`` frames.
 
 Pure-python (no torch / maniskill imports).
 """
@@ -28,17 +33,16 @@ class Node:
 
     pose_world: Optional[List[float]] = None
 
-    persistent: bool = False
+    # Appearance: mean masked depth in metres, one entry per configured camera.
+    # Each entry independently retains its last observed value while the node
+    # is not visible in that camera.
+    feat: Optional[List[float]] = None
+
+    # Append-only vertex index, assigned by EntityRegistry on first sight.
+    index: Optional[int] = None
+
     steps_since_seen: int = 0
     source: str = "segmentation"
-    frozen_pose: bool = False
-
-    # Slot bookkeeping. slot_id is None for ee and for candidates that did not
-    # earn a slot this frame.
-    slot_id: Optional[int] = None
-    entity_id: Optional[str] = None
-    valid_mask: bool = True           # False == padding slot
-    reset_flag: bool = False          # True iff this slot just changed identity
 
     attributes: Dict[str, Any] = field(default_factory=dict)
 
@@ -46,32 +50,20 @@ class Node:
         return asdict(self)
 
 
-def padding_node(slot_id: int) -> "Node":
-    """Padding node for an unused object slot."""
-    return Node(
-        node_id=f"<pad:{slot_id}>",
-        node_type="object",
-        name="<pad>",
-        visible=False,
-        slot_id=slot_id,
-        valid_mask=False,
-    )
-
-
 # --------------------------------------------------------------------------- #
-# Edges
+# Facts
 # --------------------------------------------------------------------------- #
 @dataclass
 class Edge:
     src: str
     dst: str
     relation: str
-    label: str
+    label: str                          # absolute state sigma
+    temp_label: Optional[str] = None    # temporal change delta, None when absent
     raw_value: Optional[float] = None
-    temporal: bool = False
-    masked: bool = False
-    # A stale edge is the last fully observed relation for a pair touching a
-    # frozen persistent node. It is never recomputed from mixed-time poses.
+    # A stale fact is the last observed object--object physical state touching a
+    # node that is no longer visible. It is never recomputed from mixed-time
+    # poses and never carries a temporal label.
     stale: bool = False
     observed_frame: Optional[int] = None
     age: int = 0
@@ -109,27 +101,19 @@ class Graph:
                 return
         self.nodes.append(node)
 
-    def valid_nodes(self) -> List[Node]:
-        return [n for n in self.nodes if n.valid_mask]
-
-    def to_dict(self, drawable_only: bool = False) -> Dict[str, Any]:
-        nodes = self.nodes
-        edges = self.edges
-        if drawable_only:
-            nodes = [n for n in nodes if n.valid_mask]
-            edges = [e for e in edges if not e.masked]
+    def to_dict(self) -> Dict[str, Any]:
         return {
             "frame": self.frame,
             "env_id": self.env_id,
             "camera": self.camera,
-            "nodes": [n.to_dict() for n in nodes],
-            "edges": [e.to_dict() for e in edges],
+            "nodes": [n.to_dict() for n in self.nodes],
+            "edges": [e.to_dict() for e in self.edges],
             "meta": self.meta,
         }
 
-    def to_json(self, drawable_only: bool = False, indent: int = 2) -> str:
-        return json.dumps(self.to_dict(drawable_only=drawable_only), indent=indent)
+    def to_json(self, indent: int = 2) -> str:
+        return json.dumps(self.to_dict(), indent=indent)
 
-    def save(self, path: str, drawable_only: bool = False) -> None:
+    def save(self, path: str) -> None:
         with open(path, "w") as f:
-            f.write(self.to_json(drawable_only=drawable_only))
+            f.write(self.to_json())

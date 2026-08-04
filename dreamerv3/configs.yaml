@@ -57,6 +57,17 @@ defaults:
       eval_max_episode_steps: 0  # 0 → reuse max_episode_steps; mshab overrides to 200
       frame_stack: 1             # mshab path: no FrameStack wrapper
       reward_mode: normalized_dense  # 'sparse' | 'dense' | 'normalized_dense'
+      graph:                     # scene graph obs; obs_mode must include segmentation
+        enabled: false
+        profile: room_scale
+        thresholds_path: ''
+        whitelist_dir: ''
+        cameras: [fetch_head, fetch_hand]
+        primary_camera: fetch_head
+        n_max: 11                # vertex capacity including the ee node
+        e_max: 256
+        staleness_enabled: true
+        bypass_teemo: false
 
   replay:
     size: 5e6
@@ -108,12 +119,13 @@ defaults:
     coordinator_address: ''
 
   agent:
-    loss_scales: {rec: 1.0, rew: 1.0, con: 1.0, dyn: 1.0, rep: 0.1, policy: 1.0, value: 1.0, repval: 0.3}
+    loss_scales: {rec: 1.0, rew: 1.0, con: 1.0, dyn: 1.0, rep: 0.1, policy: 1.0, value: 1.0, repval: 0.3, semapp: 0.1, semvis: 1.0, semabs: 1.0, semtemp: 1.0, semdyn: 1.0, semrep: 0.1}
     opt: {lr: 4e-5, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
     ac_grads: False
     dyn:
       typ: rssm
-      rssm: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, act: silu, norm: rms, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0}
+      rssm: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, semstoch: 16, semclasses: 16, semlayers: 1, act: silu, norm: rms, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0}
+    graph: {layers: 2, units: 256, embed: 64, reverse_edges: True, condition_on_deter: True}
     enc:
       typ: simple
       simple: {depth: 64, mults: [2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: rms, winit: trunc_normal_in, symlog: True, outer: False, kernel: 5, strided: False}
@@ -239,8 +251,11 @@ debug:
     .*\.units: 8
     .*\.stoch: 2
     .*\.classes: 4
+    .*\.semstoch: 2
+    .*\.semclasses: 4
     .*\.deter: 8
     .*\.hidden: 3
+    .*\.embed: 8
     .*\.blocks: 4
     .*\.depth: 2
 
@@ -329,10 +344,11 @@ mshab:
     report_every: 72000
   env:
     maniskill:
-      obs_mode: depth
+      obs_mode: depth+segmentation  # segmentation feeds the scene graph
       max_episode_steps: 100        # matches mshab/configs/sac_pick.yml training horizon
       eval_max_episode_steps: 200   # matches mshab/configs/sac_pick.yml eval horizon
       frame_stack: 1                # no MSHab FrameStack; RSSM provides temporal context
+      graph.enabled: true
   replay:
     size: 700000
 

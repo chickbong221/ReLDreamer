@@ -1,7 +1,8 @@
 """Build the two-type node set (``ee`` + ``object``) for one frame.
 
 The builder excludes background, folds gripper links into the single ``ee``
-node, and creates object nodes for visible non-robot actors and links.
+node, and creates object nodes for visible non-robot actors and links. It also
+pools each node's appearance: the mean masked depth per camera, in metres.
 
 Task relevance is decided later by the hard per-subtask whitelist.  This
 module deliberately avoids name-based scene filtering so a visible supporter
@@ -14,7 +15,6 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .affordance import has_affordance
 from .entity_identity import entity_kind, stable_entity_key, stable_node_id
 from .schema import Node
 from .mask_extractor import (
@@ -111,29 +111,74 @@ def make_object_node(entity, state: PrivilegedState) -> Node:
 # --------------------------------------------------------------------------- #
 # Main builder
 # --------------------------------------------------------------------------- #
+class _DepthPool:
+    """Per-node, per-camera masked depth accumulator."""
+
+    def __init__(self, n_cams: int):
+        self.n_cams = n_cams
+        self.sums: Dict[str, List[float]] = {}
+        self.counts: Dict[str, List[int]] = {}
+
+    def ensure(self, key: str) -> None:
+        if key not in self.sums:
+            self.sums[key] = [0.0] * self.n_cams
+            self.counts[key] = [0] * self.n_cams
+
+    def add(self, key: str, cam_slot: int, total: float, pixels: int) -> None:
+        self.ensure(key)
+        self.sums[key][cam_slot] += float(total)
+        self.counts[key][cam_slot] += int(pixels)
+
+    def mean(self, key: str) -> Optional[List[Optional[float]]]:
+        if key not in self.sums:
+            return None
+        out: List[Optional[float]] = []
+        for c in range(self.n_cams):
+            n = self.counts[key][c]
+            out.append(self.sums[key][c] / n if n > 0 else None)
+        return out
+
+
 def _ingest_camera(
     seg: np.ndarray,
+    depth: Optional[np.ndarray],
     state: PrivilegedState,
     nodes: Dict[str, Node],
     area_by_key: Dict[str, int],
+    pool: _DepthPool,
     masks: MaskAccumulator,
     *,
+    cam_slot: int,
+    depth_scale: float,
     need_masks: bool,
     admit: Optional[Callable[[Any], bool]] = None,
 ) -> None:
     """Union one camera's segmentation into the shared node dict.
 
+    Per-segment pixel counts and depth sums come from two ``bincount`` passes,
+    so appearance pooling costs one sweep of the frame and never materialises a
+    per-node mask.
+
     ``admit`` is an optional early whitelist gate: entities it rejects are
     skipped before node construction. It must admit a superset of what the
     downstream ``apply_whitelist`` keeps so the final graph is unchanged.
     """
-    ids, counts = np.unique(seg, return_counts=True)
+    flat = seg.reshape(-1)
+    counts_by_id = np.bincount(flat)
+    if depth is not None:
+        weights = depth.reshape(-1).astype(np.float64) * depth_scale
+        sums_by_id = np.bincount(flat, weights=weights)
+    else:
+        sums_by_id = None
+
     robot_link_names = getattr(state, "robot_link_names", None)
     ee_link_names = getattr(state, "ee_link_names", None)
-    for seg_id, count in zip(ids, counts):
+    for seg_id in np.nonzero(counts_by_id)[0]:
         seg_id = int(seg_id)
-        if seg_id == 0 or count <= 0:
+        if seg_id == 0:
             continue
+        count = int(counts_by_id[seg_id])
+        total = float(sums_by_id[seg_id]) if sums_by_id is not None else 0.0
         entity = state.seg_id_map.get(seg_id)
         if entity is None:
             continue
@@ -144,7 +189,9 @@ def _ingest_camera(
                     masks.add("ee", mask_for_id(seg, seg_id))
                 nodes["ee"].visible = True
                 nodes["ee"].segmentation_ids.append(seg_id)
-                area_by_key["ee"] += int(count)
+                area_by_key["ee"] += count
+                if sums_by_id is not None:
+                    pool.add("ee", cam_slot, total, count)
             continue
 
         if admit is not None and not admit(entity):
@@ -155,7 +202,9 @@ def _ingest_camera(
             nodes[key] = make_object_node(entity, state)
             area_by_key[key] = 0
         nodes[key].segmentation_ids.append(seg_id)
-        area_by_key[key] += int(count)
+        area_by_key[key] += count
+        if sums_by_id is not None:
+            pool.add(key, cam_slot, total, count)
         if need_masks:
             masks.add(key, mask_for_id(seg, seg_id))
         nodes[key].pixel_area = area_by_key[key]
@@ -168,17 +217,25 @@ def build_nodes(
     camera: Optional[str] = None,
     seg_override: Optional[np.ndarray] = None,
     seg_overrides: Optional[Dict[str, np.ndarray]] = None,
+    depth_overrides: Optional[Dict[str, np.ndarray]] = None,
     rgb_override: Optional[np.ndarray] = None,
     camera_override: Optional[str] = None,
     primary_camera: Optional[str] = None,
+    camera_order: Optional[List[str]] = None,
     need_masks: bool = True,
     admit: Optional[Callable[[Any], bool]] = None,
+    depth_scale: float = 1e-3,
 ) -> Tuple[Dict[str, Node], MaskAccumulator, str, np.ndarray]:
     """Return (nodes_by_id, masks, camera_name, rgb).
 
     ``seg_overrides`` (dict of ``cam -> [H, W]``) unions visibility across
     cameras; masks are collected only for ``primary_camera``. ``seg_override``
     (singular) is the single-camera path used by the offline probe.
+
+    ``camera_order`` fixes which appearance slot each camera writes to and must
+    stay constant for the whole run; it defaults to sorted camera names.
+    ``depth_overrides`` supplies ``cam -> [H, W]`` raw depth; slots without a
+    depth map produce ``None`` and fall back to the selector's retained value.
     """
     if seg_overrides is not None:
         if not seg_overrides:
@@ -198,65 +255,37 @@ def build_nodes(
         H, W = seg_override.shape
     else:
         cam = pick_camera(obs, camera)
-        rgb, seg, _depth = extract_camera_obs(obs, cam, state.env_idx)
+        rgb, seg, depth = extract_camera_obs(obs, cam, state.env_idx)
         seg_overrides = {cam: seg}
+        if depth_overrides is None and depth is not None:
+            depth_overrides = {cam: np.asarray(depth).squeeze()}
         H, W = seg.shape
+
+    order = list(camera_order) if camera_order else sorted(seg_overrides)
+    slot_of = {name: i for i, name in enumerate(order)}
+    n_cams = len(order)
 
     masks = MaskAccumulator(H, W)
     nodes: Dict[str, Node] = {"ee": make_ee_node(state)}
     area_by_key: Dict[str, int] = {"ee": 0}
+    pool = _DepthPool(n_cams)
 
     for cam_name, cam_seg in seg_overrides.items():
+        slot = slot_of.get(cam_name)
+        if slot is None:
+            continue
+        cam_depth = None
+        if depth_overrides is not None:
+            cam_depth = depth_overrides.get(cam_name)
         _ingest_camera(
-            cam_seg, state, nodes, area_by_key, masks,
+            cam_seg, cam_depth, state, nodes, area_by_key, pool, masks,
+            cam_slot=slot,
+            depth_scale=depth_scale,
             need_masks=need_masks and cam_name == cam,
             admit=admit,
         )
 
     nodes["ee"].pixel_area = area_by_key["ee"]
+    for key, node in nodes.items():
+        node.feat = pool.mean(key) or [None] * n_cams
     return nodes, masks, cam, rgb
-
-
-# --------------------------------------------------------------------------- #
-# Pair-type classification (eligibility-based relation vocabulary)
-# --------------------------------------------------------------------------- #
-# Every object node is classified as exactly one of
-#   "static_object"      -> center-based scene context + contact state
-#   "interactive_object" -> affordance-grounded manipulation state
-# stored on ``node.attributes["pair_type"]``. The ee node is left untyped.
-#
-# Eligibility rule (most specific wins):
-#   1. object has a mined affordance set            -> interactive_object
-#   2. whitelist role contains interacted            -> interactive_object
-#   3. whitelist role is support only                -> static_object
-#   4. otherwise: free actors default interactive, links default static.
-def classify_pair_types(nodes: Dict[str, Node], cfg: dict) -> None:
-    """Annotate each object node in place with ``attributes['pair_type']``."""
-    aff_set = cfg.get("affordance_set")
-    for node in nodes.values():
-        if node.node_type != "object":
-            continue
-        attrs = node.attributes
-
-        # (1) affordance asset present -> interactive.
-        if aff_set is not None and has_affordance(aff_set, node):
-            attrs["pair_type"] = "interactive_object"
-            continue
-        roles = set(attrs.get("whitelist_roles") or [])
-        # (2) interacted members are ordinary interactive objects.
-        if "interacted" in roles:
-            attrs["pair_type"] = "interactive_object"
-            continue
-        # (3) direct supporters are static unless they have their own mined
-        # affordance, handled above.
-        if "support" in roles:
-            attrs["pair_type"] = "static_object"
-            continue
-        # (4) default by entity kind: links are usually structure, free actors
-        #     are usually manipulable. Interactive default lets a not-yet-mined
-        #     manipulation object still receive center-based interactive
-        #     relations (compatibility edges are simply skipped without an
-        #     asset).
-        attrs["pair_type"] = (
-            "interactive_object" if attrs.get("is_actor") else "static_object"
-        )

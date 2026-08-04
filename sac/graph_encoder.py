@@ -1,14 +1,13 @@
 """sg2im-style graph encoder.
 
-Padded backing tensors (B, N_max) / (B, E_max) plus n_nodes/n_edges counts are
-converted to a flat sg2im-style batch (obj_vecs, pred_vecs, edges, node_to_sample)
-inside forward. Categorical predicates only. L layers of GraphTripleConv on
-the flat batch, followed by a parametric attention readout with a learned
-pool query and Q/K/V projections over [node_conf ; obj_vec] inputs.
+Padded (B, N_max) / (B, E_max) tensors plus n_nodes/n_edges are flattened into
+an sg2im batch (obj_vecs, pred_vecs, edges, node_to_sample) inside forward, run
+through L GraphTripleConv layers, then read out by attention pooling over
+[visibility ; obj_vec] with a learned query.
 
-Target conditioning: nodes matching ``graph_target_id`` get a learned marker
-added before message passing, and the pool query is shifted by the target's
-node embedding (zero when the target id is pad).
+Target conditioning: nodes matching ``graph_target_ent`` get a learned marker
+before message passing, and the pool query is shifted by the target's entity
+embedding (zero when the target is pad).
 """
 
 from __future__ import annotations
@@ -18,6 +17,8 @@ from typing import Dict, List
 
 import torch
 import torch.nn as nn
+
+from teemo_sim_probe.adapters.graph_pack import GRAPH_KEYS as GRAPH_OBS_KEYS
 
 
 def _mlp(dims: List[int], last_act: bool = False) -> nn.Sequential:
@@ -85,8 +86,10 @@ class GraphTripleConv(nn.Module):
 class GraphEncoder(nn.Module):
     def __init__(
         self,
-        node_vocab_size: int,
-        edge_vocab_size: int,
+        entity_vocab_size: int,
+        relation_vocab_size: int,
+        abs_vocab_size: int,
+        temp_vocab_size: int,
         embed_dim: int = 64,
         hidden_dim: int = 512,
         out_dim: int = 128,
@@ -95,8 +98,10 @@ class GraphEncoder(nn.Module):
         super().__init__()
         self.out_dim = out_dim
         self.embed_dim = embed_dim
-        self.node_emb = nn.Embedding(node_vocab_size, embed_dim, padding_idx=0)
-        self.edge_emb = nn.Embedding(edge_vocab_size, embed_dim, padding_idx=0)
+        self.node_emb = nn.Embedding(entity_vocab_size, embed_dim, padding_idx=0)
+        self.rel_emb = nn.Embedding(relation_vocab_size, embed_dim, padding_idx=0)
+        self.abs_emb = nn.Embedding(abs_vocab_size, embed_dim, padding_idx=0)
+        self.temp_emb = nn.Embedding(temp_vocab_size, embed_dim, padding_idx=0)
         self.convs = nn.ModuleList([
             GraphTripleConv(embed_dim, embed_dim, hidden_dim=hidden_dim)
             for _ in range(num_layers)
@@ -114,14 +119,16 @@ class GraphEncoder(nn.Module):
         self.readout = _mlp([embed_dim, out_dim, out_dim], last_act=False)
 
     def forward(self, obs: Dict[str, torch.Tensor]) -> torch.Tensor:
-        node_ids = obs["graph_node_ids"].long()
-        node_conf = obs["graph_node_conf"].float()
+        node_ids = obs["graph_node_ent"].long()
+        node_conf = obs["graph_node_vis"].float()
         edge_src = obs["graph_edge_src"].long()
         edge_dst = obs["graph_edge_dst"].long()
-        edge_pred = obs["graph_edge_pred"].long()
+        edge_rel = obs["graph_edge_rel"].long()
+        edge_abs = obs["graph_edge_abs"].long()
+        edge_temp = obs["graph_edge_temp"].long()
         n_nodes = obs["graph_n_nodes"].long()
         n_edges = obs["graph_n_edges"].long()
-        target_id = obs["graph_target_id"].long()
+        target_id = obs["graph_target_ent"].long()
 
         B, N_max = node_ids.shape
         E_max = edge_src.size(1)
@@ -147,7 +154,9 @@ class GraphEncoder(nn.Module):
         edge_mask = edge_arange < n_edges.unsqueeze(1)               # (B, E_max)
         edge_src_local = edge_src[edge_mask]
         edge_dst_local = edge_dst[edge_mask]
-        edge_pred_flat = edge_pred[edge_mask]
+        edge_rel_flat = edge_rel[edge_mask]
+        edge_abs_flat = edge_abs[edge_mask]
+        edge_temp_flat = edge_temp[edge_mask]
 
         sample_grid_e = torch.arange(B, device=device).unsqueeze(1).expand(-1, E_max)
         edge_to_sample = sample_grid_e[edge_mask]
@@ -159,7 +168,14 @@ class GraphEncoder(nn.Module):
         # Valid node ids are >= 1, so a pad target (0) marks nothing.
         is_target = (node_ids_flat == target_id[node_to_sample]).to(obj_vecs.dtype)
         obj_vecs = obj_vecs + is_target.unsqueeze(-1) * self.target_marker
-        pred_vecs = self.edge_emb(edge_pred_flat)                    # (T, D)
+        # A fact's vector is its relation identity plus its absolute and
+        # temporal states; pad ids embed to zero, so a fact without a change
+        # label contributes nothing from temp_emb.
+        pred_vecs = (
+            self.rel_emb(edge_rel_flat)
+            + self.abs_emb(edge_abs_flat)
+            + self.temp_emb(edge_temp_flat)
+        )                                                            # (T, D)
         edges = torch.stack([edge_src_flat, edge_dst_flat], dim=-1)  # (T, 2)
 
         for conv in self.convs:
@@ -191,14 +207,6 @@ class GraphEncoder(nn.Module):
         pooled.scatter_add_(0, node_to_sample.unsqueeze(-1).expand(-1, D), weighted)
 
         return self.readout(self.W_O(pooled))
-
-
-GRAPH_OBS_KEYS = (
-    "graph_node_ids", "graph_node_ee_mask", "graph_node_conf",
-    "graph_edge_src", "graph_edge_dst", "graph_edge_pred",
-    "graph_n_nodes", "graph_n_edges", "graph_target_id",
-)
-
 
 def has_graph_obs(sample_obs: Dict[str, torch.Tensor]) -> bool:
     return all(k in sample_obs for k in GRAPH_OBS_KEYS)

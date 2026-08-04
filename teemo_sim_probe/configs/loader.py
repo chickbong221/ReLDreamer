@@ -61,9 +61,9 @@ def load_config(
     whitelists_cfg = dict(raw.get("whitelists", {"dir": "subtask_whitelists"}))
     whitelists_cfg["dir_abs"] = _abs_asset_path(cfg_dir, whitelists_cfg.get("dir"))
 
-    selection_cfg = raw.get("selection", {
-        "n_slots": 10, "k_persist": 5,
-    })
+    selection_cfg = dict(raw.get("selection") or {})
+    selection_cfg.setdefault("n_max", 11)
+    selection_cfg.setdefault("k_persist", -1)
 
     aff_set = load_affordance_set(affordances_cfg["asset_path_abs"])
 

@@ -1,10 +1,11 @@
-"""Closed vocabularies for the graph encoder.
+"""Closed vocabularies for the semantic graph encoder, one per learned table.
 
-Node vocab: whitelist-key union scanned from every per-subtask whitelist under
-``whitelist_dir``, plus ``<ee>`` and ``<pad>``.
+entity (kappa): whitelist-key union + ``<ee>`` / ``<pad>``. relation (rho): the
+ten types. absolute (sigma): union of all family labels. temporal (delta): the
+shared signed change vocabulary. Index 0 is padding everywhere.
 
-Edge vocab: flat ``(relation, label)`` pairs enumerated from relation_rules
-(spatial + compat + change + physical-state singletons), plus ``<pad_edge>``.
+sigma is shared across relations, so the decoder head is conditioned on rho and
+masked by ``abs_valid`` / ``temp_valid``.
 """
 
 from __future__ import annotations
@@ -12,24 +13,44 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
+
+import numpy as np
 
 from ..core.relation_rules import (
+    ABS_LABELS,
     CHANGE_LABELS,
-    COMPAT_LABELS,
-    SPATIAL_LABELS,
+    RELATION_TYPES,
+    TEMPORAL_RELATIONS,
 )
 
 
 PAD_TOKEN = "<pad>"
 EE_TOKEN = "<ee>"
-PAD_EDGE_TOKEN = "<pad_edge>"
-
-_PHYSICAL_STATE = ("contact", "grasp", "support", "contain")
 
 
 @dataclass
-class NodeVocab:
+class Vocab:
+    token_to_id: Dict[str, int]
+
+    def __len__(self) -> int:
+        return len(self.token_to_id) + 1  # +1 for pad at index 0
+
+    @property
+    def pad_id(self) -> int:
+        return 0
+
+    def encode(self, token: Optional[str]) -> int:
+        if token is None:
+            return 0
+        idx = self.token_to_id.get(token)
+        if idx is None:
+            raise KeyError(f"unknown token {token!r}")
+        return idx
+
+
+@dataclass
+class EntityVocab:
     token_to_id: Dict[str, int]
 
     def __len__(self) -> int:
@@ -49,54 +70,55 @@ class NodeVocab:
         idx = self.token_to_id.get(key)
         if idx is None:
             raise KeyError(
-                f"NodeVocab: unknown node key {key!r}. Vocab must be built "
+                f"EntityVocab: unknown entity key {key!r}. Vocab must be built "
                 f"from a whitelist directory that covers every runtime asset."
             )
         return idx
 
 
 @dataclass
-class EdgeVocab:
-    token_to_id: Dict[Tuple[str, str], int]
-
-    def __len__(self) -> int:
-        return len(self.token_to_id) + 1  # +1 for pad
+class GraphVocab:
+    entity: EntityVocab
+    relation: Vocab
+    absolute: Vocab
+    temporal: Vocab
+    # [n_relations, n_abs] bool: which sigma each rho may take.
+    abs_valid: np.ndarray
+    # [n_relations] bool: which rho carry a delta at all (mu^rho).
+    temp_valid: np.ndarray
 
     @property
-    def pad_id(self) -> int:
-        return 0
-
-    def encode(self, relation: str, label: str) -> int:
-        idx = self.token_to_id.get((relation, label))
-        if idx is None:
-            raise KeyError(
-                f"EdgeVocab: unknown (relation, label)=({relation!r}, {label!r})"
-            )
-        return idx
+    def sizes(self) -> Dict[str, int]:
+        return {
+            "entity": len(self.entity),
+            "relation": len(self.relation),
+            "absolute": len(self.absolute),
+            "temporal": len(self.temporal),
+        }
 
 
-def build_edge_vocab() -> EdgeVocab:
-    token_to_id: Dict[Tuple[str, str], int] = {}
-    next_id = 1  # 0 reserved for pad
-    for rel, labels in SPATIAL_LABELS.items():
-        for lab in labels:
-            token_to_id[(rel, lab)] = next_id
-            next_id += 1
-    for rel, labels in COMPAT_LABELS.items():
-        for lab in labels:
-            token_to_id[(rel, lab)] = next_id
-            next_id += 1
-    for rel, labels in CHANGE_LABELS.items():
-        for lab in labels:
-            token_to_id[(rel, lab)] = next_id
-            next_id += 1
-    for rel in _PHYSICAL_STATE:
-        token_to_id[(rel, rel)] = next_id
-        next_id += 1
-    return EdgeVocab(token_to_id=token_to_id)
+def _index(tokens: List[str]) -> Dict[str, int]:
+    return {tok: i + 1 for i, tok in enumerate(tokens)}
 
 
-def build_node_vocab(whitelist_dir: str) -> NodeVocab:
+def build_relation_vocab() -> Vocab:
+    return Vocab(token_to_id=_index(list(RELATION_TYPES)))
+
+
+def build_absolute_vocab() -> Vocab:
+    seen: List[str] = []
+    for relation in RELATION_TYPES:
+        for label in ABS_LABELS[relation]:
+            if label not in seen:
+                seen.append(label)
+    return Vocab(token_to_id=_index(seen))
+
+
+def build_temporal_vocab() -> Vocab:
+    return Vocab(token_to_id=_index(list(CHANGE_LABELS)))
+
+
+def build_entity_vocab(whitelist_dir: str) -> EntityVocab:
     if not os.path.isdir(whitelist_dir):
         raise FileNotFoundError(
             f"whitelist_dir does not exist: {whitelist_dir!r}. "
@@ -121,13 +143,35 @@ def build_node_vocab(whitelist_dir: str) -> NodeVocab:
         raise ValueError(
             f"whitelist_dir {whitelist_dir!r} contained no member keys"
         )
-    return NodeVocab(token_to_id={k: i for i, k in enumerate(keys)})
+    return EntityVocab(token_to_id={k: i for i, k in enumerate(keys)})
 
 
-def node_key_for(node) -> Optional[str]:
-    """Vocab key for one graph node. ``None`` for padding."""
-    if not getattr(node, "valid_mask", True):
-        return None
+def build_graph_vocab(whitelist_dir: str) -> GraphVocab:
+    entity = build_entity_vocab(whitelist_dir)
+    relation = build_relation_vocab()
+    absolute = build_absolute_vocab()
+    temporal = build_temporal_vocab()
+
+    abs_valid = np.zeros((len(relation), len(absolute)), dtype=bool)
+    temp_valid = np.zeros((len(relation),), dtype=bool)
+    for name in RELATION_TYPES:
+        rid = relation.encode(name)
+        for label in ABS_LABELS[name]:
+            abs_valid[rid, absolute.encode(label)] = True
+        temp_valid[rid] = name in TEMPORAL_RELATIONS
+
+    return GraphVocab(
+        entity=entity,
+        relation=relation,
+        absolute=absolute,
+        temporal=temporal,
+        abs_valid=abs_valid,
+        temp_valid=temp_valid,
+    )
+
+
+def entity_key_for(node) -> Optional[str]:
+    """Entity-type key for one node. ``None`` encodes to pad."""
     if node.node_type == "ee":
         return EE_TOKEN
     return node.attributes.get("whitelist_key")

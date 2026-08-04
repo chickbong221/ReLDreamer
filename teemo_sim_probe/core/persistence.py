@@ -1,4 +1,4 @@
-"""Snapshot helpers used by the selector to retain frozen-pose object nodes."""
+"""Snapshot helpers used by the selector to retain nodes that left the view."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ def _stripped_attrs(attrs: Dict[str, object]) -> Dict[str, object]:
 
 
 def _snapshot(node: Node) -> Node:
-    """Frozen copy of a visible node used as the retention seed."""
+    """Copy of a visible node used as the retention seed."""
     return Node(
         node_id=node.node_id,
         node_type=node.node_type,
@@ -25,9 +25,9 @@ def _snapshot(node: Node) -> Node:
         segmentation_ids=list(node.segmentation_ids),
         pixel_area=node.pixel_area,
         pose_world=list(node.pose_world) if node.pose_world else None,
-        persistent=node.persistent,
+        feat=list(node.feat) if node.feat else None,
+        index=node.index,
         steps_since_seen=node.steps_since_seen,
         source=node.source,
-        frozen_pose=False,
         attributes=_stripped_attrs(node.attributes),
     )

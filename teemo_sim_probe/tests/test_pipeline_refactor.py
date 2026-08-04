@@ -195,50 +195,57 @@ class OneHopWhitelistTests(unittest.TestCase):
         self.assertAlmostEqual(bins["grasp-compatibility-change"][2], 0.20 / 12.0)
 
 
-class StaleEdgeTests(unittest.TestCase):
-    def test_last_observed_edge_is_restored_as_stale(self):
+class StaleFactTests(unittest.TestCase):
+    def test_last_observed_object_pair_is_restored_as_stale(self):
         graph_builder = GraphBuilder.__new__(GraphBuilder)
         graph_builder._edge_history = {}
-        ee = Node("ee", "ee", "end_effector")
         bowl = Node("actor:024_bowl", "object", "bowl")
-        fresh = Graph(0, "env", "cam", nodes=[ee, bowl], edges=[
-            Edge("ee", bowl.node_id, "contact", "contact", 2.0),
+        counter = Node("link:counter/body", "object", "counter")
+        fresh = Graph(0, "env", "cam", nodes=[bowl, counter], edges=[
+            Edge(counter.node_id, bowl.node_id, "support", "holds",
+                 raw_value=2.0),
         ])
         graph_builder._attach_stale_edges(fresh, 0)
 
-        stale_bowl = Node(
-            bowl.node_id, "object", "bowl", visible=False,
-            frozen_pose=True, persistent=True,
-        )
-        stale = Graph(3, "env", "cam", nodes=[ee, stale_bowl], edges=[])
+        gone = Node(bowl.node_id, "object", "bowl", visible=False)
+        stale = Graph(3, "env", "cam", nodes=[gone, counter], edges=[])
         graph_builder._attach_stale_edges(stale, 3)
         self.assertEqual(len(stale.edges), 1)
         self.assertTrue(stale.edges[0].stale)
         self.assertEqual(stale.edges[0].observed_frame, 0)
         self.assertEqual(stale.edges[0].age, 3)
 
-    def test_stale_edge_does_not_advance_temporal_history(self):
-        # Use a continuous relation (planar-distance) since physical-state
-        # predicates no longer feed the temporal buffer at all.
+    def test_negative_state_is_retained_too(self):
+        graph_builder = GraphBuilder.__new__(GraphBuilder)
+        graph_builder._edge_history = {}
+        bowl = Node("actor:024_bowl", "object", "bowl")
+        counter = Node("link:counter/body", "object", "counter")
+        fresh = Graph(0, "env", "cam", nodes=[bowl, counter], edges=[
+            Edge(counter.node_id, bowl.node_id, "support", "not-holds",
+                 raw_value=0.0),
+        ])
+        graph_builder._attach_stale_edges(fresh, 0)
+        gone = Node(bowl.node_id, "object", "bowl", visible=False)
+        stale = Graph(1, "env", "cam", nodes=[gone, counter], edges=[])
+        graph_builder._attach_stale_edges(stale, 1)
+        self.assertEqual([e.label for e in stale.edges], ["not-holds"])
+
+    def test_stale_fact_does_not_advance_temporal_history(self):
+        cfg = {"bin_edges": {"planar-distance-change": [-0.3, -0.1, 0.1, 0.3]}}
         buffer = TemporalBuffer(K=1)
         ee = Node("ee", "ee", "end_effector")
         bowl = Node("actor:024_bowl", "object", "bowl")
         fresh = Graph(0, "env", "cam", nodes=[ee, bowl], edges=[
-            Edge("ee", bowl.node_id, "planar-distance", "near", 0.05),
+            Edge("ee", bowl.node_id, "planar-distance", "near",
+                 raw_value=0.05),
         ])
-        buffer.update(fresh)
-        stale_bowl = Node(
-            bowl.node_id, "object", "bowl", visible=False, frozen_pose=True,
-        )
-        stale = Graph(1, "env", "cam", nodes=[ee, stale_bowl], edges=[
-            Edge(
-                "ee", bowl.node_id, "planar-distance", "near", 0.10,
-                stale=True, observed_frame=0, age=1,
-            ),
+        buffer.annotate(fresh, cfg)
+        gone = Node(bowl.node_id, "object", "bowl", visible=False)
+        stale = Graph(1, "env", "cam", nodes=[ee, gone], edges=[
+            Edge("ee", bowl.node_id, "planar-distance", "near",
+                 raw_value=0.10, stale=True, observed_frame=0, age=1),
         ])
-        buffer.update(stale)
-        # The fresh value gets purged when bowl becomes frozen-pose; the
-        # stale-tagged edge is not re-ingested.
+        buffer.annotate(stale, cfg)
         self.assertNotIn(("ee", bowl.node_id, "planar-distance"), buffer._values)
 
 
@@ -375,7 +382,7 @@ class AdmitGateTests(unittest.TestCase):
     def _selector(self, whitelist):
         from teemo_sim_probe.core.selector import NodeSelector
 
-        selector = NodeSelector({"selection": {"n_slots": 4, "k_persist": 0}})
+        selector = NodeSelector({"selection": {"n_max": 5, "k_persist": 0}})
         selector.set_whitelist(whitelist)
         return selector
 

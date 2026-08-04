@@ -11,6 +11,7 @@ import numpy as np
 import optax
 
 from . import rssm
+from .graph_encoder import GRAPH_KEYS, GraphDecoder, unpack
 
 f32 = jnp.float32
 i32 = jnp.int32
@@ -35,7 +36,11 @@ class Agent(embodied.jax.Agent):
     self.act_space = act_space
     self.config = config
 
-    exclude = ('is_first', 'is_last', 'is_terminal', 'reward')
+    # Graph keys route to the semantic posterior, not the observation encoder
+    # or decoder: they are vocabulary ids, not sensor readings. Suites that
+    # emit no graph run the plain RSSM with a constant zero semantic state.
+    self.semantic = all(k in obs_space for k in GRAPH_KEYS)
+    exclude = ('is_first', 'is_last', 'is_terminal', 'reward', *GRAPH_KEYS)
     enc_space = {k: v for k, v in obs_space.items() if k not in exclude}
     dec_space = {k: v for k, v in obs_space.items() if k not in exclude}
     self.enc = {
@@ -43,13 +48,22 @@ class Agent(embodied.jax.Agent):
     }[config.enc.typ](enc_space, **config.enc[config.enc.typ], name='enc')
     self.dyn = {
         'rssm': rssm.RSSM,
-    }[config.dyn.typ](act_space, **config.dyn[config.dyn.typ], name='dyn')
+    }[config.dyn.typ](
+        act_space, graph_kw=dict(config.graph), semantic=self.semantic,
+        **config.dyn[config.dyn.typ], name='dyn')
     self.dec = {
         'simple': rssm.Decoder,
     }[config.dec.typ](dec_space, **config.dec[config.dec.typ], name='dec')
+    dynkw = config.dyn[config.dyn.typ]
+    self.graphdec = GraphDecoder(
+        obs_space['graph_node_feat'].shape[-1],
+        units=config.graph.units, embed=config.graph.embed,
+        act=dynkw['act'], norm=dynkw['norm'], winit=dynkw['winit'],
+        name='graphdec') if self.semantic else None
 
     self.feat2tensor = lambda x: jnp.concatenate([
         nn.cast(x['deter']),
+        nn.cast(x['sem'].reshape((*x['sem'].shape[:-2], -1))),
         nn.cast(x['stoch'].reshape((*x['stoch'].shape[:-2], -1)))], -1)
 
     scalar = elements.Space(np.float32, ())
@@ -73,6 +87,8 @@ class Agent(embodied.jax.Agent):
 
     self.modules = [
         self.dyn, self.enc, self.dec, self.rew, self.con, self.pol, self.val]
+    if self.semantic:
+      self.modules.append(self.graphdec)
     self.opt = embodied.jax.Optimizer(
         self.modules, self._make_opt(**config.opt), summary_depth=1,
         name='opt')
@@ -80,11 +96,19 @@ class Agent(embodied.jax.Agent):
     scales = self.config.loss_scales.copy()
     rec = scales.pop('rec')
     scales.update({k: rec for k in dec_space})
+    if not self.semantic:
+      for key in ('semapp', 'semvis', 'semabs', 'semtemp', 'semdyn', 'semrep'):
+        scales.pop(key, None)
     self.scales = scales
 
   @property
   def policy_keys(self):
     return '^(enc|dyn|dec|pol)/'
+
+  def _graph(self, obs):
+    if not self.semantic:
+      return {}
+    return unpack({k: obs[k] for k in GRAPH_KEYS})
 
   @property
   def ext_space(self):
@@ -117,8 +141,8 @@ class Agent(embodied.jax.Agent):
     kw = dict(training=False, single=True)
     reset = obs['is_first']
     enc_carry, enc_entry, tokens = self.enc(enc_carry, obs, reset, **kw)
-    dyn_carry, dyn_entry, feat = self.dyn.observe(
-        dyn_carry, tokens, prevact, reset, **kw)
+    dyn_carry, dyn_entry, feat, _ = self.dyn.observe(
+        dyn_carry, tokens, self._graph(obs), prevact, reset, **kw)
     dec_entry = {}
     if dec_carry:
       dec_carry, dec_entry, recons = self.dec(dec_carry, feat, reset, **kw)
@@ -163,10 +187,15 @@ class Agent(embodied.jax.Agent):
     # World model
     enc_carry, enc_entries, tokens = self.enc(
         enc_carry, obs, reset, training)
-    dyn_carry, dyn_entries, los, repfeat, mets = self.dyn.loss(
-        dyn_carry, tokens, prevact, reset, training)
+    graph = self._graph(obs)
+    dyn_carry, dyn_entries, los, repfeat, nodes, mets = self.dyn.loss(
+        dyn_carry, tokens, graph, prevact, reset, training)
     losses.update(los)
     metrics.update(mets)
+    if self.semantic:
+      los, mets = self.graphdec(nodes, graph)
+      losses.update(los)
+      metrics.update(mets)
     dec_carry, dec_entries, recons = self.dec(
         dec_carry, repfeat, reset, training)
     inp = sg(self.feat2tensor(repfeat), skip=self.config.reward_grad)
@@ -246,7 +275,9 @@ class Agent(embodied.jax.Agent):
 
     carry = (enc_carry, dyn_carry, dec_carry)
     entries = (enc_entries, dyn_entries, dec_entries)
-    outs = {'tokens': tokens, 'repfeat': repfeat, 'losses': losses}
+    outs = {
+        'tokens': tokens, 'graph': graph, 'repfeat': repfeat,
+        'losses': losses}
     return loss, (carry, entries, outs, metrics)
 
   def report(self, carry, data):
@@ -280,9 +311,9 @@ class Agent(embodied.jax.Agent):
     secondhalf = lambda xs: jax.tree.map(lambda x: x[:RB, T // 2:], xs)
     dyn_carry = jax.tree.map(lambda x: x[:RB], dyn_carry)
     dec_carry = jax.tree.map(lambda x: x[:RB], dec_carry)
-    dyn_carry, _, obsfeat = self.dyn.observe(
-        dyn_carry, firsthalf(outs['tokens']), firsthalf(prevact),
-        firsthalf(obs['is_first']), training=False)
+    dyn_carry, _, obsfeat, _ = self.dyn.observe(
+        dyn_carry, firsthalf(outs['tokens']), firsthalf(outs['graph']),
+        firsthalf(prevact), firsthalf(obs['is_first']), training=False)
     _, imgfeat, _ = self.dyn.imagine(
         dyn_carry, secondhalf(prevact), length=T - T // 2, training=False)
     dec_carry, _, obsrecons = self.dec(

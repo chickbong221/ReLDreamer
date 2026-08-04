@@ -90,8 +90,8 @@ def parse_args(argv=None):
     # Selection/output controls.
     p.add_argument("--k-persist", type=int, default=None,
                    help="override selection.k_persist (frames)")
-    p.add_argument("--n-slots", type=int, default=None,
-                   help="override selection.n_slots")
+    p.add_argument("--n-max", type=int, default=None,
+                   help="override selection.n_max")
     p.add_argument("--whitelist-dir", default=None,
                    help="override the per-subtask whitelist directory "
                         "(defaults to configs/subtask_whitelists)")
@@ -395,8 +395,8 @@ def _apply_ablation_overrides(cfg: dict, args) -> None:
     sel = cfg["selection"]
     if args.k_persist is not None:
         sel["k_persist"] = int(args.k_persist)
-    if args.n_slots is not None:
-        sel["n_slots"] = int(args.n_slots)
+    if args.n_max is not None:
+        sel["n_max"] = int(args.n_max)
     if args.whitelist_dir is not None:
         cfg["whitelist_dir"] = args.whitelist_dir
 

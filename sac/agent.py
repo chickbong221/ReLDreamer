@@ -91,8 +91,10 @@ class SACAgent(nn.Module):
         if graph_cfg is not None:
             def _mk_graph():
                 return GraphEncoder(
-                    node_vocab_size=graph_cfg["node_vocab_size"],
-                    edge_vocab_size=graph_cfg["edge_vocab_size"],
+                    entity_vocab_size=graph_cfg["entity_vocab_size"],
+                    relation_vocab_size=graph_cfg["relation_vocab_size"],
+                    abs_vocab_size=graph_cfg["abs_vocab_size"],
+                    temp_vocab_size=graph_cfg["temp_vocab_size"],
                     embed_dim=graph_cfg["embed_dim"],
                     hidden_dim=graph_cfg["hidden_dim"],
                     out_dim=graph_cfg["out_dim"],
