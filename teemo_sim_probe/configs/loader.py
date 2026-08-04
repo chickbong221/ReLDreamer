@@ -40,8 +40,12 @@ def load_config(
     *,
     require_assets: bool = True,
 ) -> dict:
-    """profile in {"tabletop", "room_scale"}."""
-    if path is None:
+    """profile in {"tabletop", "room_scale"}.
+
+    A falsy ``path`` means "use the packaged thresholds": callers reading from
+    elements.Config cannot express None and pass "" instead.
+    """
+    if not path:
         path = os.path.join(os.path.dirname(__file__), "thresholds.yaml")
     cfg_dir = os.path.dirname(os.path.abspath(path))
 

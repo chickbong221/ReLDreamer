@@ -484,6 +484,17 @@ class LinkNameCacheTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
 
+class TeemoConfigPathTests(unittest.TestCase):
+    """elements.Config cannot hold None, so unset paths arrive as ""."""
+
+    def test_empty_path_falls_back_to_the_packaged_thresholds(self):
+        from teemo_sim_probe.configs.loader import load_config
+        default = load_config("room_scale", require_assets=False)
+        empty = load_config("room_scale", path="", require_assets=False)
+        self.assertEqual(empty["whitelist_dir"], default["whitelist_dir"])
+        self.assertTrue(empty["whitelist_dir"])
+
+
 class _GraphEnvStub:
     def __init__(self, seg):
         self.unwrapped = type("_Base", (), {})()

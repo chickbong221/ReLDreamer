@@ -406,8 +406,10 @@ def build_graph_obs(
     if not bool(graph_cfg.get("enabled", False)):
         return None
 
+    # Unset paths arrive from elements.Config as "", which load_config reads as
+    # "use the packaged thresholds".
     teemo_cfg = load_teemo_config(
-        graph_cfg.get("profile", "tabletop"),
+        graph_cfg.get("profile") or "tabletop",
         path=graph_cfg.get("thresholds_path"),
     )
     if "n_max" in graph_cfg:
