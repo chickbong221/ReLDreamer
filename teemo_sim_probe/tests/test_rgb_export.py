@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -80,7 +82,9 @@ class TestRgbExport(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             env = _FakeEnv()
             args = SimpleNamespace(steps=3, out=tmp)
-            _export_rgb_rollout(env, _FakePolicy(), {}, args)
+            # The exporter narrates for the CLI; keep it out of test output.
+            with redirect_stdout(io.StringIO()):
+                _export_rgb_rollout(env, _FakePolicy(), {}, args)
 
             for camera in ("fetch_head", "fetch_hand"):
                 frames = sorted((Path(tmp) / camera).glob("*.png"))

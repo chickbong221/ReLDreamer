@@ -34,10 +34,29 @@ DEPTH = (16, 16, 1)
 
 
 def _config():
+    """The agent config exactly as main.make_agent assembles it, including the
+    whitelist-derived vocabulary size injected at startup."""
     root = pathlib.Path(__file__).resolve().parents[2] / 'dreamerv3'
     raw = yaml.YAML(typ='safe').load((root / 'configs.yaml').read_text())
     config = elements.Config(raw['defaults']).update(raw['debug'])
-    return config.update({'agent.graph.entity_vocab': ENT_VOCAB})
+    config = config.update({'agent.graph.entity_vocab': ENT_VOCAB})
+    return elements.Config(
+        **config.agent, logdir='', seed=0, jax=config.jax,
+        batch_size=config.batch_size, batch_length=config.batch_length,
+        replay_context=config.replay_context,
+        report_length=config.report_length, replica=0, replicas=1)
+
+
+def _model(obs_space, act_space, config):
+    """Build the world model without the jax device wrapper.
+
+    ``embodied.jax.Agent.__new__`` sets up meshes and devices before delegating
+    to the model's own ``__init__``; this reproduces just that delegation, which
+    is where all the config wiring lives.
+    """
+    model = object.__new__(Agent)
+    model.__init__(obs_space, act_space, config)
+    return model
 
 
 def _obs_space():
@@ -116,10 +135,15 @@ class AgentConstructionTests(unittest.TestCase):
 
     def setUp(self):
         self.config = _config()
+        self.act_space = {'action': elements.Space(np.float32, (4,), -1, 1)}
+
+    def _agent(self, obs_space=None):
+        return _model(
+            obs_space if obs_space is not None else _obs_space(),
+            self.act_space, self.config)
 
     def test_graph_keys_bypass_the_observation_encoder(self):
-        agent = Agent(_obs_space(), {'action': elements.Space(
-            np.float32, (4,), -1, 1)}, self.config.agent)
+        agent = self._agent()
         self.assertTrue(agent.semantic)
         for key in agent.enc.veckeys + agent.enc.imgkeys:
             self.assertFalse(key.startswith('graph_'), key)
@@ -127,25 +151,25 @@ class AgentConstructionTests(unittest.TestCase):
             self.assertFalse(key.startswith('graph_'), key)
 
     def test_scales_cover_every_semantic_loss(self):
-        agent = Agent(_obs_space(), {'action': elements.Space(
-            np.float32, (4,), -1, 1)}, self.config.agent)
+        agent = self._agent()
         for key in ('semapp', 'semvis', 'semabs', 'semtemp',
                     'semdyn', 'semrep'):
             self.assertIn(key, agent.scales)
 
     def test_suite_without_a_graph_drops_the_semantic_path(self):
-        space = {k: v for k, v in _obs_space().items()
-                 if not k.startswith('graph_')}
-        agent = Agent(space, {'action': elements.Space(
-            np.float32, (4,), -1, 1)}, self.config.agent)
+        agent = self._agent({
+            k: v for k, v in _obs_space().items()
+            if not k.startswith('graph_')})
         self.assertFalse(agent.semantic)
         self.assertIsNone(agent.graphdec)
         self.assertNotIn('semabs', agent.scales)
 
     def test_semantic_state_reaches_the_entry_space(self):
-        agent = Agent(_obs_space(), {'action': elements.Space(
-            np.float32, (4,), -1, 1)}, self.config.agent)
-        self.assertIn('sem', agent.dyn.entry_space)
+        self.assertIn('sem', self._agent().dyn.entry_space)
+
+    def test_entity_vocab_reaches_the_posterior(self):
+        self.assertEqual(
+            self._agent().dyn.graph_kw['entity_vocab'], ENT_VOCAB)
 
 
 @unittest.skipIf(jax is None, 'jax is not installed')
