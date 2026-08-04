@@ -494,6 +494,7 @@ class _GraphEnvStub:
             "sensor_data": {
                 "cam": {
                     "segmentation": seg,
+                    "depth": seg,
                 },
             },
         }
@@ -513,20 +514,21 @@ class GraphRuntimeMemoryTests(unittest.TestCase):
         )
         builder.cameras = ["cam"]
         builder._cams_checked = False
-        builder._seg_cpu_buffers = {}
+        builder._cpu_buffers = {}
 
-        first = builder._read_batched_segs()
+        first = builder._read_batched("segmentation")
         self.assertTrue(
             np.array_equal(first["cam"], np.arange(8, dtype=np.int32).reshape(2, 2, 2))
         )
-        ptr = builder._seg_cpu_buffers["cam"].data_ptr()
+        ptr = builder._cpu_buffers[("cam", "segmentation")].data_ptr()
 
         builder.env.set_seg(
             torch.full((2, 2, 2, 1), 7, dtype=torch.int32)
         )
-        second = builder._read_batched_segs()
+        second = builder._read_batched("segmentation")
 
-        self.assertEqual(builder._seg_cpu_buffers["cam"].data_ptr(), ptr)
+        self.assertEqual(
+            builder._cpu_buffers[("cam", "segmentation")].data_ptr(), ptr)
         self.assertTrue(np.array_equal(second["cam"], np.full((2, 2, 2), 7)))
 
     def test_scene_cache_cleanup_drops_teemo_caches(self):

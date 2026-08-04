@@ -168,10 +168,11 @@ class WorldModelTests(unittest.TestCase):
         self.reset = jnp.zeros((B, T), bool).at[:, 0].set(True)
 
     def _run(self, fn, *args):
+        # nj.pure takes the state positionally and the rng by keyword.
         pure = nj.pure(fn)
-        params, _ = pure({}, jax.random.PRNGKey(0), *args,
+        params, _ = pure({}, *args, seed=jax.random.PRNGKey(0),
                          create=True, modify=True)
-        return pure(params, jax.random.PRNGKey(1), *args)[1]
+        return pure(params, *args, seed=jax.random.PRNGKey(1))[1]
 
     def test_loss_emits_both_kl_pairs_at_batch_time_shape(self):
         _, _, losses, feat, nodes, _ = self._run(

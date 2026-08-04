@@ -89,7 +89,7 @@ entirely: no posterior, no decoder, no `sem*` losses.
 | `embed` | `64` | embedding-table width |
 | `reverse_edges` | `True` | add the reversed fact with a direction flag, so information reaches the ee node |
 | `condition_on_deter` | `True` | condition node and fact encodings on `h_t`, per the method. This puts the GNN inside the scan — set `False` to hoist it out and trade fidelity for speed |
-| `entity_vocab` | injected | filled from the mined whitelists at startup; do not set by hand |
+| `entity_vocab` | `64` | placeholder, overwritten from the mined whitelists at startup; do not set by hand |
 
 **`agent.dyn.rssm`** — `semstoch: 16`, `semclasses: 16`, `semlayers: 1`.
 

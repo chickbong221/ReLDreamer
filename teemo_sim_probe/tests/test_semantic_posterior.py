@@ -87,16 +87,18 @@ class PoolingInvarianceTests(unittest.TestCase):
         self.model = GraphPosterior(
             layers=2, units=32, embed=8, entity_vocab=N_ENT,
             condition_on_deter=True, name='enc')
+        # nj.pure takes the state positionally and the rng by keyword.
         self.fn = nj.pure(lambda g, d: self.model(g, d))
         self.deter = jnp.zeros((1, DETER), jnp.float32)
         base = _graph(6, 8, 3, EDGES)
         self.params, _ = self.fn(
-            {}, jax.random.PRNGKey(0), unpack(base), self.deter,
-            create=True, modify=True)
+            {}, unpack(base), self.deter,
+            seed=jax.random.PRNGKey(0), create=True, modify=True)
 
     def _token(self, graph):
         _, (_, token) = self.fn(
-            self.params, jax.random.PRNGKey(0), unpack(graph), self.deter)
+            self.params, unpack(graph), self.deter,
+            seed=jax.random.PRNGKey(0))
         return np.asarray(token, np.float32)
 
     def test_permuting_vertices_leaves_the_token_fixed(self):

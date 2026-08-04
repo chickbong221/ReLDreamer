@@ -125,7 +125,7 @@ defaults:
     dyn:
       typ: rssm
       rssm: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, semstoch: 16, semclasses: 16, semlayers: 1, act: silu, norm: rms, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0}
-    graph: {layers: 2, units: 256, embed: 64, reverse_edges: True, condition_on_deter: True}
+    graph: {layers: 2, units: 256, embed: 64, reverse_edges: True, condition_on_deter: True, entity_vocab: 64}  # entity_vocab is overwritten from the mined whitelists at startup
     enc:
       typ: simple
       simple: {depth: 64, mults: [2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: rms, winit: trunc_normal_in, symlog: True, outer: False, kernel: 5, strided: False}
