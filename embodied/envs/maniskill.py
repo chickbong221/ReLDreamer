@@ -112,11 +112,17 @@ class ManiSkill(embodied.Env):
       plan_data = plan_data_from_file(
           rearrange_dir / 'task_plans' / mshab_task / subtask / split / f'{mshab_obj}.json'
       )
+      # A plan is one (build_config, init_config) pair, so there are many plans
+      # per build config: keep whole build configs, matching sac/envs.py.
       task_plans = plan_data.plans
       n_bc = int(mshab_num_build_configs or 0)
-      if not self._is_eval and n_bc > 0 and n_bc < len(task_plans):
-        task_plans = sorted(task_plans, key=lambda p: p.build_config_name)[:n_bc]
-        print(f'[env] using {len(task_plans)}/{len(plan_data.plans)} build configs (train)')
+      if not self._is_eval and n_bc > 0:
+        all_names = sorted({p.build_config_name for p in plan_data.plans})
+        if n_bc < len(all_names):
+          keep = set(all_names[:n_bc])
+          task_plans = [p for p in plan_data.plans if p.build_config_name in keep]
+          print(f'[env] using {n_bc}/{len(all_names)} build configs '
+                f'({len(task_plans)}/{len(plan_data.plans)} plans, train)')
       make_kwargs['task_plans'] = task_plans
       make_kwargs['scene_builder_cls'] = plan_data.dataset
       make_kwargs['spawn_data_fp'] = (

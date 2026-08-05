@@ -51,8 +51,8 @@ defaults:
       mshab_split: train
       mshab_eval_split: val
       mshab_obj: all
-      mshab_num_build_configs: 40  # 0 → use all; positive → first N (by sorted build_config_name), train split only
-      nonprivileged_obs: false
+      mshab_num_build_configs: 63  # 0 → use all; positive → first N distinct build configs by name, all their plans, train split only. 63 = the whole train split
+      nonprivileged_obs: true    # strips obj_pose_wrt_base / goal_pos_wrt_base from state, as the mshab baselines do
       max_episode_steps: 0       # 0 → use the registered default; mshab overrides to 100
       eval_max_episode_steps: 0  # 0 → reuse max_episode_steps; mshab overrides to 200
       frame_stack: 1             # mshab path: no FrameStack wrapper
@@ -117,6 +117,7 @@ defaults:
     expect_devices: 0
     enable_policy: True
     coordinator_address: ''
+    profiler: False     # traces updates 100-120 into logdir; CUPTI floods stderr
 
   agent:
     loss_scales: {rec: 1.0, rew: 1.0, con: 1.0, dyn: 1.0, rep: 0.1, policy: 1.0, value: 1.0, repval: 0.3, semapp: 0.1, semvis: 1.0, semabs: 1.0, semtemp: 1.0, semdyn: 1.0, semrep: 0.1}
@@ -336,9 +337,17 @@ maniskill_state:
 mshab:
   <<: *size200m
   batch_size: 32
+  jax:
+    prealloc: false     # critical: ManiSkill and JAX share GPU
+  logger:
+    outputs: [wandb, jsonl]   # jsonl too: plot.py reads it, and it survives a lost wandb session
+    wandb_project: maniskill
+    wandb_entity: letuanhf-hanoi-university-of-science-and-technology
+    wandb_group: na
+    wandb_name: dreamerv3-mshab   # override per run; otherwise maniskill_rgb's UnitreeG1 name leaks through
   run:
     steps: 10e6
-    eval_envs: 63
+    eval_envs: 21       # val split has 21 build configs; more sims add no scene coverage
     eval_eps: 1
     eval_reconfiguration_frequency: 0   # matches SAC eval: fixed scene set, no reconfigure per reset
     report_every: 72000

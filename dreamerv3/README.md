@@ -40,7 +40,7 @@ first rollout.
 
 ```bash
 python -m dreamerv3.main \
-  --configs mshab \
+  --configs maniskill_rgb mshab \
   --task maniskill_PickSubtaskTrain-v0 \
   --env.maniskill.mshab_task set_table \
   --env.maniskill.mshab_obj 024_bowl \
@@ -51,9 +51,15 @@ python -m dreamerv3.main \
   --logger.wandb_name dreamerv3-graph-set_table-pick-024_bowl
 ```
 
-The `mshab` preset already sets `obs_mode: depth+segmentation` and
-`graph.enabled: true`. Segmentation is what the graph is built from — plain
-`depth` will not work.
+`mshab` must come **last**: it overrides `maniskill_rgb`'s `obs_mode` with
+`depth+segmentation` and sets `graph.enabled: true`. Reversed, you get `rgb` with
+the graph still enabled and no segmentation to build it from. Stacking on
+`maniskill_rgb` is what makes this run one knob away from the baseline arm —
+same `control_mode`, `image_size`, `train_ratio`, and logger.
+
+Both presets set `jax.prealloc: false`, and it is not optional: SAPIEN renders
+through Vulkan on the same device, and a preallocating JAX starves it into
+`CUDA_ERROR_ILLEGAL_ADDRESS` partway through training.
 
 To run the same preset **without** the semantic state, as the baseline arm:
 
