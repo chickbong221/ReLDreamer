@@ -335,7 +335,7 @@ maniskill_state:
       control_mode: pd_joint_delta_pos
 
 mshab:
-  <<: *size200m
+  <<: *size25m
   batch_size: 32
   jax:
     prealloc: false     # critical: ManiSkill and JAX share GPU
