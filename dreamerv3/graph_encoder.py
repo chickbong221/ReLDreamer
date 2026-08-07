@@ -340,10 +340,18 @@ class GraphDecoder(nj.Module):
         return inter / jnp.maximum(pa + ta - inter, 1e-6)
 
     def _cosine(self, pred, target):
+        """Both norms are floored inside the square root, not after it.
+
+        A padding node's representation is exactly zero, so its prediction is
+        the zero-initialised bias and the norm's gradient there is infinite.
+        Flooring afterwards leaves 0 * inf, which masking cannot remove.
+        """
         p, t = pred.astype(f32), target.astype(f32)
+        eps = 1e-12
         num = (p * t).sum(-1)
-        den = jnp.linalg.norm(p, axis=-1) * jnp.linalg.norm(t, axis=-1)
-        return num / jnp.maximum(den, 1e-6)
+        den = (jnp.sqrt(jnp.maximum((p * p).sum(-1), eps)) *
+               jnp.sqrt(jnp.maximum((t * t).sum(-1), eps)))
+        return num / den
 
     def _spread(self, target, mask):
         """Per-channel variance of the appearance target across known entries.

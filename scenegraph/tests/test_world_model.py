@@ -324,6 +324,30 @@ class WorldModelTests(unittest.TestCase):
         _, _, losses, _, _, _ = self._run(lambda: self._loss(valid))
         self.assertGreater(float(losses['dyn'][:, -1].min()), 0.0)
 
+    def test_a_zero_prediction_keeps_the_cosine_gradient_finite(self):
+        # A padding node's representation is exactly zero, so a head's
+        # zero-initialised bias makes its prediction exactly zero. The forward
+        # cosine is finite either way; only the gradient shows a norm that was
+        # floored after its square root instead of inside it.
+        zero = jnp.zeros((2, 3), jnp.float32)
+        for target in (zero, jnp.ones((2, 3), jnp.float32)):
+            grad = jax.grad(
+                lambda p, t=target: self.dec._cosine(p, t).sum())(zero)
+            self.assertTrue(bool(jnp.isfinite(grad).all()))
+
+    def test_decoder_gradients_are_finite_when_every_node_is_padding(self):
+        def fn(nodes):
+            losses, _ = self.dec(nodes, self.graph, self.live)
+            return sum(v.sum() for v in losses.values())
+        pure = nj.pure(fn)
+        nodes = jnp.zeros((B, T, N, 16), jnp.float32)
+        params, _ = pure({}, nodes, seed=jax.random.PRNGKey(0),
+                         create=True, modify=True)
+        grads = jax.grad(
+            lambda p: pure(p, nodes, seed=jax.random.PRNGKey(1))[1])(params)
+        for key, value in grads.items():
+            self.assertTrue(np.isfinite(np.asarray(value)).all(), key)
+
     def test_decoder_heads_reduce_to_batch_time(self):
         def fn():
             _, _, _, _, nodes, _ = self._loss()
