@@ -188,6 +188,11 @@ class AgentConstructionTests(unittest.TestCase):
         self.assertNotEqual(
             self.config.graph.app_dim, self.config.graph.app)
 
+    def test_the_posterior_is_not_handed_the_decoder_only_width(self):
+        # Whatever graph_kw carries beyond GraphPosterior's own fields is
+        # forwarded to its nn.Linear sublayers, which reject unknown kwargs.
+        self.assertNotIn('app_dim', self._agent().dyn.graph_kw)
+
 
 @unittest.skipIf(jax is None, 'jax is not installed')
 class SizePresetTests(unittest.TestCase):

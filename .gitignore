@@ -8,6 +8,7 @@ mshab/
 ManiSkill/
 wandb/
 sac/logdir/
+logdir/
 BEHAVIOR-1K/
 ~/
 # teemo_sim_probe/outputs/*

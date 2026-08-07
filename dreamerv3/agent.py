@@ -46,10 +46,14 @@ class Agent(embodied.jax.Agent):
     self.enc = {
         'simple': rssm.Encoder,
     }[config.enc.typ](enc_space, **config.enc[config.enc.typ], name='enc')
+    # app_dim is the stored replay width, which only the decoder needs.
+    # GraphPosterior does not declare it, so it would fall through to every
+    # sublayer as an unknown kwarg.
+    graph_kw = {k: v for k, v in dict(config.graph).items() if k != 'app_dim'}
     self.dyn = {
         'rssm': rssm.RSSM,
     }[config.dyn.typ](
-        act_space, graph_kw=dict(config.graph), semantic=self.semantic,
+        act_space, graph_kw=graph_kw, semantic=self.semantic,
         **config.dyn[config.dyn.typ], name='dyn')
     self.dec = {
         'simple': rssm.Decoder,
