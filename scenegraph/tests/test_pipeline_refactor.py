@@ -498,19 +498,15 @@ class TeemoConfigPathTests(unittest.TestCase):
         self.assertTrue(empty["whitelist_dir"])
 
 
-class _GraphEnvStub:
+class _SensorStub:
+    """Stands in for the wrapper's stash of the raw observation."""
+
     def __init__(self, seg):
-        self.unwrapped = type("_Base", (), {})()
         self.set_seg(seg)
 
     def set_seg(self, seg):
-        self.unwrapped._last_obs = {
-            "sensor_data": {
-                "cam": {
-                    "segmentation": seg,
-                    "depth": seg,
-                },
-            },
+        self.raw_obs = {
+            "sensor_data": {"cam": {"segmentation": seg, "rgb": seg}},
         }
 
 
@@ -518,28 +514,28 @@ class GraphRuntimeMemoryTests(unittest.TestCase):
     def test_segmentation_cpu_buffer_is_reused(self):
         try:
             import torch
-            from sac.graph_env import GraphObsBuilder
         except ImportError as exc:
-            self.skipTest(f"torch-backed graph env unavailable: {exc}")
+            self.skipTest(f"torch unavailable: {exc}")
+        from scenegraph.adapters.graph_obs import GraphObsBuilder
 
         builder = GraphObsBuilder.__new__(GraphObsBuilder)
-        builder.env = _GraphEnvStub(
-            torch.arange(8, dtype=torch.int32).reshape(2, 2, 2, 1)
+        builder.sensor_source = _SensorStub(
+            torch.arange(8, dtype=torch.int16).reshape(2, 2, 2, 1)
         )
         builder.cameras = ["cam"]
         builder._cams_checked = False
         builder._cpu_buffers = {}
 
-        first = builder._read_batched("segmentation")
+        first = builder._read_segmentation()
         self.assertTrue(
-            np.array_equal(first["cam"], np.arange(8, dtype=np.int32).reshape(2, 2, 2))
+            np.array_equal(first["cam"], np.arange(8, dtype=np.int16).reshape(2, 2, 2))
         )
         ptr = builder._cpu_buffers[("cam", "segmentation")].data_ptr()
 
-        builder.env.set_seg(
-            torch.full((2, 2, 2, 1), 7, dtype=torch.int32)
+        builder.sensor_source.set_seg(
+            torch.full((2, 2, 2, 1), 7, dtype=torch.int16)
         )
-        second = builder._read_batched("segmentation")
+        second = builder._read_segmentation()
 
         self.assertEqual(
             builder._cpu_buffers[("cam", "segmentation")].data_ptr(), ptr)

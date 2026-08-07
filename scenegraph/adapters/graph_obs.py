@@ -4,8 +4,9 @@ Owns one ``GraphBuilder`` per parallel env, one frozen DINO encoder, and one
 per-camera appearance cache, and turns each per-env ``Graph`` into a
 fixed-shape batched tensor dict.
 
-Segmentation and RGB are sliced from ``env.unwrapped._last_obs`` (set by the
-underlying env's ``step`` / ``reset``) rather than re-fetched per env. Calling
+Segmentation and RGB are sliced from the raw observation that
+``NamedCameraRGBWrapper`` stashes on its way past, rather than re-fetched per
+env. MS-HAB's ``BaseEnv._last_obs`` carries only the state half, and calling
 ``env.unwrapped.get_obs()`` would rerun ``get_info`` -> MS-HAB ``evaluate``,
 which mutates ``subtask_pointer`` / ``subtask_steps_left`` / cumulative force,
 and would also re-render + CUDA-sync once per env.
@@ -112,12 +113,14 @@ class GraphObsBuilder:
         n_max: int,
         e_max: int,
         cameras: List[str],
+        sensor_source=None,
         dino: Optional[DinoFeatures] = None,
         app_dim: int = 384,
         bypass_teemo: bool = False,
         staleness_enabled: bool = True,
     ):
         self.env = env
+        self.sensor_source = sensor_source
         self.num_envs = int(num_envs)
         self.vocab = vocab
         self.n_max = int(n_max)
@@ -250,20 +253,14 @@ class GraphObsBuilder:
         self._frames[env_idx] += 1
         return graph
 
-    def read_rgb(self, env_idx: int) -> np.ndarray:
-        """Record-cam RGB (uint8, [H, W, 3]) for ``env_idx``."""
-        sensor = self.env.unwrapped._last_obs["sensor_data"][self.record_camera]
-        return sensor["rgb"][env_idx].detach().cpu().numpy().astype(np.uint8)
-
-    def read_view(self, camera: str, env_idx: int) -> Tuple[np.ndarray, np.ndarray]:
-        """RGB (uint8, [H, W, 3]) + segmentation (int64, [H, W]) for one env."""
-        sensor = self.env.unwrapped._last_obs["sensor_data"][camera]
-        rgb = sensor["rgb"][env_idx].detach().cpu().numpy().astype(np.uint8)
-        seg = sensor["segmentation"][env_idx].squeeze(-1).detach().cpu().numpy().astype(np.int64)
-        return rgb, seg
-
     def _sensor_data(self):
-        sensor_data = self.env.unwrapped._last_obs["sensor_data"]
+        raw = getattr(self.sensor_source, "raw_obs", None)
+        if not isinstance(raw, dict) or "sensor_data" not in raw:
+            raise RuntimeError(
+                "graph: no raw observation stashed; the graph path needs "
+                "NamedCameraRGBWrapper applied below ManiSkillVectorEnv"
+            )
+        sensor_data = raw["sensor_data"]
         if not self._cams_checked:
             for cam in self.cameras:
                 if cam not in sensor_data:
@@ -276,7 +273,7 @@ class GraphObsBuilder:
                     if field not in sensor_data[cam]:
                         raise KeyError(
                             f"graph: camera {cam!r} has no {field!r} in "
-                            f"_last_obs; obs_mode must include it."
+                            f"the observation; obs_mode must include it."
                         )
             self._cams_checked = True
         return sensor_data
@@ -459,6 +456,7 @@ def build_graph_obs(
     graph_cfg: dict,
     *,
     num_envs: int,
+    sensor_source=None,
     builder_cls: type = GraphObsBuilder,
 ) -> Optional[GraphObsBuilder]:
     """Return a builder or None when graph obs is disabled."""
@@ -516,6 +514,7 @@ def build_graph_obs(
         n_max=n_max,
         e_max=e_max,
         cameras=list(cameras),
+        sensor_source=sensor_source,
         dino=dino,
         app_dim=app_dim,
         bypass_teemo=bool(graph_cfg.get("bypass_teemo", False)),

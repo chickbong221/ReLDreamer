@@ -121,6 +121,40 @@ def _builder(num_envs=1):
     return obj
 
 
+class SensorSourceTests(unittest.TestCase):
+    """Segmentation and RGB come from the wrapper's stash, not from the env.
+
+    MS-HAB's ``BaseEnv._last_obs`` holds only the state half, so reading it
+    yields a graph built from no pixels rather than a loud failure.
+    """
+
+    def _builder(self, raw_obs):
+        obj = object.__new__(GraphObsBuilder)
+        obj.sensor_source = SimpleNamespace(raw_obs=raw_obs)
+        obj.cameras = ['fetch_head']
+        obj._cams_checked = False
+        return obj
+
+    def test_no_stash_names_the_wrapper(self):
+        with self.assertRaisesRegex(RuntimeError, 'NamedCameraRGBWrapper'):
+            self._builder(None)._sensor_data()
+
+    def test_a_state_only_observation_is_rejected(self):
+        builder = self._builder({'agent': {}, 'extra': {}})
+        with self.assertRaisesRegex(RuntimeError, 'NamedCameraRGBWrapper'):
+            builder._sensor_data()
+
+    def test_the_stashed_sensor_data_is_returned(self):
+        data = {'fetch_head': {'rgb': object(), 'segmentation': object()}}
+        builder = self._builder({'sensor_data': data})
+        self.assertIs(builder._sensor_data(), data)
+
+    def test_a_camera_the_obs_mode_omits_is_named(self):
+        builder = self._builder({'sensor_data': {'fetch_hand': {}}})
+        with self.assertRaisesRegex(KeyError, 'fetch_head'):
+            builder._sensor_data()
+
+
 @unittest.skipIf(torch is None, 'torch is not installed')
 class AppearanceCacheTests(unittest.TestCase):
 

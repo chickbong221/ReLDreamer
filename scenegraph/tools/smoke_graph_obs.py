@@ -47,7 +47,7 @@ def _report_state_parity(env):
     from mani_skill.utils.wrappers import FlattenRGBDObservationWrapper
 
     wrapper = env._named_wrapper
-    raw = env._env.unwrapped._last_obs
+    raw = wrapper.raw_obs
     ours = wrapper.observation(raw)["state"].cpu().numpy()
     upstream = FlattenRGBDObservationWrapper.observation(
         wrapper, raw)["state"].cpu().numpy()

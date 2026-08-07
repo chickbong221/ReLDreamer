@@ -47,6 +47,10 @@ class NamedCameraRGBWrapper(FlattenRGBDObservationWrapper):
         # {obs key: camera name}, given explicitly so nothing depends on the
         # order sensor_data happens to iterate in.
         self._camera_keys = dict(camera_keys)
+        # Last observation seen on the way up. MS-HAB's BaseEnv._last_obs holds
+        # only the state half, so this is the scene graph's one handle on
+        # per-camera segmentation without re-running get_obs.
+        self.raw_obs = None
         super().__init__(env, rgb=True, depth=False, state=True)
 
     def observation(self, obs):
@@ -56,6 +60,7 @@ class NamedCameraRGBWrapper(FlattenRGBDObservationWrapper):
             raise KeyError(
                 f'cameras {missing} are not rendered; available: '
                 f'{sorted(sensors)}')
+        self.raw_obs = obs
         # Cloned, not referenced: the vector env stores this dict as
         # final_observation and then re-renders into the sensor buffers on
         # auto-reset, which would overwrite a view.

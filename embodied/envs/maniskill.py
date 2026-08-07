@@ -215,7 +215,8 @@ class ManiSkill(embodied.Env):
 
     from scenegraph.adapters.graph_obs import build_graph_obs
     self._graph = build_graph_obs(
-        self._env, self._graph_cfg, num_envs=self._num_envs)
+        self._env, self._graph_cfg, num_envs=self._num_envs,
+        sensor_source=self._named_wrapper)
 
     # Warm reset to discover obs/act shapes.
     obs, _ = self._env.reset(seed=seed)
