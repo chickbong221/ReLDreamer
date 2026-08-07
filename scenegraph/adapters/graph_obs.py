@@ -254,11 +254,14 @@ class GraphObsBuilder:
         return graph
 
     def _sensor_data(self):
-        raw = getattr(self.sensor_source, "raw_obs", None)
+        source = self.sensor_source
+        raw = getattr(source, "raw_obs", None)
         if not isinstance(raw, dict) or "sensor_data" not in raw:
             raise RuntimeError(
-                "graph: no raw observation stashed; the graph path needs "
-                "NamedCameraRGBWrapper applied below ManiSkillVectorEnv"
+                "graph: no stashed observation carrying sensor_data; the "
+                "graph path needs NamedCameraRGBWrapper passed as "
+                f"sensor_source (source={type(source).__name__}, "
+                f"stash={type(raw).__name__})"
             )
         sensor_data = raw["sensor_data"]
         if not self._cams_checked:

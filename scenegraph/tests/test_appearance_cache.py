@@ -139,6 +139,12 @@ class SensorSourceTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'NamedCameraRGBWrapper'):
             self._builder(None)._sensor_data()
 
+    def test_an_unwired_source_is_distinguishable_from_an_empty_stash(self):
+        builder = self._builder(None)
+        builder.sensor_source = None
+        with self.assertRaisesRegex(RuntimeError, 'source=NoneType'):
+            builder._sensor_data()
+
     def test_a_state_only_observation_is_rejected(self):
         builder = self._builder({'agent': {}, 'extra': {}})
         with self.assertRaisesRegex(RuntimeError, 'NamedCameraRGBWrapper'):
