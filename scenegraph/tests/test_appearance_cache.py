@@ -18,12 +18,12 @@ try:
 except ImportError:  # pragma: no cover - torch is optional for the sim tests
     torch = None
 
-from teemo_sim_probe.adapters.graph_obs import GraphObsBuilder
-from teemo_sim_probe.adapters.graph_vocab import (
+from scenegraph.adapters.graph_obs import GraphObsBuilder
+from scenegraph.adapters.graph_vocab import (
     EntityVocab, GraphVocab, build_absolute_vocab, build_relation_vocab,
     build_temporal_vocab,
 )
-from teemo_sim_probe.core.schema import Graph, Node
+from scenegraph.core.schema import Graph, Node
 
 CAMS, DIM, GRID = 2, 4, 2
 PATCHES = GRID * GRID

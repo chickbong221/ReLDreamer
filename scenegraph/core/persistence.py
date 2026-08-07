@@ -25,7 +25,6 @@ def _snapshot(node: Node) -> Node:
         segmentation_ids=list(node.segmentation_ids),
         pixel_area=node.pixel_area,
         pose_world=list(node.pose_world) if node.pose_world else None,
-        feat=list(node.feat) if node.feat else None,
         index=node.index,
         steps_since_seen=node.steps_since_seen,
         source=node.source,

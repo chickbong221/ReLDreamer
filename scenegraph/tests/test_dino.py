@@ -14,7 +14,7 @@ except ImportError:  # pragma: no cover - torch is optional for the sim tests
     torch = None
 
 if torch is not None:
-    from teemo_sim_probe.adapters.dino import _DIMS, DinoFeatures
+    from scenegraph.adapters.dino import _DIMS, DinoFeatures
 
 RES, GRID, PATCHES, DIM = 112, 8, 64, 384
 REGISTERS = 4

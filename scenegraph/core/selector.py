@@ -4,7 +4,6 @@ Pipeline per frame:
 
     apply_whitelist(candidates)   # hard eligibility gate
     -> merge_persistent(...)      # re-inject nodes that left the view
-    -> update_feats(...)          # per-camera appearance, retained while unseen
     -> EntityRegistry.assign(...) # append-only vertex index
 
 No scoring or secondary contact-based admission path exists. Whitelist role
@@ -34,8 +33,8 @@ class EntityRegistry:
 
     ``ee`` always holds index 0. Object indices are handed out on first sight
     and never reused or reordered while the episode runs, so a node that leaves
-    and later re-enters the view keeps its position and its retained
-    appearance.
+    and later re-enters the view keeps its position. Appearance retention is
+    separate and lives in the adapter-level cache.
     """
 
     def __init__(self, n_max: int):
@@ -116,7 +115,7 @@ class NodeSelector:
     """Stateful selector. One instance per episode.
 
     Holds the active subtask's ``Whitelist``. GraphBuilder may update it when
-    MS-HAB advances to another subtask. Sole owner of appearance retention.
+    MS-HAB advances to another subtask.
     """
 
     def __init__(self, cfg: dict):
@@ -133,14 +132,11 @@ class NodeSelector:
 
         self._history: Dict[str, Node] = {}
         self._last_seen: Dict[str, int] = {}
-        # entity_id -> per-camera mean masked depth, last observed value per slot.
-        self._feat: Dict[str, List[float]] = {}
 
     # ---------------------------------------------------------------- reset
     def reset_episode(self) -> None:
         self._history.clear()
         self._last_seen.clear()
-        self._feat.clear()
 
     # ---------------------------------------------------------------- persistence
     def merge_persistent(
@@ -172,37 +168,12 @@ class NodeSelector:
                 segmentation_ids=[],
                 pixel_area=0,
                 pose_world=list(snap.pose_world) if snap.pose_world else None,
-                feat=list(snap.feat) if snap.feat else None,
                 index=snap.index,
                 steps_since_seen=frame - last,
                 source=snap.source,
                 attributes=dict(snap.attributes),
             )
         return merged
-
-    # ---------------------------------------------------------------- appearance
-    def update_feats(self, nodes: Dict[str, Node], n_cams: int) -> None:
-        """Fill each node's per-camera appearance, retaining unseen slots.
-
-        ``node.feat`` arrives from the node builder as a list with ``None`` in
-        every camera slot that saw no pixels this frame. Those slots fall back
-        to the entity's last observed value, or zero when it has never been
-        seen by that camera.
-        """
-        for ent_id, node in nodes.items():
-            prev = self._feat.get(ent_id)
-            cur = node.feat
-            merged = [0.0] * n_cams
-            for c in range(n_cams):
-                value = cur[c] if cur is not None and c < len(cur) else None
-                if value is None:
-                    if prev is not None and c < len(prev):
-                        value = prev[c]
-                    else:
-                        value = 0.0
-                merged[c] = float(value)
-            self._feat[ent_id] = merged
-            node.feat = merged
 
     # ---------------------------------------------------------------- whitelist
     def set_whitelist(self, whitelist: Whitelist) -> None:
@@ -275,7 +246,6 @@ class NodeSelector:
         for ent_id in evicted_ids:
             self._history.pop(ent_id, None)
             self._last_seen.pop(ent_id, None)
-            self._feat.pop(ent_id, None)
 
     def evict_expired(self, frame: int) -> List[str]:
         """Drop history entries whose age exceeds ``k_persist`` frames.

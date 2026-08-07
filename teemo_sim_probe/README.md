@@ -3,6 +3,16 @@
 Build a fixed-size manipulation graph from MS-HAB segmentation + physics.
 MS-HAB is read-only; all integration lives under `teemo_sim_probe/adapters/`.
 
+> **Frozen.** This package is the predecessor pipeline, kept runnable as a
+> self-contained demo: one camera, mean masked depth per node, target-conditioned
+> pooling. The online pipeline the world model trains against moved to
+> [`scenegraph/`](../scenegraph/README.md) — two cameras, frozen DINOv2
+> appearance, no target conditioning.
+>
+> Still live for everyone: the rollout collector, both mining tools, and the
+> mined assets under `configs/`. `scenegraph/` reads those and does not import
+> anything else from here.
+
 ## Pipeline at a glance
 
 ```text
@@ -46,17 +56,9 @@ Two node types:
 
 The vertex set is append-only per episode: an index is handed out on first
 sight and never reused or reordered, so a node that leaves the view keeps its
-position and its last pose. Each node carries an entity id plus, per camera, a
-normalised bounding box and a frozen DINOv2 embedding.
-
-Visibility is per camera and immediate: one segmentation pixel makes a node
-visible in that camera, with no area threshold and no grace frames. A node
-visible in either camera is globally visible; one visible in neither stays a
-valid vertex for the rest of the episode. Boxes always describe the current
-frame and go to zero for a camera that cannot see the node. Embeddings persist:
-a camera that loses sight keeps its last one, and a camera that has never seen
-the node holds exactly zero. Retention lives in the adapter-level cache, not in
-the registry.
+position, its last pose, and its retained appearance. Each node carries
+`(feat, kappa, visible)` where `feat` is the mean masked depth per camera in
+metres, retained per camera while unseen.
 
 A node appears only if (a) an ee link touched it during a successful demo
 and (b) it is listed in the active per-`(subtask, target)` whitelist.

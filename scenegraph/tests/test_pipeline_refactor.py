@@ -4,13 +4,15 @@ import unittest
 
 import numpy as np
 
-from teemo_sim_probe.adapters.privileged_state import clear_privileged_state_caches
-from teemo_sim_probe.core.affordance import AffordanceComponent, AffordanceSet
-from teemo_sim_probe.core.graph_builder import GraphBuilder
-from teemo_sim_probe.core.node_builder import build_nodes
-from teemo_sim_probe.core.schema import Edge, Graph, Node
-from teemo_sim_probe.core.temporal_buffer import TemporalBuffer
-from teemo_sim_probe.core.entity_identity import stable_entity_key
+from scenegraph.adapters.privileged_state import clear_privileged_state_caches
+from scenegraph.core.affordance import AffordanceComponent, AffordanceSet
+from scenegraph.core.graph_builder import GraphBuilder
+from scenegraph.core.node_builder import build_nodes
+from scenegraph.core.schema import Edge, Graph, Node
+from scenegraph.core.temporal_buffer import TemporalBuffer
+from scenegraph.core.entity_identity import stable_entity_key
+# The mining tool stays in teemo_sim_probe: it produces the whitelist assets
+# both pipelines read, so both suites must test against the same builder.
 from teemo_sim_probe.tools.build_subtask_whitelists import _WhitelistBuilder
 
 
@@ -291,6 +293,7 @@ class SupporterMaskTests(unittest.TestCase):
         nodes, masks, _cam, _rgb = build_nodes(
             {}, _State(link), seg_override=seg,
             rgb_override=np.zeros((2, 2, 3), dtype=np.uint8),
+            patch_grid=2,
         )
         key = stable_entity_key(link)
         self.assertIn(key, nodes)
@@ -322,7 +325,7 @@ class WhitelistLoadCacheTests(unittest.TestCase):
     def test_unchanged_file_returns_cached_object(self):
         import os
         import tempfile
-        from teemo_sim_probe.core.whitelist import load_whitelist
+        from scenegraph.core.whitelist import load_whitelist
 
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "pick_024_bowl.json")
@@ -335,7 +338,7 @@ class WhitelistLoadCacheTests(unittest.TestCase):
         import copy
         import os
         import tempfile
-        from teemo_sim_probe.core.whitelist import load_whitelist
+        from scenegraph.core.whitelist import load_whitelist
 
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "pick_024_bowl.json")
@@ -362,8 +365,8 @@ class EntityMatchKeyTests(unittest.TestCase):
     """entity_match_key must resolve exactly like the node-level match_key."""
 
     def _assert_equivalent(self, entity):
-        from teemo_sim_probe.core.node_builder import make_object_node
-        from teemo_sim_probe.core.whitelist import entity_match_key, match_key
+        from scenegraph.core.node_builder import make_object_node
+        from scenegraph.core.whitelist import entity_match_key, match_key
 
         node = make_object_node(entity, _State(entity))
         self.assertEqual(entity_match_key(entity), match_key(node))
@@ -380,15 +383,15 @@ class AdmitGateTests(unittest.TestCase):
     """The early admit gate must not change the post-apply_whitelist graph."""
 
     def _selector(self, whitelist):
-        from teemo_sim_probe.core.selector import NodeSelector
+        from scenegraph.core.selector import NodeSelector
 
         selector = NodeSelector({"selection": {"n_max": 5, "k_persist": 0}})
         selector.set_whitelist(whitelist)
         return selector
 
     def test_gated_nodes_equal_ungated_after_whitelist(self):
-        from teemo_sim_probe.core.node_builder import build_nodes
-        from teemo_sim_probe.core.whitelist import Whitelist, entity_match_key
+        from scenegraph.core.node_builder import build_nodes
+        from scenegraph.core.whitelist import Whitelist, entity_match_key
 
         admitted = Link("frl_apartment_drawer3")
         rejected = Link("frl_apartment_wall")
@@ -406,12 +409,12 @@ class AdmitGateTests(unittest.TestCase):
         gated, _, _, _ = build_nodes(
             {}, _State(**state_kwargs), seg_override=seg,
             rgb_override=np.zeros((2, 2, 3), dtype=np.uint8),
-            need_masks=False, admit=admit,
+            need_masks=False, admit=admit, patch_grid=2,
         )
         ungated, _, _, _ = build_nodes(
             {}, _State(**state_kwargs), seg_override=seg,
             rgb_override=np.zeros((2, 2, 3), dtype=np.uint8),
-            need_masks=False,
+            need_masks=False, patch_grid=2,
         )
 
         # The gate skips node construction for the never-admissible entity.
@@ -431,7 +434,7 @@ class AdmitGateTests(unittest.TestCase):
             )
 
     def test_graph_builder_gate_admits_when_no_whitelist(self):
-        from teemo_sim_probe.core.graph_builder import GraphBuilder
+        from scenegraph.core.graph_builder import GraphBuilder
 
         builder = GraphBuilder.__new__(GraphBuilder)
         builder._match_key_cache = {}
@@ -440,8 +443,8 @@ class AdmitGateTests(unittest.TestCase):
 
     def test_graph_builder_gate_caches_match_key(self):
         from unittest import mock
-        from teemo_sim_probe.core.graph_builder import GraphBuilder
-        from teemo_sim_probe.core.whitelist import Whitelist, entity_match_key
+        from scenegraph.core.graph_builder import GraphBuilder
+        from scenegraph.core.whitelist import Whitelist, entity_match_key
 
         link = Link("frl_apartment_drawer3")
         key = entity_match_key(link)
@@ -462,7 +465,7 @@ class AdmitGateTests(unittest.TestCase):
 
 class LinkNameCacheTests(unittest.TestCase):
     def test_robot_link_names_cached_on_scene(self):
-        from teemo_sim_probe.adapters.privileged_state import _robot_link_names
+        from scenegraph.adapters.privileged_state import _robot_link_names
 
         calls = []
 
@@ -488,7 +491,7 @@ class TeemoConfigPathTests(unittest.TestCase):
     """elements.Config cannot hold None, so unset paths arrive as ""."""
 
     def test_empty_path_falls_back_to_the_packaged_thresholds(self):
-        from teemo_sim_probe.configs.loader import load_config
+        from scenegraph.configs.loader import load_config
         default = load_config("room_scale", require_assets=False)
         empty = load_config("room_scale", path="", require_assets=False)
         self.assertEqual(empty["whitelist_dir"], default["whitelist_dir"])
@@ -561,7 +564,7 @@ class PoseAccessorHotPathTests(unittest.TestCase):
     """Guard the .pose accessor call rate on the graph hot path."""
 
     def test_entity_pose_fires_property_once_per_frame(self):
-        from teemo_sim_probe.adapters.privileged_state import (
+        from scenegraph.adapters.privileged_state import (
             begin_frame_cache, end_frame_cache, entity_pose_world_array,
         )
 
@@ -603,7 +606,7 @@ class PoseAccessorHotPathTests(unittest.TestCase):
         )
 
     def test_get_tcp_pose_fires_property_once(self):
-        from teemo_sim_probe.adapters.privileged_state import get_tcp_pose
+        from scenegraph.adapters.privileged_state import get_tcp_pose
 
         class _Agent:
             def __init__(self):
@@ -663,7 +666,7 @@ class RawBufferPoseFastPathTests(unittest.TestCase):
         return _Scene(buffer_np)
 
     def test_entity_pose_uses_fast_path_and_skips_accessor(self):
-        from teemo_sim_probe.adapters.privileged_state import (
+        from scenegraph.adapters.privileged_state import (
             begin_frame_cache, end_frame_cache, entity_pose_world_array,
         )
 
@@ -713,7 +716,7 @@ class RawBufferPoseFastPathTests(unittest.TestCase):
         )
 
     def test_static_entity_falls_back_to_pose_accessor(self):
-        from teemo_sim_probe.adapters.privileged_state import (
+        from scenegraph.adapters.privileged_state import (
             begin_frame_cache, end_frame_cache, entity_pose_world_array,
         )
 
@@ -760,7 +763,7 @@ class RawBufferPoseFastPathTests(unittest.TestCase):
         )
 
     def test_tcp_pose_uses_fast_path_and_skips_accessor(self):
-        from teemo_sim_probe.adapters.privileged_state import (
+        from scenegraph.adapters.privileged_state import (
             begin_frame_cache, end_frame_cache, _tcp_pose_world_cached,
         )
 
@@ -810,7 +813,7 @@ class RawBufferPoseFastPathTests(unittest.TestCase):
         )
 
     def test_parallel_in_single_scene_disables_fast_path(self):
-        from teemo_sim_probe.adapters.privileged_state import (
+        from scenegraph.adapters.privileged_state import (
             begin_frame_cache, end_frame_cache, entity_pose_world_array,
         )
 

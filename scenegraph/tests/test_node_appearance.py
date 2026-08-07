@@ -10,8 +10,8 @@ import unittest
 
 import numpy as np
 
-from teemo_sim_probe.core.node_builder import fill_appearance
-from teemo_sim_probe.core.schema import Node
+from scenegraph.core.node_builder import fill_appearance
+from scenegraph.core.schema import Node
 
 
 def _node(seg_ids=()):

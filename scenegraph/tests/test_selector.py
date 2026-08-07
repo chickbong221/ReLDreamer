@@ -1,20 +1,20 @@
-"""Vertex registry and appearance retention.
+"""Vertex registry and episode-scoped persistence.
 
 The registry is append-only within an episode, so a node that leaves and
-re-enters the view keeps its index; the selector is the single owner of the
-per-camera appearance a node retains while invisible.
+re-enters the view keeps its index.
 """
 
 import unittest
 
-from teemo_sim_probe.core.schema import Node
-from teemo_sim_probe.core.selector import EntityRegistry, NodeSelector
+import numpy as np
+
+from scenegraph.core.schema import Node
+from scenegraph.core.selector import EntityRegistry, NodeSelector
 
 
-def _node(node_id, roles=("interacted",), feat=None, visible=True):
+def _node(node_id, roles=("interacted",), visible=True):
     return Node(
         node_id=node_id, node_type="object", name=node_id, visible=visible,
-        feat=list(feat) if feat is not None else None,
         attributes={"whitelist_roles": list(roles)},
     )
 
@@ -73,35 +73,26 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(reg.overflow_drops, 1)
 
 
-class AppearanceRetentionTests(unittest.TestCase):
+class PersistenceTests(unittest.TestCase):
 
-    def test_unseen_camera_keeps_its_last_value(self):
+    def test_retained_node_comes_back_invisible_and_unsupported(self):
         sel = _selector()
-        sel.update_feats({"a": _node("a", feat=[1.5, 2.5])}, 2)
-        node = _node("a", feat=[None, 9.0])
-        sel.update_feats({"a": node}, 2)
-        self.assertEqual(node.feat, [1.5, 9.0])
-
-    def test_never_seen_defaults_to_zero(self):
-        sel = _selector()
-        node = _node("a", feat=[None, None])
-        sel.update_feats({"a": node}, 2)
-        self.assertEqual(node.feat, [0.0, 0.0])
-
-    def test_invisible_node_retains_appearance_across_frames(self):
-        sel = _selector()
-        visible = _node("a", feat=[0.8, 1.2])
-        sel.update_feats({"a": visible}, 2)
-        sel.commit({"a": visible}, frame=0)
+        node = _node("a")
+        node.bbox = np.array([[0.1, 0.2, 0.3, 0.4]] * 2, np.float32)
+        node.appearance = np.ones((2, 8), np.float32)
+        sel.commit({"a": node}, frame=0)
         merged = sel.merge_persistent({}, frame=5)
         self.assertIn("a", merged)
         self.assertFalse(merged["a"].visible)
-        self.assertEqual(merged["a"].feat, [0.8, 1.2])
+        # The registry retains identity and index only. A retained node has no
+        # camera support this frame, so the box goes to zero; its appearance
+        # comes back from the adapter-level cache, not from here.
+        self.assertIsNone(merged["a"].bbox)
+        self.assertIsNone(merged["a"].appearance)
 
     def test_k_persist_negative_never_evicts(self):
         sel = _selector(k_persist=-1)
-        node = _node("a", feat=[1.0, 1.0])
-        sel.update_feats({"a": node}, 2)
+        node = _node("a")
         sel.commit({"a": node}, frame=0)
         self.assertEqual(sel.evict_expired(frame=10_000), [])
         self.assertIn("a", sel.merge_persistent({}, frame=10_000))

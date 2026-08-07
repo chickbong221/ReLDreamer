@@ -1,6 +1,6 @@
 """Per-frame vertex maintenance and fact orchestration.
 
-Pipeline: build_nodes -> apply_whitelist -> merge_persistent -> update_feats
+Pipeline: build_nodes -> apply_whitelist -> merge_persistent
 -> registry.assign -> absolute facts -> retained facts -> temporal labels.
 """
 
@@ -136,9 +136,9 @@ class GraphBuilder:
         self, obs: dict, frame: int,
         *,
         episode_boundary: bool = False,
-        seg_override=None, seg_overrides=None, depth_overrides=None,
-        rgb_override=None, camera_override=None, primary_camera=None,
-        need_masks: bool = True,
+        seg_override=None, seg_overrides=None,
+        rgb_override=None, camera_override=None, record_camera=None,
+        need_masks: bool = True, patch_grid: int = 8,
     ) -> Tuple[Graph, MaskAccumulator, str, np.ndarray]:
         if episode_boundary:
             self.reset_episode()
@@ -153,18 +153,15 @@ class GraphBuilder:
             camera=self.camera,
             seg_override=seg_override,
             seg_overrides=seg_overrides,
-            depth_overrides=depth_overrides,
             rgb_override=rgb_override,
             camera_override=camera_override,
-            primary_camera=primary_camera,
+            record_camera=record_camera,
             camera_order=self.camera_order,
             need_masks=need_masks,
+            patch_grid=patch_grid,
             # Recording paths keep full masks/nodes for overlays; the training
             # hot path skips node construction for never-admissible entities.
             admit=None if need_masks else self._entity_admitted,
-        )
-        n_cams = len(self.camera_order) if self.camera_order else (
-            len(seg_overrides) if seg_overrides else 1
         )
 
         # Whitelist admission first, then episode-scoped persistence: a node
@@ -192,7 +189,6 @@ class GraphBuilder:
         )
         if self.staleness_enabled:
             nodes = self.selector.merge_persistent(nodes, frame)
-        self.selector.update_feats(nodes, n_cams)
 
         for nid, n in nodes.items():
             if n.node_type == "ee":

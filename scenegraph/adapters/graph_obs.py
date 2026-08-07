@@ -1,9 +1,10 @@
 """Online graph plumbing shared by every trainer.
 
-Owns one ``GraphBuilder`` per parallel env and turns each per-env ``Graph`` into
-a fixed-shape batched tensor dict.
+Owns one ``GraphBuilder`` per parallel env, one frozen DINO encoder, and one
+per-camera appearance cache, and turns each per-env ``Graph`` into a
+fixed-shape batched tensor dict.
 
-Segmentation and depth are sliced from ``env.unwrapped._last_obs`` (set by the
+Segmentation and RGB are sliced from ``env.unwrapped._last_obs`` (set by the
 underlying env's ``step`` / ``reset``) rather than re-fetched per env. Calling
 ``env.unwrapped.get_obs()`` would rerun ``get_info`` -> MS-HAB ``evaluate``,
 which mutates ``subtask_pointer`` / ``subtask_steps_left`` / cumulative force,
@@ -18,6 +19,7 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 import numpy as np
 import torch
 
+from .dino import DinoFeatures
 from .privileged_state import (
     begin_frame_cache,
     clear_privileged_state_caches,
@@ -36,19 +38,13 @@ _CONTACT_QUERY_CAP = 2048
 
 _DTYPES: Dict[str, np.dtype] = {
     "graph_node_ent": np.uint16,
-    "graph_node_vis": np.uint8,
-    "graph_node_valid": np.uint8,
-    "graph_node_feat": np.float32,
+    "graph_node_app": np.float16,
+    "graph_node_bbox": np.float16,
     "graph_edge_src": np.uint8,
     "graph_edge_dst": np.uint8,
     "graph_edge_rel": np.uint8,
     "graph_edge_abs": np.uint8,
     "graph_edge_temp": np.uint8,
-    "graph_edge_temp_mask": np.uint8,
-    "graph_edge_valid": np.uint8,
-    "graph_n_nodes": np.int32,
-    "graph_n_edges": np.int32,
-    "graph_target_ent": np.uint16,
 }
 
 
@@ -116,7 +112,8 @@ class GraphObsBuilder:
         n_max: int,
         e_max: int,
         cameras: List[str],
-        primary_camera: str,
+        dino: Optional[DinoFeatures] = None,
+        app_dim: int = 384,
         bypass_teemo: bool = False,
         staleness_enabled: bool = True,
     ):
@@ -128,19 +125,21 @@ class GraphObsBuilder:
         self.bypass_teemo = bool(bypass_teemo)
         self.staleness_enabled = bool(staleness_enabled)
         self.cameras = list(cameras)
-        if primary_camera not in self.cameras:
-            raise ValueError(
-                f"primary_camera={primary_camera!r} not in cameras={self.cameras}"
-            )
-        self.primary_camera = primary_camera
-        self.n_feat = len(self.cameras)
+        if not self.cameras:
+            raise ValueError("graph: cameras is empty")
+        # Overlay rendering and the offline tools need one frame to draw on.
+        # The model reads every camera independently and never sees this.
+        self.record_camera = self.cameras[0]
+        self.dino = dino
+        self.app_dim = int(dino.dim if dino is not None else app_dim)
+        self.patch_grid = int(dino.grid) if dino is not None else 8
         self.builders = []
         for i in range(self.num_envs):
             cfg_i = _shallow_copy(teemo_cfg)
             cfg_i["_affordance_selection_cache"] = {}
             self.builders.append(
                 GraphBuilder(env, cfg_i, env_idx=i, env_id=f"env{i}",
-                             camera=primary_camera,
+                             camera=self.record_camera,
                              camera_order=self.cameras,
                              staleness_enabled=self.staleness_enabled)
             )
@@ -150,7 +149,13 @@ class GraphObsBuilder:
         self._last_packed: List[Optional[Dict[str, np.ndarray]]] = [
             None for _ in range(self.num_envs)
         ]
-        # Env indices whose latest graph + primary-cam masks are cached for
+        # Per-env, per-node [C, app_dim] appearance. A camera row holds the
+        # last embedding that camera pooled for the node, or zero if it never
+        # saw it. Cleared per env at the episode boundary.
+        self._appearance: List[Dict[str, np.ndarray]] = [
+            {} for _ in range(self.num_envs)
+        ]
+        # Env indices whose latest graph + record-cam masks are cached for
         # offline rendering. Empty in the hot path.
         self.record_env_indices: Set[int] = set()
         self.last_graph_by_env: Dict[int, Any] = {}
@@ -160,28 +165,32 @@ class GraphObsBuilder:
         self._cpu_buffers: Dict[Tuple[str, str], torch.Tensor] = {}
 
     @property
+    def n_cams(self) -> int:
+        return len(self.cameras)
+
+    @property
     def obs_spec_shapes(self) -> Dict[str, tuple]:
         """Per-env shapes for each graph key."""
         return {
-            "graph_node_ent":       (self.n_max,),
-            "graph_node_vis":       (self.n_max,),
-            "graph_node_valid":     (self.n_max,),
-            "graph_node_feat":      (self.n_max, self.n_feat),
-            "graph_edge_src":       (self.e_max,),
-            "graph_edge_dst":       (self.e_max,),
-            "graph_edge_rel":       (self.e_max,),
-            "graph_edge_abs":       (self.e_max,),
-            "graph_edge_temp":      (self.e_max,),
-            "graph_edge_temp_mask": (self.e_max,),
-            "graph_edge_valid":     (self.e_max,),
-            "graph_n_nodes":        (),
-            "graph_n_edges":        (),
-            "graph_target_ent":     (),
+            "graph_node_ent":  (self.n_max,),
+            "graph_node_app":  (self.n_max, self.n_cams, self.app_dim),
+            "graph_node_bbox": (self.n_max, self.n_cams, 4),
+            "graph_edge_src":  (self.e_max,),
+            "graph_edge_dst":  (self.e_max,),
+            "graph_edge_rel":  (self.e_max,),
+            "graph_edge_abs":  (self.e_max,),
+            "graph_edge_temp": (self.e_max,),
         }
 
     @property
     def obs_spec_dtypes(self) -> Dict[str, np.dtype]:
         return dict(_DTYPES)
+
+    @property
+    def overflow_drops(self) -> np.ndarray:
+        """Per-env count of vertices the registry could not seat this episode."""
+        return np.array(
+            [b.registry.overflow_drops for b in self.builders], np.float32)
 
     def cache_stats(self) -> Dict[str, int]:
         """Sizes of every container that could grow without bound, for leak
@@ -205,12 +214,11 @@ class GraphObsBuilder:
         stats["match_key"] = sum(len(b._match_key_cache) for b in self.builders)
         stats["edge_history"] = sum(len(b._edge_history) for b in self.builders)
         stats["registry"] = sum(len(b.registry) for b in self.builders)
+        stats["appearance"] = sum(len(c) for c in self._appearance)
         stats["temporal_values"] = sum(
             len(b.temporal._values) for b in self.builders
         )
-        stats["overflow_drops"] = sum(
-            b.registry.overflow_drops for b in self.builders
-        )
+        stats["overflow_drops"] = int(self.overflow_drops.sum())
         return stats
 
     def _zero_pack(self) -> Dict[str, np.ndarray]:
@@ -219,10 +227,10 @@ class GraphObsBuilder:
             for k, shape in self.obs_spec_shapes.items()
         }
 
-    def _pack_one(
+    def _build_one(
         self, env_idx: int, episode_boundary: bool,
-        seg_by_cam: Dict[str, np.ndarray], depth_by_cam: Dict[str, np.ndarray],
-    ) -> Dict[str, np.ndarray]:
+        seg_by_cam: Dict[str, np.ndarray],
+    ):
         need_masks = env_idx in self.record_env_indices
         if episode_boundary:
             self._frames[env_idx] = 0
@@ -231,24 +239,21 @@ class GraphObsBuilder:
             int(self._frames[env_idx]),
             episode_boundary=episode_boundary,
             seg_overrides=seg_by_cam,
-            depth_overrides=depth_by_cam,
             rgb_override=None,
-            primary_camera=self.primary_camera,
+            record_camera=self.record_camera,
             need_masks=need_masks,
+            patch_grid=self.patch_grid,
         )
         if need_masks:
             self.last_graph_by_env[env_idx] = graph
             self.last_masks_by_env[env_idx] = masks
         self._frames[env_idx] += 1
-        return pack_graph(
-            graph, self.vocab,
-            n_max=self.n_max, e_max=self.e_max, n_feat=self.n_feat,
-        )
+        return graph
 
     def read_rgb(self, env_idx: int) -> np.ndarray:
-        """Primary-cam RGB (uint8, [H, W, 3]) for ``env_idx``."""
-        rgb = self.env.unwrapped._last_obs["sensor_data"][self.primary_camera]["rgb"][env_idx]
-        return rgb.detach().cpu().numpy().astype(np.uint8)
+        """Record-cam RGB (uint8, [H, W, 3]) for ``env_idx``."""
+        sensor = self.env.unwrapped._last_obs["sensor_data"][self.record_camera]
+        return sensor["rgb"][env_idx].detach().cpu().numpy().astype(np.uint8)
 
     def read_view(self, camera: str, env_idx: int) -> Tuple[np.ndarray, np.ndarray]:
         """RGB (uint8, [H, W, 3]) + segmentation (int64, [H, W]) for one env."""
@@ -257,15 +262,7 @@ class GraphObsBuilder:
         seg = sensor["segmentation"][env_idx].squeeze(-1).detach().cpu().numpy().astype(np.int64)
         return rgb, seg
 
-    @property
-    def secondary_camera(self) -> Optional[str]:
-        for cam in self.cameras:
-            if cam != self.primary_camera:
-                return cam
-        return None
-
-    def _read_batched(self, field: str) -> Dict[str, np.ndarray]:
-        """Return ``{cam: [N, H, W]}`` for one sensor field on every camera."""
+    def _sensor_data(self):
         sensor_data = self.env.unwrapped._last_obs["sensor_data"]
         if not self._cams_checked:
             for cam in self.cameras:
@@ -275,17 +272,22 @@ class GraphObsBuilder:
                         f"(available: {list(sensor_data)}). Check obs_mode and "
                         "sensor configs render this camera."
                     )
-                for required in ("segmentation", "depth"):
-                    if required not in sensor_data[cam]:
+                for field in ("segmentation", "rgb"):
+                    if field not in sensor_data[cam]:
                         raise KeyError(
-                            f"graph: camera {cam!r} has no {required!r} in "
+                            f"graph: camera {cam!r} has no {field!r} in "
                             f"_last_obs; obs_mode must include it."
                         )
             self._cams_checked = True
+        return sensor_data
+
+    def _read_segmentation(self) -> Dict[str, np.ndarray]:
+        """Return ``{cam: [N, H, W]}`` staged through a reused CPU buffer."""
+        sensor_data = self._sensor_data()
         out: Dict[str, np.ndarray] = {}
         for cam in self.cameras:
-            value = sensor_data[cam][field].squeeze(-1).detach()
-            key = (cam, field)
+            value = sensor_data[cam]["segmentation"].squeeze(-1).detach()
+            key = (cam, "segmentation")
             buf = self._cpu_buffers.get(key)
             if (
                 buf is None
@@ -297,6 +299,53 @@ class GraphObsBuilder:
             buf.copy_(value, non_blocking=False)
             out[cam] = buf.numpy()
         return out
+
+    def _read_rgb(self, active: List[int]) -> torch.Tensor:
+        """``[len(active), C, H, W, 3]`` uint8, left on the render device."""
+        sensor_data = self._sensor_data()
+        rgb = sensor_data[self.cameras[0]]["rgb"]
+        index = torch.as_tensor(active, dtype=torch.long, device=rgb.device)
+        views = [
+            sensor_data[cam]["rgb"].index_select(0, index)
+            for cam in self.cameras
+        ]
+        return torch.stack(views, 1)
+
+    def _pool_appearance(self, active: List[int], graphs: Dict[int, Any]) -> None:
+        """Pool this frame's DINO features onto every node, then fall back to
+        the per-camera cache for cameras that lost sight of it."""
+        C, D, P = self.n_cams, self.app_dim, self.patch_grid ** 2
+        widest = max((len(graphs[i].nodes) for i in active), default=0)
+        if not widest:
+            return
+
+        pooled = None
+        if self.dino is not None:
+            weights = torch.zeros(
+                (len(active), C, widest, P), dtype=torch.float32)
+            for slot, env_idx in enumerate(active):
+                for j, node in enumerate(graphs[env_idx].nodes):
+                    if node.patch_weights is not None:
+                        weights[slot, :, j] = torch.from_numpy(node.patch_weights)
+            tokens = self.dino.patch_tokens(self._read_rgb(active))
+            pooled = self.dino.pool(tokens, weights.to(self.dino.device))
+            # [A, C, N, D] -> [A, N, C, D] to match the packed layout.
+            pooled = pooled.permute(0, 2, 1, 3).cpu().numpy()
+
+        for slot, env_idx in enumerate(active):
+            cache = self._appearance[env_idx]
+            for j, node in enumerate(graphs[env_idx].nodes):
+                if node.bbox is None:
+                    node.bbox = np.zeros((C, 4), np.float32)
+                app = cache.get(node.node_id)
+                if app is None:
+                    app = np.zeros((C, D), np.float32)
+                    cache[node.node_id] = app
+                if pooled is not None:
+                    current = pooled[slot, j]
+                    seen = np.abs(current).sum(-1) > 0
+                    app[seen] = current[seen]
+                node.appearance = app.copy()
 
     def _current_scene_signature(self):
         base = self.env.unwrapped
@@ -344,7 +393,8 @@ class GraphObsBuilder:
         ``is_first`` drives the per-env episode reset. ``is_last`` marks envs
         whose sensors already belong to the next episode because the vector env
         auto-reset inside ``step``; those re-emit the previous frame's arrays
-        rather than a graph built from the wrong episode.
+        rather than a graph built from the wrong episode, and neither pool DINO
+        features nor touch their appearance cache.
         """
         first = (
             np.asarray(is_first, dtype=bool).reshape(-1)
@@ -356,31 +406,40 @@ class GraphObsBuilder:
         )
         if first.any():
             self._refresh_scene_caches_if_needed()
+        for i in np.nonzero(first)[0]:
+            self._appearance[i].clear()
 
         if self.bypass_teemo:
-            packed = [self._zero_pack() for _ in range(self.num_envs)]
-            return self._stack(packed)
+            return self._stack([self._zero_pack() for _ in range(self.num_envs)])
 
-        segs = self._read_batched("segmentation")
-        depths = self._read_batched("depth")
-        self._purge_contact_queries()
-        begin_frame_cache(getattr(self.env.unwrapped, "scene", None))
-        try:
-            packed: List[Dict[str, np.ndarray]] = []
-            for i in range(self.num_envs):
-                cached = self._last_packed[i]
-                if last[i] and cached is not None:
-                    packed.append(cached)
-                    continue
-                out = self._pack_one(
-                    i, bool(first[i]),
-                    {cam: segs[cam][i] for cam in self.cameras},
-                    {cam: depths[cam][i] for cam in self.cameras},
+        active = [i for i in range(self.num_envs) if not last[i]]
+        graphs: Dict[int, Any] = {}
+        if active:
+            segs = self._read_segmentation()
+            self._purge_contact_queries()
+            begin_frame_cache(getattr(self.env.unwrapped, "scene", None))
+            try:
+                for i in active:
+                    graphs[i] = self._build_one(
+                        i, bool(first[i]),
+                        {cam: segs[cam][i] for cam in self.cameras},
+                    )
+            finally:
+                end_frame_cache()
+            self._pool_appearance(active, graphs)
+
+        packed: List[Dict[str, np.ndarray]] = []
+        for i in range(self.num_envs):
+            if i in graphs:
+                out = pack_graph(
+                    graphs[i], self.vocab,
+                    n_max=self.n_max, e_max=self.e_max,
+                    n_cams=self.n_cams, app_dim=self.app_dim,
                 )
                 self._last_packed[i] = out
-                packed.append(out)
-        finally:
-            end_frame_cache()
+            else:
+                out = self._last_packed[i] or self._zero_pack()
+            packed.append(out)
         return self._stack(packed)
 
     def _stack(self, packed: List[Dict[str, np.ndarray]]) -> Dict[str, np.ndarray]:
@@ -420,9 +479,8 @@ def build_graph_obs(
         teemo_cfg["whitelist_dir"] = graph_cfg["whitelist_dir"]
     if teemo_cfg.get("whitelist_dir") is None:
         raise ValueError(
-            "graph: whitelist_dir is not set in the loaded teemo config; "
-            "set graph.whitelist_dir or configure teemo_sim_probe/configs/"
-            "thresholds.yaml."
+            "graph: whitelist_dir is not set in the loaded config; set "
+            "graph.whitelist_dir or configure scenegraph/configs/thresholds.yaml."
         )
 
     _verify_whitelist_coverage(env, teemo_cfg["whitelist_dir"])
@@ -430,11 +488,25 @@ def build_graph_obs(
 
     n_max = int(teemo_cfg["selection"]["n_max"])
     e_max = int(graph_cfg.get("e_max", 256))
+    app_dim = int(graph_cfg.get("app_dim", 384))
 
     cameras = graph_cfg.get("cameras")
     if not cameras:
         cameras = [graph_cfg.get("camera", "fetch_head")]
-    primary_camera = graph_cfg.get("primary_camera") or cameras[0]
+
+    dino = None
+    if not bool(graph_cfg.get("bypass_teemo", False)):
+        dino = DinoFeatures(
+            graph_cfg.get("dino_model") or "dinov2_vits14_reg",
+            res=int(graph_cfg.get("dino_res", 112)),
+            weights_path=graph_cfg.get("dino_weights") or None,
+        )
+        if dino.dim != app_dim:
+            raise ValueError(
+                f"graph: dino_model {dino.name!r} has feature width {dino.dim} "
+                f"but graph.app_dim is {app_dim}; the model reads app_dim from "
+                "config and would mismatch replay."
+            )
 
     return builder_cls(
         env,
@@ -444,7 +516,8 @@ def build_graph_obs(
         n_max=n_max,
         e_max=e_max,
         cameras=list(cameras),
-        primary_camera=primary_camera,
+        dino=dino,
+        app_dim=app_dim,
         bypass_teemo=bool(graph_cfg.get("bypass_teemo", False)),
         staleness_enabled=bool(graph_cfg.get("staleness_enabled", True)),
     )

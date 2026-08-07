@@ -1,15 +1,9 @@
 """Hyper-relational per-frame packing.
 
-Nodes fill a compact prefix in vertex-index order, ee first, each carrying one
-bbox and one appearance vector per camera; each fact is one row of (relation,
-absolute, temporal). Arrays use the narrowest dtype holding their vocabulary
-since these land in the replay buffer every step; the encoder casts back on
-read.
-
-Nothing derivable is stored. Index zero is padding in every vocabulary, so
-validity, per-camera visibility, whether a camera ever observed a node, and
-both counts all follow from the ids, the boxes and the embedding norms -- see
-``graph_encoder`` for the exact derivations the model reads them back with.
+Nodes fill a compact prefix in vertex-index order, ee first; each fact is one
+row of (relation, absolute, temporal). Arrays use the narrowest dtype holding
+their vocabulary since these land in the replay buffer every step; the encoder
+casts back to int32 on read.
 """
 
 from __future__ import annotations
@@ -18,6 +12,7 @@ from typing import Dict, Tuple
 
 import numpy as np
 
+from ..core.affordance import canonical_affordance_key
 from ..core.relation_rules import (
     AFFORDANCE_RELATIONS,
     PHYSICAL_RELATIONS,
@@ -49,8 +44,7 @@ def pack_graph(
     *,
     n_max: int,
     e_max: int,
-    n_cams: int,
-    app_dim: int,
+    n_feat: int,
 ) -> Dict[str, np.ndarray]:
     if n_max > 255:
         raise ValueError(
@@ -58,8 +52,9 @@ def pack_graph(
         )
 
     node_ent = np.zeros(n_max, dtype=np.uint16)
-    node_app = np.zeros((n_max, n_cams, app_dim), dtype=np.float16)
-    node_bbox = np.zeros((n_max, n_cams, 4), dtype=np.float16)
+    node_vis = np.zeros(n_max, dtype=np.uint8)
+    node_valid = np.zeros(n_max, dtype=np.uint8)
+    node_feat = np.zeros((n_max, n_feat), dtype=np.float32)
 
     position: Dict[str, int] = {}
     n_nodes = 0
@@ -67,20 +62,12 @@ def pack_graph(
         if n_nodes >= n_max:
             break
         i = n_nodes
-        ent = vocab.entity.encode(entity_key_for(node))
-        if ent == vocab.entity.pad_id:
-            # Validity is read back as ``ent != pad``, so a real vertex landing
-            # on the pad id would silently become padding that edges still
-            # point at.
-            raise ValueError(
-                f"node {node.node_id!r} ({node.node_type}) encodes to the pad "
-                "entity id; every packed vertex needs a whitelist key"
-            )
-        node_ent[i] = ent
-        if node.bbox is not None:
-            node_bbox[i] = node.bbox
-        if node.appearance is not None:
-            node_app[i] = node.appearance
+        node_ent[i] = vocab.entity.encode(entity_key_for(node))
+        node_vis[i] = 1 if node.visible else 0
+        node_valid[i] = 1
+        if node.feat is not None:
+            width = min(n_feat, len(node.feat))
+            node_feat[i, :width] = np.asarray(node.feat[:width], dtype=np.float32)
         position[node.node_id] = i
         n_nodes += 1
 
@@ -96,53 +83,49 @@ def pack_graph(
     edge_rel = np.zeros(e_max, dtype=np.uint8)
     edge_abs = np.zeros(e_max, dtype=np.uint8)
     edge_temp = np.zeros(e_max, dtype=np.uint8)
+    edge_temp_mask = np.zeros(e_max, dtype=np.uint8)
+    edge_valid = np.zeros(e_max, dtype=np.uint8)
 
     for i, e in enumerate(kept):
-        rel = vocab.relation.encode(e.relation)
-        if rel == vocab.relation.pad_id:
-            raise ValueError(
-                f"relation {e.relation!r} encodes to the pad id; fact validity "
-                "is read back as a nonzero relation"
-            )
-        sig = vocab.absolute.encode(e.label)
-        if sig == vocab.absolute.pad_id:
-            raise ValueError(
-                f"fact ({e.src!r}, {e.relation!r}, {e.dst!r}) has label "
-                f"{e.label!r}, which encodes to the pad id"
-            )
         edge_src[i] = position[e.src]
         edge_dst[i] = position[e.dst]
-        edge_rel[i] = rel
-        edge_abs[i] = sig
+        edge_rel[i] = vocab.relation.encode(e.relation)
+        edge_abs[i] = vocab.absolute.encode(e.label)
+        edge_valid[i] = 1
         if e.relation in TEMPORAL_RELATIONS and e.temp_label is not None:
-            tau = vocab.temporal.encode(e.temp_label)
-            if tau == vocab.temporal.pad_id:
-                raise ValueError(
-                    f"relation {e.relation!r} has temporal label "
-                    f"{e.temp_label!r}, which encodes to the pad id"
-                )
-            edge_temp[i] = tau
+            edge_temp[i] = vocab.temporal.encode(e.temp_label)
+            edge_temp_mask[i] = 1
 
-    # Counts stay on the graph for logging and truncation warnings rather than
-    # riding along in every replay transition.
-    graph.meta["n_nodes_packed"] = n_nodes
-    graph.meta["n_edges_packed"] = len(kept)
-    graph.meta["n_edges_dropped"] = len(candidates) - len(kept)
+    # Active target in entity-vocab space so the encoder can match it against
+    # graph_node_ent. A target that is not representable as an entity type
+    # (articulation handles) encodes to pad.
+    obj_id = graph.meta.get("active_obj_id")
+    key = canonical_affordance_key(str(obj_id)) if obj_id else None
+    target_ent = vocab.entity.token_to_id.get(
+        f"actor:{key}" if key else None, vocab.entity.pad_id
+    )
 
     return {
         "graph_node_ent": node_ent,
-        "graph_node_app": node_app,
-        "graph_node_bbox": node_bbox,
+        "graph_node_vis": node_vis,
+        "graph_node_valid": node_valid,
+        "graph_node_feat": node_feat,
         "graph_edge_src": edge_src,
         "graph_edge_dst": edge_dst,
         "graph_edge_rel": edge_rel,
         "graph_edge_abs": edge_abs,
         "graph_edge_temp": edge_temp,
+        "graph_edge_temp_mask": edge_temp_mask,
+        "graph_edge_valid": edge_valid,
+        "graph_n_nodes": np.int32(n_nodes),
+        "graph_n_edges": np.int32(len(kept)),
+        "graph_target_ent": np.uint16(target_ent),
     }
 
 
 GRAPH_KEYS = (
-    "graph_node_ent", "graph_node_app", "graph_node_bbox",
+    "graph_node_ent", "graph_node_vis", "graph_node_valid", "graph_node_feat",
     "graph_edge_src", "graph_edge_dst", "graph_edge_rel", "graph_edge_abs",
-    "graph_edge_temp",
+    "graph_edge_temp", "graph_edge_temp_mask", "graph_edge_valid",
+    "graph_n_nodes", "graph_n_edges", "graph_target_ent",
 )
