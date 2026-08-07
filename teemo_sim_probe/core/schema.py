@@ -17,6 +17,8 @@ import json
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+
 
 # --------------------------------------------------------------------------- #
 # Nodes
@@ -33,10 +35,15 @@ class Node:
 
     pose_world: Optional[List[float]] = None
 
-    # Appearance: mean masked depth in metres, one entry per configured camera.
-    # Each entry independently retains its last observed value while the node
-    # is not visible in that camera.
-    feat: Optional[List[float]] = None
+    # Per-camera appearance support, one row per camera in builder order.
+    # ``bbox`` rows are [x0, x1, y0, y1] normalised to the frame with exclusive
+    # maxima; ``patch_weights`` rows are the flattened fractional coverage of
+    # the frozen encoder's patch grid. Both stay zero for a camera with no
+    # pixels this frame. ``appearance`` rows are the pooled L2-normalised
+    # embeddings, retained from the last frame that camera saw the node.
+    bbox: Optional[Any] = None            # [C, 4]
+    patch_weights: Optional[Any] = None   # [C, P]
+    appearance: Optional[Any] = None      # [C, D]
 
     # Append-only vertex index, assigned by EntityRegistry on first sight.
     index: Optional[int] = None
@@ -47,7 +54,14 @@ class Node:
     attributes: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        # Pooling support is scratch space for one frame and never serialised.
+        d.pop("patch_weights")
+        for key in ("appearance", "bbox"):
+            value = getattr(self, key)
+            if value is not None:
+                d[key] = np.asarray(value).tolist()
+        return d
 
 
 # --------------------------------------------------------------------------- #

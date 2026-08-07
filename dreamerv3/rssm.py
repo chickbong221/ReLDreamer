@@ -159,7 +159,7 @@ class RSSM(nj.Module):
       # return carry, entries, feat, action
       return carry, feat, action
 
-  def loss(self, carry, tokens, graph, acts, reset, training):
+  def loss(self, carry, tokens, graph, acts, reset, training, step_valid=None):
     metrics = {}
     prev_sem = nn.cast(carry['sem'])
     carry, entries, feat, nodes = self.observe(
@@ -172,6 +172,7 @@ class RSSM(nj.Module):
     }
     metrics['dyn_ent'] = self._dist(prior).entropy().mean()
     metrics['rep_ent'] = self._dist(post).entropy().mean()
+    semkeys = ()
     if self.semantic:
       semprior = self._sem_prior(
           feat['deter'], self._shift(feat['sem'], prev_sem, reset))
@@ -179,8 +180,24 @@ class RSSM(nj.Module):
       losses['semdyn'] = self._dist(sg(sempost)).kl(self._dist(semprior))
       losses['semrep'] = self._dist(sempost).kl(self._dist(sg(semprior)))
       metrics['sem_ent'] = self._dist(sempost).entropy().mean()
+      semkeys = ('semdyn', 'semrep')
+      # Unclipped, so the semantic KL stays observable below the free-nats
+      # floor where the optimised loss is flat. Reduced in f32: this is read
+      # against that floor, and bf16 cannot sum a batch without drifting.
+      valid = (
+          jnp.ones(losses['semdyn'].shape, f32) if step_valid is None
+          else step_valid.astype(f32))
+      for key in semkeys:
+        metrics[f'{key}_raw'] = (
+            (losses[key].astype(f32) * valid).sum()
+            / jnp.maximum(valid.sum(), 1.0))
     if self.free_nats:
       losses = {k: jnp.maximum(v, self.free_nats) for k, v in losses.items()}
+    if step_valid is not None:
+      # After clipping: masking first would lift the zeroed terminal entries
+      # back to the free-nats floor.
+      for key in semkeys:
+        losses[key] = losses[key] * nn.cast(step_valid, force=True)
     return carry, entries, losses, feat, nodes, metrics
 
   def _shift(self, sem, prev, reset):

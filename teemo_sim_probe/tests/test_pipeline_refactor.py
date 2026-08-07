@@ -291,6 +291,7 @@ class SupporterMaskTests(unittest.TestCase):
         nodes, masks, _cam, _rgb = build_nodes(
             {}, _State(link), seg_override=seg,
             rgb_override=np.zeros((2, 2, 3), dtype=np.uint8),
+            patch_grid=2,
         )
         key = stable_entity_key(link)
         self.assertIn(key, nodes)
@@ -406,12 +407,12 @@ class AdmitGateTests(unittest.TestCase):
         gated, _, _, _ = build_nodes(
             {}, _State(**state_kwargs), seg_override=seg,
             rgb_override=np.zeros((2, 2, 3), dtype=np.uint8),
-            need_masks=False, admit=admit,
+            need_masks=False, admit=admit, patch_grid=2,
         )
         ungated, _, _, _ = build_nodes(
             {}, _State(**state_kwargs), seg_override=seg,
             rgb_override=np.zeros((2, 2, 3), dtype=np.uint8),
-            need_masks=False,
+            need_masks=False, patch_grid=2,
         )
 
         # The gate skips node construction for the never-admissible entity.

@@ -178,7 +178,7 @@ def make_logger(config):
   suite = config.task.split('_', 1)[0]
   log_filter = config.logger.filter
   if suite == 'maniskill':
-    log_filter = log_filter + '|episode/score|epstats/log/|fps/'
+    log_filter = log_filter + '|episode/|epstats/log/|train/success|train/fail|fps/'
 
   outputs.append(elements.logger.TerminalOutput(log_filter, 'Agent'))
   for output in config.logger.outputs:

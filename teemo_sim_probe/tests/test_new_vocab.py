@@ -209,13 +209,27 @@ def _vocab(keys):
     return GraphVocab(entity, relation, absolute, temporal, abs_valid, temp_valid)
 
 
+CAMS, DIM = 2, 6
+
+# Head sees both, hand sees only the object. The model reads visibility back
+# off these boxes, so they carry the whole per-camera story.
+_HEAD_BOX = {"ee": [0.0, 0.25, 0.0, 0.25], "bowl": [0.5, 1.0, 0.5, 1.0]}
+_HAND_BOX = {"ee": [0.0, 0.0, 0.0, 0.0], "bowl": [0.1, 0.4, 0.1, 0.4]}
+
+
 class PackingTests(unittest.TestCase):
 
-    def _packed(self, n_max=4, e_max=8):
+    def _packed(self, n_max=4, e_max=8, support=True):
         ee = _ee()
         obj = _obj("bowl", (0.05, 0.0, 0.0))
-        ee.feat = [1.0, 2.0]
-        obj.feat = [3.0, 4.0]
+        if support:
+            for node, name in ((ee, "ee"), (obj, "bowl")):
+                node.bbox = np.array(
+                    [_HEAD_BOX[name], _HAND_BOX[name]], np.float32)
+                node.appearance = np.full((CAMS, DIM), 0.5, np.float32)
+                # Hand never saw the ee: that row stays exactly zero.
+                if name == "ee":
+                    node.appearance[1] = 0.0
         g = _graph(ee, obj)
         cfg = _cfg()
         state = _StubState(grasping=True, contact_force=5.0)
@@ -223,30 +237,61 @@ class PackingTests(unittest.TestCase):
         g.edges.extend(ee_object_physical_edges(g, state, cfg))
         TemporalBuffer(K=cfg["temporal"]["K"]).annotate(g, cfg)
         vocab = _vocab(["<pad>", "<ee>", "actor:bowl"])
-        return pack_graph(g, vocab, n_max=n_max, e_max=e_max, n_feat=2)
+        return pack_graph(
+            g, vocab, n_max=n_max, e_max=e_max, n_cams=CAMS, app_dim=DIM)
 
     def test_dtypes_stay_narrow(self):
         packed = self._packed()
         self.assertEqual(packed["graph_edge_src"].dtype, np.uint8)
         self.assertEqual(packed["graph_edge_abs"].dtype, np.uint8)
         self.assertEqual(packed["graph_node_ent"].dtype, np.uint16)
-        self.assertEqual(packed["graph_node_feat"].dtype, np.float32)
+        self.assertEqual(packed["graph_node_bbox"].dtype, np.float16)
+        self.assertEqual(packed["graph_node_app"].dtype, np.float16)
 
-    def test_padding_is_masked_out(self):
+    def test_shapes_carry_a_camera_axis(self):
         packed = self._packed()
-        self.assertEqual(int(packed["graph_n_nodes"]), 2)
-        self.assertTrue((packed["graph_node_valid"][:2] == 1).all())
-        self.assertTrue((packed["graph_node_valid"][2:] == 0).all())
-        n_edges = int(packed["graph_n_edges"])
-        self.assertTrue((packed["graph_edge_valid"][n_edges:] == 0).all())
+        self.assertEqual(packed["graph_node_bbox"].shape, (4, CAMS, 4))
+        self.assertEqual(packed["graph_node_app"].shape, (4, CAMS, DIM))
 
-    def test_physical_rows_carry_no_temporal_mask(self):
+    def test_target_is_not_packed(self):
+        self.assertNotIn("graph_target_ent", self._packed())
+
+    def test_appearance_lands_on_the_owning_slot(self):
+        packed = self._packed()
+        np.testing.assert_allclose(
+            packed["graph_node_bbox"][1, 0], _HEAD_BOX["bowl"], atol=1e-3)
+        np.testing.assert_allclose(
+            packed["graph_node_bbox"][1, 1], _HAND_BOX["bowl"], atol=1e-3)
+
+    def test_a_camera_that_never_saw_a_node_stays_zero(self):
+        packed = self._packed()
+        self.assertTrue((packed["graph_node_app"][0, 1] == 0).all())
+        self.assertTrue((packed["graph_node_app"][0, 0] != 0).all())
+
+    def test_padding_rows_carry_no_appearance(self):
+        packed = self._packed()
+        self.assertTrue((packed["graph_node_bbox"][2:] == 0).all())
+        self.assertTrue((packed["graph_node_app"][2:] == 0).all())
+        self.assertTrue((packed["graph_node_ent"][2:] == 0).all())
+
+    def test_no_support_packs_zeroed_but_still_valid(self):
+        packed = self._packed(support=False)
+        self.assertTrue((packed["graph_node_bbox"] == 0).all())
+        self.assertTrue((packed["graph_node_ent"][:2] != 0).all())
+
+    def test_padding_edges_carry_a_pad_relation(self):
+        packed = self._packed()
+        n_edges = int((packed["graph_edge_rel"] != 0).sum())
+        self.assertGreater(n_edges, 0)
+        self.assertTrue((packed["graph_edge_rel"][n_edges:] == 0).all())
+
+    def test_physical_rows_carry_no_temporal_label(self):
         packed = self._packed()
         rel = build_relation_vocab()
         physical = {rel.encode(n) for n in ("contact", "grasp")}
-        for i in range(int(packed["graph_n_edges"])):
+        for i in np.nonzero(packed["graph_edge_rel"])[0]:
             if int(packed["graph_edge_rel"][i]) in physical:
-                self.assertEqual(int(packed["graph_edge_temp_mask"][i]), 0)
+                self.assertEqual(int(packed["graph_edge_temp"][i]), 0)
 
     def test_endpoints_must_fit_a_byte(self):
         with self.assertRaises(ValueError):

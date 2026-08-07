@@ -29,6 +29,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
 
   start_time = time()
   train_vector_episode_done = [False]
+  episode_count = [0]
   train_episode_idx = [0]
   eval_stat_next = [True]
   eval_video_next = [False]
@@ -184,6 +185,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
       vector_batch_complete = maniskill_batch['count'] >= driver.length
 
     if tran['is_last']:
+      episode_count[0] += 1
       result = episode.result()
       logger.add({
           'score': result.pop('score'),
@@ -425,7 +427,8 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
 
     if should_log(step):
       logger.add(train_agg.result())
-      epstats.result()
+      logger.add(epstats.result(), prefix='epstats')
+      logger.add({'episode/count': float(episode_count[0])})
       logger.add(replay.stats(), prefix='replay')
       logger.add(usage.stats(), prefix='usage')
       logger.add({'fps/policy': policy_fps.result()})

@@ -57,15 +57,19 @@ defaults:
       eval_max_episode_steps: 0  # 0 → reuse max_episode_steps; mshab overrides to 200
       frame_stack: 1             # mshab path: no FrameStack wrapper
       reward_mode: normalized_dense  # 'sparse' | 'dense' | 'normalized_dense'
-      graph:                     # scene graph obs; obs_mode must include segmentation
+      graph:                     # scene graph obs; obs_mode must include rgb and segmentation
         enabled: false
         profile: room_scale
         thresholds_path: ''
         whitelist_dir: ''
-        cameras: [fetch_head, fetch_hand]
-        primary_camera: fetch_head
+        cameras: [fetch_head, fetch_hand]   # first entry also renders overlays
         n_max: 11                # vertex capacity including the ee node
         e_max: 256
+        k_persist: -1            # <0 → a registered vertex stays for the episode
+        dino_model: dinov2_vits14_reg
+        dino_res: 112            # must be a multiple of the patch size 14
+        dino_weights: ''         # local checkpoint; empty → torch.hub
+        app_dim: 384             # frozen feature width; checked against the model
         staleness_enabled: true
         bypass_teemo: false
 
@@ -120,13 +124,16 @@ defaults:
     profiler: False     # traces updates 100-120 into logdir; CUPTI floods stderr
 
   agent:
-    loss_scales: {rec: 1.0, rew: 1.0, con: 1.0, dyn: 1.0, rep: 0.1, policy: 1.0, value: 1.0, repval: 0.3, semapp: 0.1, semvis: 1.0, semabs: 1.0, semtemp: 1.0, semdyn: 1.0, semrep: 0.1}
+    loss_scales: {rec: 1.0, rew: 1.0, con: 1.0, dyn: 1.0, rep: 0.1, policy: 1.0, value: 1.0, repval: 0.3, node: 1.0, relabs: 1.0, reltemp: 1.0, semdyn: 1.0, semrep: 0.1}
     opt: {lr: 4e-5, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
     ac_grads: False
     dyn:
       typ: rssm
       rssm: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, semstoch: 16, semclasses: 16, semlayers: 1, act: silu, norm: rms, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0}
-    graph: {layers: 2, units: 256, embed: 64, reverse_edges: True, condition_on_deter: True, entity_vocab: 64}  # entity_vocab is overwritten from the mined whitelists at startup
+    # app_dim is the stored DINO width; app/bbox are the learned per-camera
+    # projections. units follows the size preset's `.*\.units` wildcard.
+    # entity_vocab is overwritten from the mined whitelists at startup.
+    graph: {layers: 2, units: 256, embed: 64, app_dim: 384, app: 64, bbox: 8, reverse_edges: True, condition_on_deter: True, entity_vocab: 64}
     enc:
       typ: simple
       simple: {depth: 64, mults: [2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: rms, winit: trunc_normal_in, symlog: True, outer: False, kernel: 5, strided: False}
@@ -340,7 +347,7 @@ mshab:
   jax:
     prealloc: false     # critical: ManiSkill and JAX share GPU
   logger:
-    outputs: [wandb, jsonl]   # jsonl too: plot.py reads it, and it survives a lost wandb session
+    outputs: [wandb]   # jsonl too: plot.py reads it, and it survives a lost wandb session
     wandb_project: maniskill
     wandb_entity: letuanhf-hanoi-university-of-science-and-technology
     wandb_group: na
@@ -353,7 +360,9 @@ mshab:
     report_every: 72000
   env:
     maniskill:
-      obs_mode: depth+segmentation  # segmentation feeds the scene graph
+      obs_mode: rgb+segmentation    # rgb feeds the encoder and DINO, segmentation the graph
+      image_size: 112               # 8x8 DINO patches at patch size 14
+      num_frames: 1
       max_episode_steps: 100        # matches mshab/configs/sac_pick.yml training horizon
       eval_max_episode_steps: 200   # matches mshab/configs/sac_pick.yml eval horizon
       frame_stack: 1                # no MSHab FrameStack; RSSM provides temporal context

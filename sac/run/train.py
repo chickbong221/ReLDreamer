@@ -245,8 +245,16 @@ def train(config: dict) -> None:
 
     graph_shapes = graph_dtypes = None
     if graph_enabled:
-        graph_shapes = graph_train.obs_spec_shapes
-        graph_dtypes = graph_train.obs_spec_dtypes
+        # The SAC encoder is identity + relations only; it never pools image
+        # features, so the appearance arrays would cost ~11 KB per step of
+        # replay for nothing.
+        skip = ("graph_node_mask", "graph_node_bbox")
+        graph_shapes = {
+            k: v for k, v in graph_train.obs_spec_shapes.items() if k not in skip
+        }
+        graph_dtypes = {
+            k: v for k, v in graph_train.obs_spec_dtypes.items() if k not in skip
+        }
     replay = PixelStateBatchReplayBuffer(
         pixels_obs_space=replay_pixels_space,
         state_obs_dim=state_dim,

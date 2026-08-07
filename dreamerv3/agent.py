@@ -11,7 +11,7 @@ import numpy as np
 import optax
 
 from . import rssm
-from .graph_encoder import GRAPH_KEYS, GraphDecoder, unpack
+from .graph_encoder import GRAPH_KEYS, SCAN_KEYS, GraphDecoder, unpack
 
 f32 = jnp.float32
 i32 = jnp.int32
@@ -56,7 +56,7 @@ class Agent(embodied.jax.Agent):
     }[config.dec.typ](dec_space, **config.dec[config.dec.typ], name='dec')
     dynkw = config.dyn[config.dyn.typ]
     self.graphdec = GraphDecoder(
-        obs_space['graph_node_feat'].shape[-1],
+        config.graph.app_dim,
         units=config.graph.units, embed=config.graph.embed,
         act=dynkw['act'], norm=dynkw['norm'], winit=dynkw['winit'],
         name='graphdec') if self.semantic else None
@@ -97,7 +97,7 @@ class Agent(embodied.jax.Agent):
     rec = scales.pop('rec')
     scales.update({k: rec for k in dec_space})
     if not self.semantic:
-      for key in ('semapp', 'semvis', 'semabs', 'semtemp', 'semdyn', 'semrep'):
+      for key in ('node', 'relabs', 'reltemp', 'semdyn', 'semrep'):
         scales.pop(key, None)
     self.scales = scales
 
@@ -108,7 +108,7 @@ class Agent(embodied.jax.Agent):
   def _graph(self, obs):
     if not self.semantic:
       return {}
-    return unpack({k: obs[k] for k in GRAPH_KEYS})
+    return unpack({k: obs[k] for k in SCAN_KEYS})
 
   @property
   def ext_space(self):
@@ -184,16 +184,20 @@ class Agent(embodied.jax.Agent):
     losses = {}
     metrics = {}
 
-    # World model
+    # World model. The terminal transition carries the previous frame's graph,
+    # since the vector env already auto-reset the sensors it would be built
+    # from, so every graph-derived loss drops that step.
+    step_valid = f32(~obs['is_last']) if self.semantic else None
     enc_carry, enc_entries, tokens = self.enc(
         enc_carry, obs, reset, training)
     graph = self._graph(obs)
     dyn_carry, dyn_entries, los, repfeat, nodes, mets = self.dyn.loss(
-        dyn_carry, tokens, graph, prevact, reset, training)
+        dyn_carry, tokens, graph, prevact, reset, training,
+        step_valid=step_valid)
     losses.update(los)
     metrics.update(mets)
     if self.semantic:
-      los, mets = self.graphdec(nodes, graph)
+      los, mets = self.graphdec(nodes, graph, step_valid)
       losses.update(los)
       metrics.update(mets)
     dec_carry, dec_entries, recons = self.dec(

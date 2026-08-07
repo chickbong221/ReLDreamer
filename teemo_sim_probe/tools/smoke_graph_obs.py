@@ -1,10 +1,10 @@
 """Live check of the graph observation path. Needs a GPU and mined assets.
 
 The unit tests never touch a simulator, so this is the only thing that
-exercises the sensor plumbing: that ``depth+segmentation`` still reaches the
-MSHab wrappers, that ``sensor_data[cam]['depth']`` exists in the shape the
-appearance pooler assumes, that the mined whitelists cover the split, and that
-the packed facts fit ``e_max``.
+exercises the sensor plumbing: that ``rgb+segmentation`` reaches both named
+cameras, that DINO pools something nonzero, that terminal transitions carry the
+true final frames rather than the next episode's, that the mined whitelists
+cover the split, and that the packed facts fit ``e_max``.
 
     python -m teemo_sim_probe.tools.smoke_graph_obs \
         --task maniskill_PickSubtaskTrain-v0 \
@@ -28,13 +28,32 @@ def parse_args():
     p.add_argument("--mshab-split", default="train")
     p.add_argument("--num-envs", type=int, default=4)
     p.add_argument("--steps", type=int, default=20)
-    p.add_argument("--image-size", type=int, default=64)
+    p.add_argument("--image-size", type=int, default=112)
     p.add_argument("--n-max", type=int, default=11)
     p.add_argument("--e-max", type=int, default=256)
     p.add_argument("--whitelist-dir",
                    default="teemo_sim_probe/configs/subtask_whitelists")
     p.add_argument("--num-build-configs", type=int, default=4)
     return p.parse_args()
+
+
+def _report_state_parity(env):
+    """The named-camera wrapper hands back upstream's ``state`` untouched.
+
+    True by construction today, since the subclass returns what
+    ``super().observation`` produced. Checked anyway: reimplementing the state
+    layout is the one change here that would shift the observation silently.
+    """
+    from mani_skill.utils.wrappers import FlattenRGBDObservationWrapper
+
+    wrapper = env._named_wrapper
+    raw = env._env.unwrapped._last_obs
+    ours = wrapper.observation(raw)["state"].cpu().numpy()
+    upstream = FlattenRGBDObservationWrapper.observation(
+        wrapper, raw)["state"].cpu().numpy()
+    same = np.array_equal(ours, upstream)
+    print(f"  state width {ours.shape[-1]}, parity with upstream: {same}")
+    return same
 
 
 def main():
@@ -47,9 +66,12 @@ def main():
         thresholds_path=None,
         whitelist_dir=args.whitelist_dir,
         cameras=["fetch_head", "fetch_hand"],
-        primary_camera="fetch_head",
         n_max=args.n_max,
         e_max=args.e_max,
+        k_persist=-1,
+        dino_model="dinov2_vits14_reg",
+        dino_res=args.image_size,
+        app_dim=384,
         staleness_enabled=True,
         bypass_teemo=False,
     )
@@ -58,7 +80,7 @@ def main():
     env = ManiSkill(
         args.task.split("_", 1)[1],
         num_envs=args.num_envs,
-        obs_mode="depth+segmentation",
+        obs_mode="rgb+segmentation",
         image_size=args.image_size,
         control_mode="pd_joint_delta_pos",
         mshab_task=args.mshab_task,
@@ -66,6 +88,7 @@ def main():
         mshab_obj=args.mshab_obj,
         mshab_num_build_configs=args.num_build_configs,
         max_episode_steps=100,
+        num_frames=1,
         frame_stack=1,
         graph=graph_cfg,
         seed=0,
@@ -77,9 +100,15 @@ def main():
         print("FAIL: no graph keys in obs_space; graph.enabled did not take")
         return 1
     print(f"\nobs_space ({len(graph_keys)} graph keys)")
-    for key in graph_keys:
-        print(f"  {key:24s} {str(space[key].shape):12s} {space[key].dtype}")
+    for key in graph_keys + ["image_head", "image_hand", "state"]:
+        print(f"  {key:24s} {str(space[key].shape):20s} {space[key].dtype}")
     print(f"  entity vocab: {env.graph_vocab_sizes}")
+    per_step = sum(
+        int(np.prod(space[k].shape)) * np.dtype(space[k].dtype).itemsize
+        for k in space if not k.startswith("log/"))
+    print(f"  replay bytes per transition: {per_step / 1024:.1f} KiB")
+
+    ok = _report_state_parity(env)
 
     act = {
         "action": np.zeros((args.num_envs, env.act_space["action"].shape[0]),
@@ -90,11 +119,13 @@ def main():
     act["reset"] = np.zeros(args.num_envs, bool)
 
     n_nodes, n_edges, n_visible, truncated = [], [], [], 0
-    feat_seen = np.zeros(args.num_envs, bool)
+    app_seen = np.zeros((args.num_envs, 2), bool)
+    terminal_frames = 0
     for step in range(args.steps):
         act["action"] = np.clip(
             np.random.randn(*act["action"].shape).astype(np.float32) * 0.2,
             -1, 1)
+        prev = obs
         obs = env.step(act)
 
         for key in graph_keys:
@@ -109,11 +140,26 @@ def main():
                       f"!= {space[key].dtype}")
                 return 1
 
-        n_nodes.append(obs["graph_n_nodes"].astype(np.int64))
-        n_edges.append(obs["graph_n_edges"].astype(np.int64))
-        n_visible.append(obs["graph_node_vis"].sum(-1))
-        truncated += int((obs["graph_n_edges"] >= args.e_max).sum())
-        feat_seen |= (obs["graph_node_feat"] > 0).any(axis=(1, 2))
+        ent = obs["graph_node_ent"]
+        bbox = obs["graph_node_bbox"].astype(np.float32)
+        app = obs["graph_node_app"].astype(np.float32)
+        valid = ent != 0
+        seen = (bbox[..., 1] > bbox[..., 0]) & (bbox[..., 3] > bbox[..., 2])
+        n_nodes.append(valid.sum(-1))
+        n_edges.append((obs["graph_edge_rel"] != 0).sum(-1))
+        n_visible.append(seen.any(-1).sum(-1))
+        truncated += int(((obs["graph_edge_rel"] != 0).sum(-1) >= args.e_max).sum())
+        app_seen |= (np.abs(app).sum(-1) > 0).any(1)
+
+        if obs["is_last"].any():
+            terminal_frames += int(obs["is_last"].sum())
+            # A terminal frame re-emits the previous graph but keeps the true
+            # final image; identical images would mean final_observation was
+            # aliased to the post-reset render.
+            for i in np.nonzero(obs["is_last"])[0]:
+                if np.array_equal(obs["image_head"][i], prev["image_head"][i]):
+                    print(f"WARN step {step} env {i}: terminal image_head is "
+                          "identical to the previous frame")
 
     nodes = np.concatenate(n_nodes)
     edges = np.concatenate(n_edges)
@@ -127,19 +173,23 @@ def main():
     print(f"  facts      min {edges.min():3d}  mean {edges.mean():6.2f}  "
           f"max {edges.max():3d}   (cap {args.e_max})")
     print(f"  truncated frames: {truncated}")
+    print(f"  terminal frames:  {terminal_frames}")
+    print(f"  overflow drops:   {env._graph.overflow_drops}")
 
-    ok = True
     if nodes.max() <= 1:
         print("FAIL: no object vertices; the whitelist admitted nothing")
         ok = False
     if edges.max() == 0:
         print("FAIL: no facts emitted")
         ok = False
+    if not app_seen[:, 0].all():
+        print("FAIL: some envs never pooled a head-camera appearance")
+        ok = False
+    if not app_seen[:, 1].any():
+        print("WARN: no env ever pooled a hand-camera appearance; check the "
+              "wrist view sees an admitted entity")
     if truncated:
         print(f"WARN: {truncated} frames hit e_max; raise it or facts are lost")
-    if not feat_seen.all():
-        print("WARN: some envs never produced a nonzero appearance; check that "
-              "sensor_data[cam]['depth'] is populated")
     print("\nOK" if ok else "\nFAILED")
     env.close()
     return 0 if ok else 1

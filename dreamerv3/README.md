@@ -12,19 +12,26 @@ z_t ~ q(. | h_t, g_t, o_t)                      low-level posterior
 ```
 
 `G_t` is the task-relevant scene graph built from simulator state by
-`teemo_sim_probe` — vertices are the end effector plus whitelisted object
-instances, facts are `(i, rho, j)` triples carrying an absolute state and a
-temporal change. See [teemo_sim_probe/README.md](../teemo_sim_probe/README.md)
-for the graph contract.
+`scenegraph` — vertices are the end effector plus whitelisted object instances,
+facts are `(i, rho, j)` triples carrying an absolute state and a temporal
+change. See [scenegraph/README.md](../scenegraph/README.md) for the graph
+contract.
 
-Imagination never touches a graph: the semantic prior supplies `ĝ_t`, which
-conditions the low-level dynamics. The graph encoder and ground-truth graphs
-are needed only for the world-model loss.
+`teemo_sim_probe/` is the frozen predecessor: a self-contained offline demo of
+the single-camera, CNN-pooled, target-conditioned version, kept runnable for
+comparison. It also owns the mined assets both pipelines read. Nothing in the
+training path imports it.
+
+The graph posterior runs on every replay timestep during training. DINO runs
+only in the collector, so the appearance vectors in replay are fixed for the
+whole run. Imagination touches neither: the semantic prior supplies `ĝ_t`,
+which conditions the low-level dynamics.
 
 ## Prerequisites
 
 The runtime fails loud at episode start if the mined assets are missing. Both
-come from `teemo_sim_probe/tools/`:
+live in `teemo_sim_probe/configs/` and are mined by `teemo_sim_probe/tools/`,
+shared by both pipelines:
 
 * `teemo_sim_probe/configs/affordances.json`
 * `teemo_sim_probe/configs/subtask_whitelists/<subtask>_<target>.json` — one per
@@ -52,14 +59,15 @@ python -m dreamerv3.main \
 ```
 
 `mshab` must come **last**: it overrides `maniskill_rgb`'s `obs_mode` with
-`depth+segmentation` and sets `graph.enabled: true`. Reversed, you get `rgb` with
-the graph still enabled and no segmentation to build it from. Stacking on
-`maniskill_rgb` is what makes this run one knob away from the baseline arm —
-same `control_mode`, `image_size`, `train_ratio`, and logger.
+`rgb+segmentation`, drops `image_size` to 112, and sets `graph.enabled: true`.
+Reversed, you get 128px `rgb` with the graph still enabled and no segmentation
+to build it from. Stacking on `maniskill_rgb` is what makes this run one knob
+away from the baseline arm — same `control_mode`, `train_ratio`, and logger.
 
 Both presets set `jax.prealloc: false`, and it is not optional: SAPIEN renders
 through Vulkan on the same device, and a preallocating JAX starves it into
-`CUDA_ERROR_ILLEGAL_ADDRESS` partway through training.
+`CUDA_ERROR_ILLEGAL_ADDRESS` partway through training. DINO runs on that device
+too, in the collector only.
 
 To run the same preset **without** the semantic state, as the baseline arm:
 
@@ -69,7 +77,45 @@ To run the same preset **without** the semantic state, as the baseline arm:
 ```
 
 With no graph keys in the observation space the agent drops the semantic path
-entirely: no posterior, no decoder, no `sem*` losses.
+entirely: no posterior, no decoder, no graph losses.
+
+## Observation contract
+
+Two cameras, stored separately and never fused. Camera index 0 is
+`fetch_head`, 1 is `fetch_hand`.
+
+```
+image_head       [112,112,3]   uint8
+image_hand       [112,112,3]   uint8
+state            [D]           float32
+graph_node_ent   [11]          uint16
+graph_node_app   [11,2,384]    float16
+graph_node_bbox  [11,2,4]      float16
+graph_edge_*     [256]         uint8
+```
+
+Nothing derivable is stored. The model reads validity, per-camera visibility
+and per-camera appearance support back off the content:
+
+```
+valid            = graph_node_ent != 0
+camera_visible   = bbox[...,1] > bbox[...,0] and bbox[...,3] > bbox[...,2]
+appearance_known = abs(graph_node_app).sum(-1) > 0
+edge_valid       = graph_edge_rel != 0
+temp_mask        = graph_edge_temp != 0
+```
+
+**Visibility** is immediate and has no threshold: one segmentation pixel makes
+a node visible in that camera, and exclusive box maxima guarantee a one-pixel
+node still has positive extent. A node visible in *either* camera is globally
+visible; a node visible in neither stays a valid vertex for the rest of the
+episode (`k_persist: -1`).
+
+**Appearance** is frozen DINOv2 (`dinov2_vits14_reg`, 8x8 patches at 112px),
+pooled per camera under that camera's fractional patch coverage and cached per
+`(env, node, camera)`. A camera that loses sight of a node keeps its last
+embedding; a camera that has never seen it stays at exactly zero. The box does
+not persist — an unseen camera packs a zero box every frame.
 
 ## Configuration
 
@@ -80,10 +126,14 @@ entirely: no posterior, no decoder, no `sem*` losses.
 | `enabled` | `false` | emit graph observations at all |
 | `whitelist_dir` | `''` | mined whitelists; falls back to `thresholds.yaml` |
 | `profile` | `room_scale` | threshold profile for bin fallbacks |
-| `cameras` | `[fetch_head, fetch_hand]` | appearance is one pooled depth per camera, in this order |
-| `primary_camera` | `fetch_head` | camera whose masks feed the overlay renderer |
+| `cameras` | `[fetch_head, fetch_hand]` | camera order for the stored axis; the first also renders overlays |
 | `n_max` | `11` | vertex capacity including the ee node; must stay under 256 |
 | `e_max` | `256` | fact capacity per frame; overflow drops spatial before affordance before physical |
+| `k_persist` | `-1` | negative keeps a registered vertex for the whole episode |
+| `dino_model` | `dinov2_vits14_reg` | registers keep artifact tokens out of the patch features |
+| `dino_res` | `112` | must be a multiple of the patch size 14 |
+| `dino_weights` | `''` | local checkpoint; empty pulls from `torch.hub` |
+| `app_dim` | `384` | stored feature width, checked against the loaded model at startup |
 | `staleness_enabled` | `true` | retain object–object physical state for nodes that left the view |
 
 **`agent.graph`** — the semantic posterior.
@@ -91,50 +141,105 @@ entirely: no posterior, no decoder, no `sem*` losses.
 | key | default | meaning |
 |---|---|---|
 | `layers` | `2` | message-passing rounds |
-| `units` | `256` | node / fact width |
+| `units` | `256` | node / fact width — **the size preset's `.*\.units` wildcard overrides this** |
 | `embed` | `64` | embedding-table width |
+| `app_dim` | `384` | stored DINO width; must match `env.maniskill.graph.app_dim` |
+| `app` | `64` | learned projection width *per camera* |
+| `bbox` | `8` | learned box projection width per camera |
 | `reverse_edges` | `True` | add the reversed fact with a direction flag, so information reaches the ee node |
 | `condition_on_deter` | `True` | condition node and fact encodings on `h_t`, per the method. This puts the GNN inside the scan — set `False` to hoist it out and trade fidelity for speed |
 | `entity_vocab` | `64` | placeholder, overwritten from the mined whitelists at startup; do not set by hand |
 
-**`agent.dyn.rssm`** — `semstoch: 16`, `semclasses: 16`, `semlayers: 1`.
+A vertex is `[AppProj_c(a_c), BBoxProj_c(b_c) for each camera, EntityEmbed(id)]`
+= 2*64 + 2*8 + 64 = 208, projected to `units`. Each block is gated to zero when
+that camera has no embedding or no box, so a projection bias cannot stand in
+for missing data. There is no target input and no global visibility scalar: the
+per-camera boxes already carry it.
 
-**`agent.loss_scales`** — `semapp` (appearance, low by design: it is one scalar
-per camera), `semvis`, `semabs`, `semtemp`, `semdyn`, `semrep`.
+**`agent.dyn.rssm`** — `semstoch: 16`, `semclasses: 16`, `semlayers: 1`,
+`free_nats: 1.0`.
+
+**`agent.loss_scales`** — `node`, `relabs`, `reltemp`, `semdyn`, `semrep`.
+`node` is the mean of the appearance, box and visibility heads.
+
+Every width other than the four above resolves from the selected size preset.
+Nothing in the model hard-codes a channel count or token width, so `size1m`
+through `size400m` all build.
 
 ## What to watch
 
 | metric | reads as |
 |---|---|
-| `train/loss/semdyn`, `semrep` | semantic KL. Collapsing to the free-nats floor means `g` carries nothing — the lever is the low-level prior's dependence on `g`, not `beta` |
-| `train/semabs_acc`, `semtemp_acc` | relation-state reconstruction. Saturating immediately means the heads are trivial; narrow the node width |
-| `train/semvis_acc` | visibility reconstruction |
+| `train/loss/semdyn`, `semrep` | semantic KL, **after** the free-nats floor |
+| `train/semdyn_raw`, `semrep_raw` | the same KL before clipping. Below 1.0 means the semantic KL contributes no gradient; report it rather than changing `free_nats` mid-run |
+| `train/relabs_acc`, `reltemp_acc` | relation-state reconstruction. Saturating immediately means the heads are trivial; narrow the node width |
+| `train/node_app_var` | spread of the appearance target across vertices. Read this before `node_app_cos` |
+| `train/node_bbox_iou` | box reconstruction, current camera-visible entries only |
+| `train/node_vis_acc` | per-camera visibility. The hand camera sees few objects, so a constant-zero head scores well here — read it against the positive rate |
 | `train/sem_ent` | semantic posterior entropy |
-| `replay/ram_gb` | graph keys add roughly 2 KB/step on top of the RSSM carry |
+| `episode/log/graph_overflow_drops` | vertices the registry could not seat. Nonzero means retained nodes from an earlier subtask are displacing current ones |
+| `replay/ram_gb` | roughly 93 KiB/step, images and appearance dominating |
 
 ## Ablations
 
 All config-only, no code changes:
 
 ```bash
---agent.loss_scales.semabs 0 --agent.loss_scales.semtemp 0   # no relation supervision
+--agent.loss_scales.relabs 0 --agent.loss_scales.reltemp 0   # no relation supervision
 --agent.graph.reverse_edges False                            # one-directional message passing
 --agent.graph.condition_on_deter False                       # h_t-free encoder, GNN outside the scan
 --env.maniskill.graph.e_max 128                              # tighter fact budget
 ```
 
+## Known limitations
+
+Deliberate for this version, listed so they are not rediscovered as bugs:
+
+* **Cross-subtask retention.** `merge_persistent` runs after `apply_whitelist`,
+  so a vertex admitted under one MS-HAB subtask stays after the whitelist
+  rebinds and keeps its old entity key. With `k_persist: -1` and an append-only
+  registry it can consume slots out of `n_max` and displace a current-subtask
+  entity. Not fixed; watch `graph_overflow_drops`.
+* **Terminal graphs are one frame stale.** The vector env auto-resets inside
+  `step`, so the terminal transition re-emits the previous packed graph. Every
+  graph loss and both semantic KLs are masked at `is_last`; the image, state,
+  reward and low-level KL are not, because those *are* the true final values.
+  The stale graph still reaches the semantic posterior at that step.
+* **The graph decoder is not a semantic bottleneck.** It reconstructs from the
+  posterior node representations, which were built from the same appearance and
+  boxes, with the entity embedding present. It grounds the posterior trunk; it
+  does not force information through sampled `g_t`.
+* **Appearance at 112px is 8x8 patches.** Each patch covers 1/64 of the frame,
+  so a small object's embedding carries surrounding context. Empirical.
+* **Two live DINO models.** Training and evaluation each own one; a third is
+  built and discarded during observation-space discovery.
+* **Replay size.** ~93 KiB per transition, ~65 GB at `replay.size: 700000`.
+
 ## Verify first
 
 Neither the world model nor the graph encoder has been exercised on real
-rollouts. Run both suites before launching a long job:
+rollouts. Run the suite before launching a long job:
 
 ```bash
-python -m unittest discover teemo_sim_probe/tests
+python -m unittest discover scenegraph/tests
 ```
 
-That covers the graph contract everywhere, and — on a machine with jax — also
-`test_world_model.py` (agent construction against this config, RSSM losses,
-decoder heads, graph-free imagination) and `test_semantic_posterior.py`
-(permutation and padding invariance of the pooled token). Those two **skip
-silently without jax**, so confirm the run reports no skips in the training env
-before trusting them.
+That covers the graph contract, the frozen encoder's batching and pooling
+(`test_dino.py`, with the checkpoint mocked), the appearance cache and terminal
+guard (`test_appearance_cache.py`), and — on a machine with jax — agent
+construction across size presets, RSSM losses, decoder masks and terminal
+masking (`test_world_model.py`) plus pooling invariance and every derived mask
+(`test_semantic_posterior.py`). The jax and torch suites **skip silently**
+without those libraries, so confirm the run reports no skips in the training
+env before trusting them.
+
+Then the live path, which is the only thing that touches sensors:
+
+```bash
+python -m scenegraph.tools.smoke_graph_obs --num-envs 4 --steps 120
+```
+
+It checks named-camera shapes and dtypes, state parity with upstream
+flattening, that both cameras pool a nonzero appearance, that terminal frames
+carry the true final image rather than the post-reset render, and prints
+measured bytes per transition.

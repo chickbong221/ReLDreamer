@@ -46,9 +46,17 @@ Two node types:
 
 The vertex set is append-only per episode: an index is handed out on first
 sight and never reused or reordered, so a node that leaves the view keeps its
-position, its last pose, and its retained appearance. Each node carries
-`(feat, kappa, visible)` where `feat` is the mean masked depth per camera in
-metres, retained per camera while unseen.
+position and its last pose. Each node carries an entity id plus, per camera, a
+normalised bounding box and a frozen DINOv2 embedding.
+
+Visibility is per camera and immediate: one segmentation pixel makes a node
+visible in that camera, with no area threshold and no grace frames. A node
+visible in either camera is globally visible; one visible in neither stays a
+valid vertex for the rest of the episode. Boxes always describe the current
+frame and go to zero for a camera that cannot see the node. Embeddings persist:
+a camera that loses sight keeps its last one, and a camera that has never seen
+the node holds exactly zero. Retention lives in the adapter-level cache, not in
+the registry.
 
 A node appears only if (a) an ee link touched it during a successful demo
 and (b) it is listed in the active per-`(subtask, target)` whitelist.

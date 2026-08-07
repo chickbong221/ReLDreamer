@@ -55,16 +55,31 @@ class ManiSkill(embodied.Env):
 
     self._num_envs = int(num_envs)
     self._obs_mode = obs_mode
-    self._rgb_obs = 'rgb' in obs_mode
     self._num_frames = int(num_frames)
     self._device = 'cuda'
     self._is_eval = bool(is_eval)
     self._max_depth = float(max_depth)
     self._mshab_active = mshab_task is not None and mshab_task != 'none'
+    self._graph_cfg = dict(graph or {})
+    # Scene-graph path: one uint8 image per named camera, no depth. Mutually
+    # exclusive with the concatenated single-image path below.
+    self._named_cams = (
+        self._mshab_active
+        and 'rgb' in obs_mode
+        and bool(self._graph_cfg.get('enabled', False)))
+    self._camera_keys = {}
+    if self._named_cams:
+      if self._num_frames != 1:
+        raise ValueError(
+            f'graph path needs num_frames=1, got {self._num_frames}; the RSSM '
+            'supplies temporal context')
+      cams = list(self._graph_cfg.get('cameras') or ['fetch_head', 'fetch_hand'])
+      self._camera_keys = {
+          'image_' + cam.rsplit('_', 1)[-1]: cam for cam in cams}
+    self._rgb_obs = 'rgb' in obs_mode and not self._named_cams
     # MSHab depth path. 'depth+segmentation' takes the same wrappers as plain
     # 'depth'; the extra texture only feeds the scene graph.
     self._depth_obs = self._mshab_active and 'depth' in obs_mode
-    self._graph_cfg = dict(graph or {})
     # 0/None → keep the env's registered default; positive → override.
     # Eval gets its own horizon to mirror mshab/configs/sac_pick.yml
     # (train 100, eval 200) — falls back to max_episode_steps if unset.
@@ -155,19 +170,26 @@ class ManiSkill(embodied.Env):
       env = FlattenRGBDObservationWrapper(
           env, rgb=True, depth=False, state=True)
 
+    self._named_wrapper = None
+    if self._named_cams:
+      from embodied.envs.obs_wrappers import NamedCameraRGBWrapper
+      env = NamedCameraRGBWrapper(env, self._camera_keys)
+      self._named_wrapper = env
+
     # MSHab depth path: apply the same per-env wrappers as
     # mshab/mshab/envs/make.py (minus FrameStack, since DreamerV3's RSSM
     # supplies temporal context). FetchDepthObservationWrapper produces
     # {state, fetch_head_depth, fetch_hand_depth} with the depth tensors
-    # permuted to channel-first. FetchActionWrapper zeros the two head joints
-    # (stationary_head=True matches sac_pick.yml).
+    # permuted to channel-first.
     if self._depth_obs:
-      from mshab.envs.wrappers import (
-          FetchActionWrapper,
-          FetchDepthObservationWrapper,
-      )
+      from mshab.envs.wrappers import FetchDepthObservationWrapper
       env = FetchDepthObservationWrapper(
           env, cat_state=True, cat_pixels=False)
+
+    # stationary_head=True matches sac_pick.yml. Applies to every MS-HAB
+    # observation mode, not just depth.
+    if self._mshab_active:
+      from mshab.envs.wrappers import FetchActionWrapper
       env = FetchActionWrapper(
           env,
           stationary_base=False,
@@ -185,13 +207,13 @@ class ManiSkill(embodied.Env):
 
     # ignore_terminations=True: episodes end only on truncation.
     # record_metrics=True: populates info['final_info']['episode'].
-    vec_kwargs = dict(ignore_terminations=True, record_metrics=True)
-    if self._mshab_active and self._max_episode_steps_override is not None:
-      # Match SAC: VectorRecordEpisodeStatistics is built around this horizon.
-      vec_kwargs['max_episode_steps'] = self._max_episode_steps_override
-    self._env = ManiSkillVectorEnv(env, **vec_kwargs)
+    # The horizon reaches the env through make_kwargs above; ManiSkillVectorEnv
+    # forwards **kwargs to gym.make only when env is a string, so passing it
+    # here would be silently dropped.
+    self._env = ManiSkillVectorEnv(
+        env, ignore_terminations=True, record_metrics=True)
 
-    from teemo_sim_probe.adapters.graph_obs import build_graph_obs
+    from scenegraph.adapters.graph_obs import build_graph_obs
     self._graph = build_graph_obs(
         self._env, self._graph_cfg, num_envs=self._num_envs)
 
@@ -247,6 +269,12 @@ class ManiSkill(embodied.Env):
           self._img_c * self._num_frames,
       )
 
+    if self._named_cams:
+      shapes = {tuple(obs[k].shape[1:]) for k in self._camera_keys}
+      if len(shapes) != 1:
+        raise ValueError(f'named cameras disagree on shape: {shapes}')
+      self._named_shape = shapes.pop()
+
     if self._depth_obs:
       # FetchDepthObservationWrapper permutes to [N, 1, H, W].
       d = obs['fetch_head_depth']
@@ -283,6 +311,12 @@ class ManiSkill(embodied.Env):
     }
     if self._rgb_obs:
       spaces['image'] = elements.Space(np.uint8, self._img_shape)
+    for key in self._camera_keys:
+      spaces[key] = elements.Space(np.uint8, self._named_shape)
+    if self._graph is not None:
+      # Registry overflow means a retained vertex displaced a current one.
+      # log/ keeps it out of the world model; train.py reads it at is_last.
+      spaces['log/graph_overflow_drops'] = elements.Space(np.float32, ())
     if self._depth_obs:
       # Store raw millimetres as uint16 to match MSHab's SAC replay buffer
       # (mshab/mshab/agents/sac/replay.py). This is 4x smaller than float32
@@ -475,6 +509,10 @@ class ManiSkill(embodied.Env):
     }
     if self._rgb_obs:
       out['image'] = self._stack_frames(obs)
+    for key in self._camera_keys:
+      out[key] = obs[key].cpu().numpy().astype(np.uint8)
+    if self._graph is not None:
+      out['log/graph_overflow_drops'] = self._graph.overflow_drops
     if self._depth_obs:
       depth_head, depth_hand = self._extract_depth(obs)
       out['depth_head'] = depth_head
