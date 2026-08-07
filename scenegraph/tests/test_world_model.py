@@ -159,8 +159,8 @@ class AgentConstructionTests(unittest.TestCase):
 
     def test_both_cameras_reach_the_encoder_and_decoder(self):
         agent = self._agent()
-        self.assertEqual(sorted(agent.enc.imgkeys), ['image_head', 'image_hand'])
-        self.assertEqual(sorted(agent.dec.imgkeys), ['image_head', 'image_hand'])
+        self.assertEqual(sorted(agent.enc.imgkeys), ['image_hand', 'image_head'])
+        self.assertEqual(sorted(agent.dec.imgkeys), ['image_hand', 'image_head'])
 
     def test_scales_cover_every_graph_loss(self):
         agent = self._agent()

@@ -455,7 +455,7 @@ class AdmitGateTests(unittest.TestCase):
         builder.selector = type("_S", (), {"whitelist": wl})()
 
         with mock.patch(
-            "teemo_sim_probe.core.graph_builder.entity_match_key",
+            "scenegraph.core.graph_builder.entity_match_key",
             side_effect=entity_match_key,
         ) as spy:
             self.assertTrue(builder._entity_admitted(link))

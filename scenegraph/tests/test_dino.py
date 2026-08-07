@@ -35,13 +35,14 @@ class _StubViT(torch.nn.Module if torch is not None else object):
     def forward_features(self, x):
         self.seen.append(tuple(x.shape))
         B = x.shape[0]
-        # Row r of every image is filled with r, so pooling is checkable.
-        patches = torch.arange(PATCHES, dtype=torch.float32)
-        patches = patches[None, :, None].expand(B, PATCHES, DIM).clone()
+        # Patch r is ones with dimension r raised: patches differ in direction,
+        # not only in magnitude, which L2 normalisation would erase.
+        patches = torch.ones(PATCHES, DIM)
+        patches[torch.arange(PATCHES), torch.arange(PATCHES)] = 2.0
         return {
             'x_norm_clstoken': torch.full((B, DIM), -1.0),
             'x_norm_regtokens': torch.full((B, REGISTERS, DIM), -2.0),
-            'x_norm_patchtokens': patches,
+            'x_norm_patchtokens': patches[None].expand(B, PATCHES, DIM).clone(),
         }
 
 
