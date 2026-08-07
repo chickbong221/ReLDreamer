@@ -60,7 +60,11 @@ class NamedCameraRGBWrapper(FlattenRGBDObservationWrapper):
             raise KeyError(
                 f'cameras {missing} are not rendered; available: '
                 f'{sorted(sensors)}')
-        self.raw_obs = obs
+        # Upstream's observation() pops sensor_data out of this dict in place,
+        # so the stash gets its own copy of the levels it removes. Tensors are
+        # shared, not copied.
+        self.raw_obs = {**obs, 'sensor_data': {
+            cam: dict(fields) for cam, fields in sensors.items()}}
         # Cloned, not referenced: the vector env stores this dict as
         # final_observation and then re-renders into the sensor buffers on
         # auto-reset, which would overwrite a view.

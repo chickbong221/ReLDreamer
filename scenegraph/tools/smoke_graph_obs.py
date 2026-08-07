@@ -47,10 +47,11 @@ def _report_state_parity(env):
     from mani_skill.utils.wrappers import FlattenRGBDObservationWrapper
 
     wrapper = env._named_wrapper
-    raw = wrapper.raw_obs
-    ours = wrapper.observation(raw)["state"].cpu().numpy()
+    # Each call gets its own top-level copy: both pop sensor_data out of the
+    # dict they are handed.
+    ours = wrapper.observation(dict(wrapper.raw_obs))["state"].cpu().numpy()
     upstream = FlattenRGBDObservationWrapper.observation(
-        wrapper, raw)["state"].cpu().numpy()
+        wrapper, dict(wrapper.raw_obs))["state"].cpu().numpy()
     same = np.array_equal(ours, upstream)
     print(f"  state width {ours.shape[-1]}, parity with upstream: {same}")
     return same
