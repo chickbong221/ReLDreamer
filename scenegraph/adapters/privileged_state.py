@@ -298,8 +298,8 @@ def end_frame_cache() -> None:
     _FRAME_CACHE = None
 
 
-def clear_privileged_state_caches(env_or_scene) -> None:
-    """Drop scene-attached TEEMO caches after a simulator reconfiguration."""
+def _cache_dicts(env_or_scene) -> List[dict]:
+    """The ``__dict__``s carrying the scene-attached caches."""
     candidates = []
     base = getattr(env_or_scene, "unwrapped", env_or_scene)
     scene = getattr(base, "scene", None)
@@ -314,12 +314,46 @@ def clear_privileged_state_caches(env_or_scene) -> None:
     if robot_scene is not None and robot_scene not in candidates:
         candidates.append(robot_scene)
 
-    for candidate in candidates:
-        d = getattr(candidate, "__dict__", None)
-        if d is None:
-            continue
+    return [
+        d for d in (getattr(c, "__dict__", None) for c in candidates)
+        if d is not None
+    ]
+
+
+def clear_privileged_state_caches(env_or_scene) -> None:
+    """Drop scene-attached TEEMO caches after a simulator reconfiguration."""
+    for d in _cache_dicts(env_or_scene):
         for key in _SCENE_CACHE_KEYS:
             d.pop(key, None)
+
+
+def scene_cache_size(env_or_scene) -> int:
+    """Entries in the largest scene-attached cache."""
+    return max(
+        (
+            len(d[key])
+            for d in _cache_dicts(env_or_scene)
+            for key in _SCENE_CACHE_KEYS
+            if key in d
+        ),
+        default=0,
+    )
+
+
+def purge_scene_caches(env_or_scene, cap: int) -> int:
+    """Drop every scene cache once the largest passes ``cap``; return its size.
+
+    These key on ``id(entity)`` and store the entity beside the value, so each
+    stale key pins a dead actor alive. MS-HAB recreates merged actors on
+    partial reset, and those views never enter ``scene.actors`` -- which is all
+    the reconfiguration signature watches -- so nothing else ever evicts them.
+    Every one is memoization behind an identity check on read, so dropping an
+    entry costs one recompute and nothing else.
+    """
+    size = scene_cache_size(env_or_scene)
+    if size > cap:
+        clear_privileged_state_caches(env_or_scene)
+    return size
 
 
 def _frame_np(key, fn):

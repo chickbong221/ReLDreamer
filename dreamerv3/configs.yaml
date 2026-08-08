@@ -291,7 +291,7 @@ maniskill_rgb:
     prealloc: false     # critical: ManiSkill and JAX share GPU
   logger:
     outputs: [wandb]
-    wandb_project: maniskill
+    wandb_project: RelRL
     wandb_entity: letuanhf-hanoi-university-of-science-and-technology        # set via --set logger.wandb_entity=your-entity
     wandb_group: na
     wandb_name: 'dreamerv3-UnitreeG1TransportBox-v1-rgb-42-walltime_efficient'          # set via --set logger.wandb_name=dreamerv3-PickCube-v1-rgb-42-...
@@ -305,50 +305,14 @@ maniskill_rgb:
       control_mode: pd_joint_delta_pos
       num_frames: 1          # no frame stacking → 3 channels input to CNN
 
-maniskill_state:
-  <<: *size100m
-  run:
-    envs: 1
-    eval_envs: 4
-    eval_eps: 1
-    eval_freq: 50000
-    eval_video_freq: 1000000
-    train_ratio: 512.0   # higher than rgb: no CNN encoder cost
-    steps: 2e6
-    log_every: 1500
-    save_every: 50000
-    report_every: 7200
-  batch_size: 16
-  batch_length: 64
-  replay_context: 1
-  replay:
-    size: 1000000
-    online: true
-    fracs: {uniform: 1.0, priority: 0.0, recency: 0.0}
-  jax:
-    prealloc: false     # critical: ManiSkill and JAX share GPU
-  logger:
-    outputs: [wandb]
-    wandb_project: maniskill
-    wandb_entity: letuanhf-hanoi-university-of-science-and-technology
-    wandb_group: na
-    wandb_name: 'dreamerv3-maniskill-state'
-  env:
-    maniskill:
-      use_seed: true
-      num_envs: 189
-      obs_mode: state
-      sim_backend: gpu
-      control_mode: pd_joint_delta_pos
-
 mshab:
-  <<: *size25m
+  <<: *size100m
   batch_size: 32
   jax:
     prealloc: false     # critical: ManiSkill and JAX share GPU
   logger:
     outputs: [wandb]   # jsonl too: plot.py reads it, and it survives a lost wandb session
-    wandb_project: maniskill
+    wandb_project: RelRL
     wandb_entity: letuanhf-hanoi-university-of-science-and-technology
     wandb_group: na
     wandb_name: dreamerv3-mshab   # override per run; otherwise maniskill_rgb's UnitreeG1 name leaks through
@@ -368,7 +332,7 @@ mshab:
       frame_stack: 1                # no MSHab FrameStack; RSSM provides temporal context
       graph.enabled: true
   replay:
-    size: 700000
+    size: 300000
 
 behavior1k:
   <<: *size100m
@@ -377,7 +341,7 @@ behavior1k:
     prealloc: false       # Isaac Sim and JAX share the GPU
   logger:
     outputs: [wandb]
-    wandb_project: behavior1k
+    wandb_project: RelRL
     wandb_entity: letuanhf-hanoi-university-of-science-and-technology
     wandb_group: na
   run:

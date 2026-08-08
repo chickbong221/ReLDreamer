@@ -178,6 +178,7 @@ through `size400m` all build.
 | `train/node_vis_acc` | per-camera visibility. The hand camera sees few objects, so a constant-zero head scores well here — read it against the positive rate |
 | `train/sem_ent` | semantic posterior entropy |
 | `episode/log/graph_overflow_drops` | vertices the registry could not seat. Nonzero means retained nodes from an earlier subtask are displacing current ones |
+| `episode/log/graph_cache_entries` | entries held by the caches that outlive an episode. A sawtooth under the cap is healthy; a climb that never levels off is a leak, and `GraphObsBuilder.cache_stats()` names which container |
 | `replay/ram_gb` | roughly 93 KiB/step, images and appearance dominating |
 
 ## Ablations

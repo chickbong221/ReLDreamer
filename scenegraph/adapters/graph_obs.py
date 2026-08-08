@@ -25,6 +25,7 @@ from .privileged_state import (
     begin_frame_cache,
     clear_privileged_state_caches,
     end_frame_cache,
+    purge_scene_caches,
 )
 from .graph_pack import GRAPH_KEYS, pack_graph
 from .graph_vocab import GraphVocab, build_graph_vocab
@@ -36,6 +37,12 @@ from ..core.graph_builder import GraphBuilder
 # names, so stale entries accumulate (~122 KB each). Queries rebuild lazily on
 # the next contact lookup, so clearing past this cap is always safe.
 _CONTACT_QUERY_CAP = 2048
+
+# The privileged-state caches key on id(entity) and hold the entity, so a stale
+# key pins a dead actor. Their legitimate size is entities x envs; the scene
+# signature only watches scene.actors, which recreated merged actors never
+# enter, so this cap is the only thing that bounds them.
+_SCENE_CACHE_CAP = 8192
 
 _DTYPES: Dict[str, np.dtype] = {
     "graph_node_ent": np.uint16,
@@ -224,6 +231,17 @@ class GraphObsBuilder:
         stats["overflow_drops"] = int(self.overflow_drops.sum())
         return stats
 
+    @property
+    def cache_entries(self) -> int:
+        """Live entries across every container that outlives an episode.
+
+        A rise here that does not level off is a leak; ``cache_stats`` then
+        names which container.
+        """
+        stats = self.cache_stats()
+        stats.pop("overflow_drops", None)
+        return int(sum(stats.values()))
+
     def _zero_pack(self) -> Dict[str, np.ndarray]:
         return {
             k: np.zeros(shape, dtype=_DTYPES[k])
@@ -300,41 +318,43 @@ class GraphObsBuilder:
             out[cam] = buf.numpy()
         return out
 
-    def _read_rgb(self, active: List[int]) -> torch.Tensor:
-        """``[len(active), C, H, W, 3]`` uint8, left on the render device."""
+    def _read_rgb(self) -> torch.Tensor:
+        """``[num_envs, C, H, W, 3]`` uint8, left on the render device."""
         sensor_data = self._sensor_data()
-        rgb = sensor_data[self.cameras[0]]["rgb"]
-        index = torch.as_tensor(active, dtype=torch.long, device=rgb.device)
-        views = [
-            sensor_data[cam]["rgb"].index_select(0, index)
-            for cam in self.cameras
-        ]
-        return torch.stack(views, 1)
+        return torch.stack(
+            [sensor_data[cam]["rgb"] for cam in self.cameras], 1)
 
     def _pool_appearance(self, active: List[int], graphs: Dict[int, Any]) -> None:
         """Pool this frame's DINO features onto every node, then fall back to
-        the per-camera cache for cameras that lost sight of it."""
+        the per-camera cache for cameras that lost sight of it.
+
+        Every buffer is sized at ``num_envs`` x ``n_max`` rather than cut to
+        the active set and the widest graph. Those two both move from step to
+        step, and a shape that moves hands the caching allocator a fresh block
+        size per combination, which it keeps rather than returning to the OS.
+        Terminal envs still pool nothing: only ``active`` writes a cache row.
+        """
         C, D, P = self.n_cams, self.app_dim, self.patch_grid ** 2
-        widest = max((len(graphs[i].nodes) for i in active), default=0)
-        if not widest:
+        if not any(graphs[i].nodes for i in active):
             return
 
         pooled = None
         if self.dino is not None:
             weights = torch.zeros(
-                (len(active), C, widest, P), dtype=torch.float32)
-            for slot, env_idx in enumerate(active):
-                for j, node in enumerate(graphs[env_idx].nodes):
+                (self.num_envs, C, self.n_max, P), dtype=torch.float32)
+            for env_idx in active:
+                for j, node in enumerate(graphs[env_idx].nodes[:self.n_max]):
                     if node.patch_weights is not None:
-                        weights[slot, :, j] = torch.from_numpy(node.patch_weights)
-            tokens = self.dino.patch_tokens(self._read_rgb(active))
+                        weights[env_idx, :, j] = torch.from_numpy(
+                            node.patch_weights)
+            tokens = self.dino.patch_tokens(self._read_rgb())
             pooled = self.dino.pool(tokens, weights.to(self.dino.device))
-            # [A, C, N, D] -> [A, N, C, D] to match the packed layout.
+            # [B, C, N, D] -> [B, N, C, D] to match the packed layout.
             pooled = pooled.permute(0, 2, 1, 3).cpu().numpy()
 
-        for slot, env_idx in enumerate(active):
+        for env_idx in active:
             cache = self._appearance[env_idx]
-            for j, node in enumerate(graphs[env_idx].nodes):
+            for j, node in enumerate(graphs[env_idx].nodes[:self.n_max]):
                 if node.bbox is None:
                     node.bbox = np.zeros((C, 4), np.float32)
                 app = cache.get(node.node_id)
@@ -342,7 +362,7 @@ class GraphObsBuilder:
                     app = np.zeros((C, D), np.float32)
                     cache[node.node_id] = app
                 if pooled is not None:
-                    current = pooled[slot, j]
+                    current = pooled[env_idx, j]
                     seen = np.abs(current).sum(-1) > 0
                     app[seen] = current[seen]
                 node.appearance = app.copy()
@@ -372,7 +392,14 @@ class GraphObsBuilder:
         clear_privileged_state_caches(self.env)
         self._scene_cache_signature = sig
 
-    def _purge_contact_queries(self) -> None:
+    def _purge_caches(self) -> None:
+        """Cap the scene-attached containers that outlive an episode.
+
+        Nothing in the builder survives ``reset_episode``; these live on the
+        simulator's scene and only a size cap bounds them. Both rebuild lazily
+        on the next lookup.
+        """
+        purge_scene_caches(self.env, _SCENE_CACHE_CAP)
         scene = getattr(self.env.unwrapped, "scene", None)
         queries = getattr(scene, "pairwise_contact_queries", None)
         if queries is None or len(queries) <= _CONTACT_QUERY_CAP:
@@ -416,7 +443,7 @@ class GraphObsBuilder:
         graphs: Dict[int, Any] = {}
         if active:
             segs = self._read_segmentation()
-            self._purge_contact_queries()
+            self._purge_caches()
             begin_frame_cache(getattr(self.env.unwrapped, "scene", None))
             try:
                 for i in active:

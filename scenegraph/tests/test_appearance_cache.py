@@ -42,6 +42,7 @@ class _StubDino:
     def __init__(self):
         self.value = np.array([1.0, 2.0])
         self.calls = 0
+        self.shapes = []
 
     def patch_tokens(self, rgb):
         self.calls += 1
@@ -49,6 +50,7 @@ class _StubDino:
 
     def pool(self, tokens, weights):
         w = np.asarray(weights)
+        self.shapes.append(tuple(w.shape))
         support = w.sum(-1)                       # [A, C, N]
         out = np.zeros((*support.shape, DIM), np.float32)
         for c in range(support.shape[1]):
@@ -63,10 +65,10 @@ class _Builder(GraphObsBuilder):
     def _read_segmentation(self):
         return {cam: [None] * self.num_envs for cam in self.cameras}
 
-    def _read_rgb(self, active):
-        return np.zeros((len(active), self.n_cams, 1))
+    def _read_rgb(self):
+        return np.zeros((self.num_envs, self.n_cams, 1))
 
-    def _purge_contact_queries(self):
+    def _purge_caches(self):
         pass
 
     def _refresh_scene_caches_if_needed(self):
@@ -204,6 +206,25 @@ class AppearanceCacheTests(unittest.TestCase):
         self._pool(b, {0: _graph(node)})
         self.assertEqual(node.bbox.shape, (CAMS, 4))
         self.assertTrue((node.bbox == 0).all())
+
+    def test_a_node_pools_into_its_own_environment_row(self):
+        # Buffers are indexed by env, not by position in the active list, so
+        # an env that pools alone still reads back its own row.
+        b = _builder(num_envs=2)
+        node = _node("a", seen=(0,))
+        self._pool(b, {1: _graph(node)})
+        np.testing.assert_allclose(node.appearance[0], [1.0] * DIM)
+
+    def test_the_pooling_shape_never_moves(self):
+        # A buffer cut to the active set and the widest graph hands the caching
+        # allocator a fresh block size per combination, which it keeps.
+        b = _builder(num_envs=3)
+        self._pool(b, {0: _graph(_node("a", seen=(0,)))})
+        self._pool(b, {
+            1: _graph(_node("b", seen=(0,)), _node("c", seen=(1,))),
+            2: _graph(_node("d", seen=(0, 1))),
+        })
+        self.assertEqual(set(b.dino.shapes), {(3, CAMS, b.n_max, PATCHES)})
 
 
 @unittest.skipIf(torch is None, 'torch is not installed')
