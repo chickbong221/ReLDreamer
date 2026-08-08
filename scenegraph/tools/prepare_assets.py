@@ -92,7 +92,11 @@ def _run(cmd: List[str], dry_run: bool) -> None:
     print('  $ ' + ' '.join(str(c) for c in cmd))
     if dry_run:
         return
-    code = subprocess.call([sys.executable, '-m', *cmd], cwd=REPO)
+    # -u because collection runs for hours and its output is usually piped to
+    # a log: Python block-buffers stdout at 8KB when it is not a terminal, so
+    # progress would arrive in bursts and anything still buffered when the
+    # process is killed would never be written at all.
+    code = subprocess.call([sys.executable, '-u', '-m', *cmd], cwd=REPO)
     if code != 0:
         raise SystemExit(f'[prep] stage failed with exit code {code}')
 
@@ -109,7 +113,7 @@ def main(argv=None) -> int:
                              'defaults to $MS_ASSET_DIR/data then ~/.maniskill/data')
     parser.add_argument('--robot', default='fetch')
     parser.add_argument('--n-success', type=int, default=30)
-    parser.add_argument('--num-envs', type=int, default=8)
+    parser.add_argument('--num-envs', type=int, default=15)
     parser.add_argument('--model', default='t5-base')
     parser.add_argument('--clean', action='store_true')
     parser.add_argument('--dry-run', action='store_true')
