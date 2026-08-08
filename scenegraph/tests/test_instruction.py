@@ -12,7 +12,9 @@ from types import SimpleNamespace
 import numpy as np
 
 from embodied.envs.instruction import InstructionReader, InstructionTable
-from embodied.envs.maniskill import _plan_objects, _use_named_cameras
+from embodied.envs.maniskill import (
+    _holdout_set, _plan_objects, _use_named_cameras,
+)
 
 
 def _table(tmp, keys, dim=4, model='stub'):
@@ -131,6 +133,19 @@ class ReaderTests(unittest.TestCase):
 
 
 class HoldoutTests(unittest.TestCase):
+
+    def test_no_holdout_is_the_empty_set(self):
+        # elements.Config rejects an empty list, so the no-holdout default has
+        # to be expressible as a string.
+        self.assertEqual(_holdout_set(''), set())
+        self.assertEqual(_holdout_set(None), set())
+
+    def test_a_comma_separated_string_splits_and_strips(self):
+        self.assertEqual(
+            _holdout_set('024_bowl, 013_apple'), {'024_bowl', '013_apple'})
+
+    def test_a_sequence_still_works_for_callers_that_pass_one(self):
+        self.assertEqual(_holdout_set(['024_bowl']), {'024_bowl'})
 
     def test_plan_objects_are_canonical_not_per_instance(self):
         # The holdout list, the whitelist filenames and the instruction keys

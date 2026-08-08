@@ -25,6 +25,8 @@ except ImportError:  # pragma: no cover - jax is optional for the sim tests
     jax = None
 
 if jax is not None:
+    import embodied.jax.nets as nn
+
     from dreamerv3.agent import Agent
     from dreamerv3.graph_encoder import GraphDecoder, unpack
     from dreamerv3.rssm import Decoder, Encoder, RSSM
@@ -347,7 +349,9 @@ class WorldModelTests(unittest.TestCase):
             losses, _ = self.dec(nodes, self.graph, self.live)
             return sum(v.sum() for v in losses.values())
         pure = nj.pure(fn)
-        nodes = jnp.zeros((B, T, N, 16), jnp.float32)
+        # The compute dtype, not float32: the decoder's layers assert on it,
+        # and _loss() hands the real path nodes that are already cast.
+        nodes = jnp.zeros((B, T, N, 16), nn.COMPUTE_DTYPE)
         params, _ = pure({}, nodes, seed=jax.random.PRNGKey(0),
                          create=True, modify=True)
         grads = jax.grad(

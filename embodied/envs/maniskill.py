@@ -19,6 +19,17 @@ import embodied
 import elements
 
 
+def _holdout_set(value):
+  """Canonical object keys split off for the few-shot phase.
+
+  Comma-separated rather than a list because elements.Config rejects an empty
+  list outright -- it cannot infer the element type of one -- and the common
+  case is no holdout at all.
+  """
+  parts = value.split(',') if isinstance(value, str) else list(value or ())
+  return {p.strip() for p in map(str, parts) if p.strip()}
+
+
 def _use_named_cameras(setting, graph_cfg):
   """Whether to emit one image key per camera instead of one concatenated one.
 
@@ -72,7 +83,7 @@ class ManiSkill(embodied.Env):
       mshab_eval_split=None,
       mshab_obj='all',
       mshab_num_build_configs=0,
-      mshab_holdout_objs=(),
+      mshab_holdout_objs='',
       mshab_holdout_mode='auto',
       named_cameras='auto',
       instruction_table='',
@@ -176,7 +187,7 @@ class ManiSkill(embodied.Env):
       # 'auto' pretrains on the seen categories and evaluates on the held-out
       # ones; the finetune env trains on 'only', which is why the mode is
       # separate from is_eval.
-      holdout = {str(o) for o in (mshab_holdout_objs or ())}
+      holdout = _holdout_set(mshab_holdout_objs)
       if holdout:
         mode = str(mshab_holdout_mode or 'auto')
         if mode == 'auto':

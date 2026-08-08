@@ -204,11 +204,13 @@ Every method in a comparison loads the same table. The encoder conditions on
 the vector and the policy reads it back out of the latent; the decoder does not
 reconstruct it, since it is constant within an episode.
 
-`mshab_holdout_objs` splits object categories for the few-shot protocol:
-training excludes them, the finetune env (`mshab_holdout_mode: only`) and eval
-see only them. A frozen language encoder is what makes the held-out rows
-meaningful — they are already positioned relative to the categories training
-saw, which a learned embedding table cannot do.
+`mshab_holdout_objs` — comma-separated canonical keys, e.g.
+`--env.maniskill.mshab_holdout_objs 024_bowl,013_apple` — splits object
+categories for the few-shot protocol: training excludes them, the finetune env
+(`mshab_holdout_mode: only`) and eval see only them. A frozen language encoder
+is what makes the held-out rows meaningful: they are already positioned
+relative to the categories training saw, which a learned embedding table
+cannot do.
 
 ## Ablations
 

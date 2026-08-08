@@ -52,7 +52,7 @@ defaults:
       mshab_eval_split: val
       mshab_obj: all
       mshab_num_build_configs: 63  # 0 → use all; positive → first N distinct build configs by name, all their plans, train split only. 63 = the whole train split
-      mshab_holdout_objs: []       # canonical keys (e.g. 024_bowl) split off for the few-shot phase
+      mshab_holdout_objs: ''       # comma-separated canonical keys (e.g. 024_bowl,013_apple) split off for the few-shot phase
       mshab_holdout_mode: auto     # auto → exclude while training, only while evaluating; set 'only' for the finetune env
       named_cameras: auto          # auto → follow graph.enabled; 'true' keeps a graph-free baseline on the same pixels
       instruction_table: ''        # .npz from scenegraph/tools/build_instruction_embeddings.py; '' emits no instruction key
