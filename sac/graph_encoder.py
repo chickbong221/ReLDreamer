@@ -18,7 +18,7 @@ from typing import Dict, List
 import torch
 import torch.nn as nn
 
-from teemo_sim_probe.adapters.graph_pack import GRAPH_KEYS as GRAPH_OBS_KEYS
+from scenegraph.adapters.graph_pack import GRAPH_KEYS as GRAPH_OBS_KEYS
 
 
 def _mlp(dims: List[int], last_act: bool = False) -> nn.Sequential:

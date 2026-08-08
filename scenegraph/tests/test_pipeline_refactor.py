@@ -11,9 +11,7 @@ from scenegraph.core.node_builder import build_nodes
 from scenegraph.core.schema import Edge, Graph, Node
 from scenegraph.core.temporal_buffer import TemporalBuffer
 from scenegraph.core.entity_identity import stable_entity_key
-# The mining tool stays in teemo_sim_probe: it produces the whitelist assets
-# both pipelines read, so both suites must test against the same builder.
-from teemo_sim_probe.tools.build_subtask_whitelists import _WhitelistBuilder
+from scenegraph.tools.build_subtask_whitelists import _WhitelistBuilder
 
 
 class OneHopWhitelistTests(unittest.TestCase):

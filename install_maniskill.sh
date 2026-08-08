@@ -82,6 +82,7 @@ python -m pip uninstall -y \
   opencv-contrib-python \
   opencv-python-headless \
   opencv-contrib-python-headless
+pip install "transformers>=4.30" sentencepiece
 
 python -m pip install --no-cache-dir opencv-python-headless
 echo ""

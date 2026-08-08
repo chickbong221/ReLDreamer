@@ -25,9 +25,9 @@ support:
   min_vertical_force_ratio: 0.5
 
 affordances:
-  # Mined assets live with the mining tools in teemo_sim_probe/. Paths resolve
-  # relative to this file.
-  asset_path: ../../teemo_sim_probe/configs/affordances.json
+  # Mined by scenegraph/tools/build_affordances.py into this directory. Paths
+  # resolve relative to this file.
+  asset_path: affordances.json
   # EE-object affordance compatibility is always enabled. Obj-obj contact /
   # contain compatibility remains useful for tool-style interactions (e.g. a
   # knife contacting food). Obj-obj support-fit is useful for place-style
@@ -66,10 +66,10 @@ compat_norm:
 
 # One per-(subtask,target) whitelist is loaded from this directory and the run
 # fails loud if no file matches. Mine these via
-# teemo_sim_probe/tools/build_subtask_whitelists.py. Overridden by
+# scenegraph/tools/build_subtask_whitelists.py. Overridden by
 # env.maniskill.graph.whitelist_dir when that is set.
 whitelists:
-  dir: ../../teemo_sim_probe/configs/subtask_whitelists
+  dir: subtask_whitelists
 
 selection:
   n_max: 11                         # vertex capacity including the ee node

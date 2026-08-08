@@ -19,6 +19,39 @@ import embodied
 import elements
 
 
+def _use_named_cameras(setting, graph_cfg):
+  """Whether to emit one image key per camera instead of one concatenated one.
+
+  'auto' follows the graph so older configs are unchanged. Pinning it True is
+  what lets a graph-free baseline see exactly the pixels the graph run sees,
+  instead of silently switching to the concatenated single-image encoder.
+  """
+  if isinstance(setting, str):
+    text = setting.strip().lower()
+    if text == 'auto':
+      return bool(graph_cfg.get('enabled', False))
+    if text in ('true', 'yes', '1'):
+      return True
+    if text in ('false', 'no', '0'):
+      return False
+    raise ValueError(
+        f'named_cameras must be auto, true or false; got {setting!r}')
+  return bool(setting)
+
+
+def _plan_objects(plan):
+  """Canonical object keys a task plan's subtasks name."""
+  from scenegraph.core.affordance import canonical_affordance_key
+  out = set()
+  for entry in getattr(plan, 'subtasks', []) or []:
+    obj_id = getattr(entry, 'obj_id', None)
+    if obj_id:
+      canonical = canonical_affordance_key(str(obj_id))
+      if canonical:
+        out.add(str(canonical))
+  return out
+
+
 class ManiSkill(embodied.Env):
 
   def __init__(
@@ -39,6 +72,10 @@ class ManiSkill(embodied.Env):
       mshab_eval_split=None,
       mshab_obj='all',
       mshab_num_build_configs=0,
+      mshab_holdout_objs=(),
+      mshab_holdout_mode='auto',
+      named_cameras='auto',
+      instruction_table='',
       nonprivileged_obs=False,
       max_depth=20000.0,
       max_episode_steps=None,
@@ -61,18 +98,22 @@ class ManiSkill(embodied.Env):
     self._max_depth = float(max_depth)
     self._mshab_active = mshab_task is not None and mshab_task != 'none'
     self._graph_cfg = dict(graph or {})
-    # Scene-graph path: one uint8 image per named camera, no depth. Mutually
-    # exclusive with the concatenated single-image path below.
+    # One uint8 image per named camera, no depth. Mutually exclusive with the
+    # concatenated single-image path below.
+    #
+    # Deliberately not tied to the graph: a graph-free baseline has to see the
+    # same pixels this does, or turning the graph off would also swap the
+    # visual encoder's input and the two runs would stop being comparable.
+    # 'auto' follows the graph so existing configs are unchanged.
     self._named_cams = (
-        self._mshab_active
-        and 'rgb' in obs_mode
-        and bool(self._graph_cfg.get('enabled', False)))
+        self._mshab_active and 'rgb' in obs_mode
+        and _use_named_cameras(named_cameras, self._graph_cfg))
     self._camera_keys = {}
     if self._named_cams:
       if self._num_frames != 1:
         raise ValueError(
-            f'graph path needs num_frames=1, got {self._num_frames}; the RSSM '
-            'supplies temporal context')
+            f'named cameras need num_frames=1, got {self._num_frames}; the '
+            'RSSM supplies temporal context')
       cams = list(self._graph_cfg.get('cameras') or ['fetch_head', 'fetch_hand'])
       self._camera_keys = {
           'image_' + cam.rsplit('_', 1)[-1]: cam for cam in cams}
@@ -130,12 +171,35 @@ class ManiSkill(embodied.Env):
       # A plan is one (build_config, init_config) pair, so there are many plans
       # per build config: keep whole build configs, matching sac/envs.py.
       task_plans = plan_data.plans
+      # Few-shot split, filtered per plan so whole (build_config, init_config)
+      # pairs stay intact the way the build-config filter below keeps them.
+      # 'auto' pretrains on the seen categories and evaluates on the held-out
+      # ones; the finetune env trains on 'only', which is why the mode is
+      # separate from is_eval.
+      holdout = {str(o) for o in (mshab_holdout_objs or ())}
+      if holdout:
+        mode = str(mshab_holdout_mode or 'auto')
+        if mode == 'auto':
+          mode = 'only' if self._is_eval else 'exclude'
+        if mode not in ('exclude', 'only'):
+          raise ValueError(
+              f'mshab_holdout_mode must be auto, exclude or only; got {mode!r}')
+        want = (mode == 'only')
+        task_plans = [
+            p for p in task_plans if bool(_plan_objects(p) & holdout) == want]
+        print(f'[env] holdout {sorted(holdout)} mode={mode}: '
+              f'{len(task_plans)}/{len(plan_data.plans)} plans kept')
+        if not task_plans:
+          raise ValueError(
+              f'holdout {sorted(holdout)} with mode={mode!r} left no plans in '
+              f'split {split!r}; check the canonical object keys against the '
+              'instruction table')
       n_bc = int(mshab_num_build_configs or 0)
       if not self._is_eval and n_bc > 0:
-        all_names = sorted({p.build_config_name for p in plan_data.plans})
+        all_names = sorted({p.build_config_name for p in task_plans})
         if n_bc < len(all_names):
           keep = set(all_names[:n_bc])
-          task_plans = [p for p in plan_data.plans if p.build_config_name in keep]
+          task_plans = [p for p in task_plans if p.build_config_name in keep]
           print(f'[env] using {n_bc}/{len(all_names)} build configs '
                 f'({len(task_plans)}/{len(plan_data.plans)} plans, train)')
       make_kwargs['task_plans'] = task_plans
@@ -218,12 +282,22 @@ class ManiSkill(embodied.Env):
         self._env, self._graph_cfg, num_envs=self._num_envs,
         sensor_source=self._named_wrapper)
 
+    # Shared across every method being compared: the same table, the same
+    # lookup, so only what each model does with the vector differs.
+    self._instr = None
+    if instruction_table:
+      from embodied.envs.instruction import InstructionReader, InstructionTable
+      self._instr = InstructionReader(
+          self._env, InstructionTable(instruction_table), self._num_envs)
+
     # Warm reset to discover obs/act shapes.
     obs, _ = self._env.reset(seed=seed)
     obs = self._obs_to_dict(obs)
     self._setup_spaces(obs)
     self._graph_obs = (
         self._graph.reset() if self._graph is not None else {})
+    self._instr_obs = (
+        {'instruction': self._instr.step()} if self._instr is not None else {})
 
     if self._rgb_obs and self._num_frames > 1:
       self._setup_frame_stack(obs)
@@ -334,6 +408,9 @@ class ManiSkill(embodied.Env):
       dtypes = self._graph.obs_spec_dtypes
       for key, shape in self._graph.obs_spec_shapes.items():
         spaces[key] = elements.Space(dtypes[key], shape)
+    if self._instr is not None:
+      spaces['instruction'] = elements.Space(
+          np.float32, (self._instr.table.dim,))
     return spaces
 
   @property
@@ -377,6 +454,8 @@ class ManiSkill(embodied.Env):
       self._last_episode_metrics = {}
       if self._graph is not None:
         self._graph_obs = self._graph.step(is_first=is_first)
+      if self._instr is not None:
+        self._instr_obs = {'instruction': self._instr.step()}
 
       return self._make_obs(
           obs,
@@ -431,6 +510,10 @@ class ManiSkill(embodied.Env):
       # already belong to the next episode; those frames re-emit the previous
       # graph rather than one built from the wrong episode.
       self._graph_obs = self._graph.step(is_first=is_first, is_last=done)
+    if self._instr is not None:
+      # Same reason as the graph: a done env's subtask pointer has already
+      # moved to the next episode, so that frame re-emits its previous row.
+      self._instr_obs = {'instruction': self._instr.step(is_last=done)}
 
     return self._make_obs(
         obs,
@@ -524,6 +607,7 @@ class ManiSkill(embodied.Env):
       out['depth_head'] = depth_head
       out['depth_hand'] = depth_hand
     out.update(self._graph_obs)
+    out.update(self._instr_obs)
     if log_metrics:
       out.update(log_metrics)
     return out

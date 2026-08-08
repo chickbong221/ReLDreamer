@@ -5,7 +5,7 @@ per simulator step, and pack it into the replay contract the world model reads.
 MS-HAB is read-only; all integration lives under `scenegraph/adapters/`.
 
 ```text
-  ─── offline, in teemo_sim_probe/ (run once per asset bump) ────────
+  ─── offline, tools/ (prepare_assets runs all of it) ───────────────
 
    MS-HAB env  ──►  FetchCollectContactDataWrapper  ──►  <obj>.pkl
                                                           │
@@ -14,7 +14,9 @@ MS-HAB is read-only; all integration lives under `scenegraph/adapters/`.
                   build_affordances              build_subtask_whitelists
                           │                               │
                           ▼                               ▼
-                  affordances.json              whitelists/*.json
+                  affordances.json              subtask_whitelists/*.json
+
+   task plans  ──►  build_instruction_embeddings  ──►  instructions.npz
 
   ─── online, here (every simulator step) ───────────────────────────
 
@@ -34,13 +36,11 @@ frozen DINOv2 embedding per node per camera, and packs the result.
 
 ## Related packages
 
-* **`teemo_sim_probe/`** owns the offline half: the rollout collector, both
-  mining tools, and the mined assets (`configs/affordances.json`,
-  `configs/subtask_whitelists/`) that this package reads. It is also a frozen,
-  self-contained demo of the predecessor pipeline — single camera, mean masked
-  depth per node, target-conditioned pooling. Nothing here imports it except
-  one test, which shares its whitelist builder. Its README carries the full
-  asset-mining sweep.
+* **`teemo_sim_probe/`** is a frozen, self-contained demo of the predecessor
+  pipeline — single camera, mean masked depth per node, target-conditioned
+  pooling — kept runnable for figures. It carries its own copy of every module
+  it needs, including the mining tools, so it never has to track changes here.
+  Nothing in this package imports it.
 * **`dreamerv3/`** consumes the packed arrays: `graph_encoder.py` holds the
   semantic posterior and graph decoder. See its README for the model side,
   the loss scales, and what to watch during training.
@@ -196,13 +196,17 @@ Affordances (schema v3, `affordances.json`), keyed by canonical object id:
 }}
 ```
 
-Both are produced by `teemo_sim_probe/tools/`, along with the rollout pickles
-they are mined from. `configs/thresholds.yaml` here points at that directory;
-`env.maniskill.graph.whitelist_dir` overrides the whitelist half.
+Both are produced by `tools/`, along with the rollout pickles they are mined
+from, and land in `configs/` next to `thresholds.yaml`, which points at them by
+relative path. `env.maniskill.graph.whitelist_dir` overrides the whitelist half.
 
 The runtime fails loud at episode start when no matching whitelist exists for
-`(subtask, target)`. After a schema bump, re-mine per the sweep in
-[teemo_sim_probe/README.md](../teemo_sim_probe/README.md).
+`(subtask, target)`. Re-mine everything with:
+
+```bash
+python -m scenegraph.tools.prepare_assets \
+  --mshab-task set_table prepare_groceries tidy_house --subtask pick --clean
+```
 
 ## Tests
 

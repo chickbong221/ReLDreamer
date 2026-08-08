@@ -42,7 +42,13 @@ class Agent(embodied.jax.Agent):
     self.semantic = all(k in obs_space for k in GRAPH_KEYS)
     exclude = ('is_first', 'is_last', 'is_terminal', 'reward', *GRAPH_KEYS)
     enc_space = {k: v for k, v in obs_space.items() if k not in exclude}
-    dec_space = {k: v for k, v in obs_space.items() if k not in exclude}
+    # The instruction is an input, not a sensor reading. The encoder conditions
+    # on it and the policy reads it back out of the latent; reconstructing a
+    # vector that is constant within an episode would spend decoder capacity
+    # on nothing.
+    dec_space = {
+        k: v for k, v in obs_space.items()
+        if k not in exclude and k != 'instruction'}
     self.enc = {
         'simple': rssm.Encoder,
     }[config.enc.typ](enc_space, **config.enc[config.enc.typ], name='enc')

@@ -157,6 +157,13 @@ class AgentConstructionTests(unittest.TestCase):
         for key in agent.dec.veckeys + agent.dec.imgkeys:
             self.assertFalse(key.startswith('graph_'), key)
 
+    def test_the_instruction_conditions_the_encoder_but_is_not_reconstructed(self):
+        space = _obs_space()
+        space['instruction'] = elements.Space(np.float32, (8,))
+        agent = self._agent(space)
+        self.assertIn('instruction', agent.enc.veckeys)
+        self.assertNotIn('instruction', agent.dec.veckeys)
+
     def test_both_cameras_reach_the_encoder_and_decoder(self):
         agent = self._agent()
         self.assertEqual(sorted(agent.enc.imgkeys), ['image_hand', 'image_head'])

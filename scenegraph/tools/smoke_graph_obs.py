@@ -32,7 +32,7 @@ def parse_args():
     p.add_argument("--n-max", type=int, default=11)
     p.add_argument("--e-max", type=int, default=256)
     p.add_argument("--whitelist-dir",
-                   default="teemo_sim_probe/configs/subtask_whitelists")
+                   default="scenegraph/configs/subtask_whitelists")
     p.add_argument("--num-build-configs", type=int, default=4)
     return p.parse_args()
 

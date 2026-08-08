@@ -28,26 +28,18 @@ python -m sac.main \
 
 ## Run — depth + oracle graph
 
-Mine the teemo assets once (bowl target on set_table):
+Mine the assets once. They land in `scenegraph/configs/` and are shared with
+the DreamerV3 pipeline:
 
 ```
 export MS_ASSET_DIR=/root/.maniskill
-STATES_DIR="$MS_ASSET_DIR/data/robot_success_states"
 
-python -m teemo_sim_probe.tools.collect_robot_success_states \
-    --ckpt-root mshab_checkpoints/rl \
-    --task set_table --subtask pick --obj 024_bowl \
-    --n-success 30 --num-envs 8 --no-skip-done
-
-python -m teemo_sim_probe.tools.build_affordances \
-    --success-states-dir "$STATES_DIR" \
-    --robot fetch --subtask pick \
-    --out teemo_sim_probe/configs/affordances.json
-
-python -m teemo_sim_probe.tools.build_subtask_whitelists \
-    --success-states-dir "$STATES_DIR" \
-    --out-dir teemo_sim_probe/configs/subtask_whitelists
+python -m scenegraph.tools.prepare_assets \
+    --mshab-task set_table --subtask pick --clean
 ```
+
+Add `--dry-run` first to see the coverage report and the subcommands without
+spending the sim time.
 
 Then train:
 

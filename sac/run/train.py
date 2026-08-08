@@ -459,7 +459,7 @@ def _run_eval(agent, eval_envs, graph_eval, target_eval, logger, device, *,
             from teemo_sim_probe.viz.palette import ColorMap
             from teemo_sim_probe.viz.overlay import render_overlay
             from teemo_sim_probe.viz.graph_draw import render_graph
-            from teemo_sim_probe.core.mask_extractor import MaskAccumulator
+            from scenegraph.core.mask_extractor import MaskAccumulator
             record_ids = [i for i in (0, 1) if i < graph_eval.num_envs]
             graph_eval.record_env_indices = set(record_ids)
             head_paths = {i: [] for i in record_ids}

@@ -19,8 +19,9 @@ contract.
 
 `teemo_sim_probe/` is the frozen predecessor: a self-contained offline demo of
 the single-camera, CNN-pooled, target-conditioned version, kept runnable for
-comparison. It also owns the mined assets both pipelines read. Nothing in the
-training path imports it.
+comparison and for drawing figures. It carries its own copy of every module it
+needs, so nothing in the training path imports it and it never has to be kept
+in step.
 
 The graph posterior runs on every replay timestep during training. DINO runs
 only in the collector, so the appearance vectors in replay are fixed for the
@@ -29,19 +30,30 @@ which conditions the low-level dynamics.
 
 ## Prerequisites
 
-The runtime fails loud at episode start if the mined assets are missing. Both
-live in `teemo_sim_probe/configs/` and are mined by `teemo_sim_probe/tools/`,
-shared by both pipelines:
+The runtime fails loud at construction if the mined assets are missing. All of
+them live in `scenegraph/configs/` and are mined by `scenegraph/tools/`:
 
-* `teemo_sim_probe/configs/affordances.json`
-* `teemo_sim_probe/configs/subtask_whitelists/<subtask>_<target>.json` — one per
-  `(subtask, target)` your task plans reach, for **both** the train and eval
-  splits.
+* `affordances.json`
+* `subtask_whitelists/<subtask>_<target>.json` — one per `(subtask, target)`
+  your task plans reach, for **both** the train and eval splits
+* `instructions.npz` — the frozen language embedding every method reads
 
-Mine them with steps 1–3 of the sweep in
-[teemo_sim_probe/README.md](../teemo_sim_probe/README.md). Whitelist coverage is
-verified at startup for `pick` and `place`; a missing file raises before the
-first rollout.
+One command mines all three. Start with `--dry-run`: it prints the coverage
+report and every subcommand without running any of them, and collection costs
+sim-hours.
+
+```bash
+python -m scenegraph.tools.prepare_assets \
+  --mshab-task set_table prepare_groceries tidy_house \
+  --subtask pick --clean --dry-run
+```
+
+Drop `--dry-run` to execute. `--clean` removes the previous artifacts first;
+without it a whitelist for an object no longer in your task plans survives the
+rebuild, because the miners only write the keys they mined.
+
+Whitelist coverage is verified at startup for `pick` and `place`; a missing
+file raises before the first rollout.
 
 ## Train
 
@@ -52,7 +64,6 @@ python -m dreamerv3.main \
   --env.maniskill.mshab_task set_table \
   --env.maniskill.mshab_obj 024_bowl \
   --env.maniskill.num_envs 189 \
-  --env.maniskill.graph.whitelist_dir teemo_sim_probe/configs/subtask_whitelists \
   --run.steps 10e6 \
   --logdir $HOME/logdir/mshab/$(date +%Y%m%d_%H%M%S)/pick-024_bowl-graph \
   --logger.wandb_name dreamerv3-graph-set_table-pick-024_bowl
@@ -181,6 +192,24 @@ through `size400m` all build.
 | `episode/log/graph_cache_entries` | entries held by the caches that outlive an episode. A sawtooth under the cap is healthy; a climb that never levels off is a leak, and `GraphObsBuilder.cache_stats()` names which container |
 | `replay/ram_gb` | roughly 93 KiB/step, images and appearance dominating |
 
+## Instruction input
+
+`instruction` is a frozen T5 embedding of the active subtask, looked up per env
+per step from `subtask_pointer` and the un-merged task plans, so a run where
+each episode picks a different object gets a different vector each episode. It
+is built offline by `scenegraph/tools/build_instruction_embeddings.py` and
+loaded through `env.maniskill.instruction_table`.
+
+Every method in a comparison loads the same table. The encoder conditions on
+the vector and the policy reads it back out of the latent; the decoder does not
+reconstruct it, since it is constant within an episode.
+
+`mshab_holdout_objs` splits object categories for the few-shot protocol:
+training excludes them, the finetune env (`mshab_holdout_mode: only`) and eval
+see only them. A frozen language encoder is what makes the held-out rows
+meaningful — they are already positioned relative to the categories training
+saw, which a learned embedding table cannot do.
+
 ## Ablations
 
 All config-only, no code changes:
@@ -190,6 +219,7 @@ All config-only, no code changes:
 --agent.graph.reverse_edges False                            # one-directional message passing
 --agent.graph.condition_on_deter False                       # h_t-free encoder, GNN outside the scan
 --env.maniskill.graph.e_max 128                              # tighter fact budget
+--env.maniskill.instruction_table random.npz                 # control: same keys, no language features
 ```
 
 ## Known limitations

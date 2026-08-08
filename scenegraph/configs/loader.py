@@ -21,10 +21,8 @@ from ..core.affordance import load_affordance_set
 _MISSING_AFFORDANCE_MSG = (
     "Affordance asset missing or empty at {path!r}.\n"
     "Mine it before running the probe:\n"
-    "  python -m teemo_sim_probe.tools.build_affordances \\\n"
-    "      --success-states-dir \"$MS_ASSET_DIR/data/robot_success_states\" \\\n"
-    "      --robot fetch --subtask pick \\\n"
-    "      --out teemo_sim_probe/configs/affordances.json"
+    "  python -m scenegraph.tools.prepare_assets \\\n"
+    "      --mshab-task tidy_house prepare_groceries set_table --subtask pick"
 )
 
 

@@ -119,7 +119,7 @@ def build_target_vocab(task: str, cfg: dict) -> List[str]:
     """
     from mani_skill import ASSET_DIR
     from mshab.envs.planner import plan_data_from_file
-    from teemo_sim_probe.core.affordance import canonical_affordance_key
+    from scenegraph.core.affordance import canonical_affordance_key
 
     subtask = task.split("SubtaskTrain")[0].lower()
     rearrange_dir = ASSET_DIR / "scene_datasets/replica_cad_dataset/rearrange"
@@ -160,7 +160,7 @@ class TargetIdReader:
     """
 
     def __init__(self, env, keys: List[str], num_envs: int):
-        from teemo_sim_probe.core.affordance import canonical_affordance_key
+        from scenegraph.core.affordance import canonical_affordance_key
         self.env = env
         self.keys = list(keys)
         self.num_envs = int(num_envs)

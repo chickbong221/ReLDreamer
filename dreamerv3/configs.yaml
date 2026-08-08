@@ -52,6 +52,10 @@ defaults:
       mshab_eval_split: val
       mshab_obj: all
       mshab_num_build_configs: 63  # 0 → use all; positive → first N distinct build configs by name, all their plans, train split only. 63 = the whole train split
+      mshab_holdout_objs: []       # canonical keys (e.g. 024_bowl) split off for the few-shot phase
+      mshab_holdout_mode: auto     # auto → exclude while training, only while evaluating; set 'only' for the finetune env
+      named_cameras: auto          # auto → follow graph.enabled; 'true' keeps a graph-free baseline on the same pixels
+      instruction_table: ''        # .npz from scenegraph/tools/build_instruction_embeddings.py; '' emits no instruction key
       nonprivileged_obs: true    # strips obj_pose_wrt_base / goal_pos_wrt_base from state, as the mshab baselines do
       max_episode_steps: 0       # 0 → use the registered default; mshab overrides to 100
       eval_max_episode_steps: 0  # 0 → reuse max_episode_steps; mshab overrides to 200
@@ -331,6 +335,14 @@ mshab:
       eval_max_episode_steps: 200   # matches mshab/configs/sac_pick.yml eval horizon
       frame_stack: 1                # no MSHab FrameStack; RSSM provides temporal context
       graph.enabled: true
+      graph.whitelist_dir: scenegraph/configs/subtask_whitelists
+      # Every arm is language-conditioned, so this is not optional: a run
+      # without it fails at construction rather than training a model the
+      # baseline comparison cannot use.
+      instruction_table: scenegraph/configs/instructions.npz
+      # 'auto' would drop the named cameras with the graph; pinning them keeps
+      # the graph-free baseline on identical pixels.
+      named_cameras: true
   replay:
     size: 300000
 

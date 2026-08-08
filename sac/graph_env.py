@@ -3,6 +3,11 @@
 SAC steps after the vector env auto-reset, so its ``done`` mask marks the first
 frame of the next episode. uint16 has no torch dtype, so entity ids widen to
 int32 on the way out.
+
+The builder needs a ``sensor_source`` -- a ``NamedCameraRGBWrapper`` stashing
+the raw observation on its way past -- because MS-HAB's ``BaseEnv._last_obs``
+carries only the state half. ``sac/envs.py`` does not build that wrapper yet,
+so the graph path here raises until it does.
 """
 
 from __future__ import annotations
@@ -13,7 +18,7 @@ from typing import Dict, Optional
 import numpy as np
 import torch
 
-from teemo_sim_probe.adapters.graph_obs import (
+from scenegraph.adapters.graph_obs import (
     GraphObsBuilder as _GraphObsBuilder,
     build_graph_obs as _build_graph_obs,
 )
