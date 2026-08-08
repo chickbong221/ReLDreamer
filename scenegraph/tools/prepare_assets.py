@@ -143,7 +143,7 @@ def main(argv=None) -> int:
     if not args.skip_collect:
         print('\n[prep] collect')
         for subtask in args.subtask:
-            _run([
+            cmd = [
                 'scenegraph.tools.collect_robot_success_states',
                 '--ckpt-root', str(ckpt_root),
                 '--subtask', subtask,
@@ -151,7 +151,14 @@ def main(argv=None) -> int:
                 '--num-envs', str(args.num_envs),
                 '--asset-dir', str(asset_dir),
                 '--no-skip-done',
-            ], args.dry_run)
+            ]
+            # Without this the collector walks every task family under
+            # ckpt-root. Objects are deduplicated by id, so the ones we need
+            # cost the same, but a family we are not training on would be
+            # collected too at n-success rollouts apiece.
+            for task in args.mshab_task:
+                cmd += ['--task', task]
+            _run(cmd, args.dry_run)
 
     if not args.skip_affordances:
         print('\n[prep] affordances')
