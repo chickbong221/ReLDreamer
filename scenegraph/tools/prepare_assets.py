@@ -113,7 +113,7 @@ def main(argv=None) -> int:
                              'defaults to $MS_ASSET_DIR/data then ~/.maniskill/data')
     parser.add_argument('--robot', default='fetch')
     parser.add_argument('--n-success', type=int, default=30)
-    parser.add_argument('--num-envs', type=int, default=30)
+    parser.add_argument('--num-envs', type=int, default=35)
     parser.add_argument('--model', default='t5-base')
     parser.add_argument('--clean', action='store_true')
     parser.add_argument('--dry-run', action='store_true')
