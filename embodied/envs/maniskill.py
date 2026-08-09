@@ -117,11 +117,6 @@ class ManiSkill(embodied.Env):
     self._max_depth = float(max_depth)
     self._mshab_active = mshab_task is not None and mshab_task != 'none'
     self._graph_cfg = dict(graph or {})
-    # One merged whitelist per subtask when the target changes every episode,
-    # one per target when it does not. 'auto' reads that off mshab_obj.
-    self._graph_cfg['whitelist_union'] = _flag(
-        self._graph_cfg.get('whitelist_union', 'auto'),
-        str(mshab_obj) == 'all', 'whitelist_union')
     # One uint8 image per named camera, no depth. Mutually exclusive with the
     # concatenated single-image path below.
     #

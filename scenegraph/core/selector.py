@@ -184,20 +184,15 @@ class NodeSelector:
     def whitelist(self) -> Optional[Whitelist]:
         return self._whitelist
 
-    def apply_whitelist(
-        self, nodes: Dict[str, Node],
-        *,
-        active_target_node_id: Optional[str] = None,
-    ) -> Dict[str, Node]:
+    def apply_whitelist(self, nodes: Dict[str, Node]) -> Dict[str, Node]:
         """Hard gate: keep ``ee`` plus every node whose ``match_key`` is in the
         active whitelist. Everything else is dropped before indexing.
 
-        When ``active_target_node_id`` is provided, actor candidates whose role
-        contains ``interacted`` must additionally match that exact instance --
-        this filters out same-category siblings (e.g. ``actor:024_bowl-0`` when
-        the current rollout is interacting with ``actor:024_bowl-3``). The
-        whitelist itself is still keyed at the canonical category level so it
-        can serve every scene that uses the same task target.
+        Instances are not filtered. A per-target whitelist marks every member
+        ``interacted``, not just the target, so an instance filter would delete
+        the supporters and the scene background along with the sibling copies.
+        Same-category siblings stay in the graph and ``graph_node_target``
+        names the goal among them.
 
         Raises if no whitelist is bound.
         """
@@ -216,16 +211,6 @@ class NodeSelector:
             if not wl.contains(key):
                 continue
             roles = wl.roles(key)
-            # Instance-level filter for interacted actors: when an active
-            # target instance is known, drop other instances of the same
-            # category that would also pass the canonical match.
-            if (
-                "interacted" in roles
-                and active_target_node_id is not None
-                and n.attributes.get("is_actor")
-                and n.node_id != active_target_node_id
-            ):
-                continue
             n.attributes["whitelist_key"] = key
             n.attributes["whitelist_roles"] = sorted(roles)
             n.attributes["interaction_types"] = sorted(wl.types(key))

@@ -29,12 +29,10 @@ def parse_args():
     p.add_argument("--num-envs", type=int, default=4)
     p.add_argument("--steps", type=int, default=20)
     p.add_argument("--image-size", type=int, default=112)
-    p.add_argument("--n-max", type=int, default=24)
-    p.add_argument("--e-max", type=int, default=1024)
+    p.add_argument("--n-max", type=int, default=16)
+    p.add_argument("--e-max", type=int, default=344)
     p.add_argument("--whitelist-dir",
                    default="scenegraph/configs/subtask_whitelists")
-    p.add_argument("--whitelist-union", default="auto",
-                   help="auto follows mshab_obj; true forces the merged file")
     p.add_argument("--num-build-configs", type=int, default=4)
     return p.parse_args()
 
@@ -68,7 +66,6 @@ def main():
         profile="room_scale",
         thresholds_path=None,
         whitelist_dir=args.whitelist_dir,
-        whitelist_union=args.whitelist_union,
         cameras=["fetch_head", "fetch_hand"],
         n_max=args.n_max,
         e_max=args.e_max,

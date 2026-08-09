@@ -55,15 +55,11 @@ rebuild, because the miners only write the keys they mined.
 Whitelist coverage is verified at startup for `pick` and `place`; a missing
 file raises before the first rollout.
 
-`graph.whitelist_union` picks which whitelist binds. A per-target file answers
-"what may exist while picking this object"; the merged `<subtask>_all.json`
-answers "what may exist in these scenes at all". `auto` uses the merged file
-when `mshab_obj` is `all` and the per-target one otherwise.
-
-The merged file also switches off the same-instance filter in
-`apply_whitelist`. It has to: every object is `interacted` in its own file, so
-the union marks all of them that way, and the filter would leave only the
-active target — collapsing the union back to one object.
+An episode binds the per-target file for its own target and keeps it for the
+whole episode; a target change mid-episode raises. The merged
+`<subtask>_all.json` is not a membership whitelist — it supplies the one
+relation-bin set the run shares, so a relation token means the same metric
+distance in every episode.
 
 ## Train
 
@@ -110,11 +106,11 @@ image_head         [112,112,3]   uint8
 image_hand         [112,112,3]   uint8
 state              [D]           float32
 instruction        [768]         float32
-graph_node_ent     [24]          uint16
-graph_node_app     [24,2,384]    float16
-graph_node_bbox    [24,2,4]      float16
-graph_node_target  [24]          uint8
-graph_edge_*       [1024]        uint8
+graph_node_ent     [16]          uint16
+graph_node_app     [16,2,384]    float16
+graph_node_bbox    [16,2,4]      float16
+graph_node_target  [16]          uint8
+graph_edge_*       [344]         uint8
 ```
 
 Nothing derivable is stored. The model reads validity, per-camera visibility
@@ -155,8 +151,8 @@ dark flag is otherwise indistinguishable from a resolved one.
 | `whitelist_dir` | `''` | mined whitelists; falls back to `thresholds.yaml` |
 | `profile` | `room_scale` | threshold profile for bin fallbacks |
 | `cameras` | `[fetch_head, fetch_hand]` | camera order for the stored axis; the first also renders overlays |
-| `n_max` | `24` | vertex capacity including the ee node; must stay under 256. The merged whitelist admits 19 categories plus the ee, so the surplus is headroom for duplicate instances — overflow drops the newcomer, which can be the target |
-| `e_max` | `1024` | fact capacity per frame; overflow drops spatial before affordance before physical |
+| `n_max` | `16` | vertex capacity including the ee node; must stay under 256. The largest per-target whitelist admits 12 objects, so the surplus is headroom for duplicate instances — overflow drops the newcomer, which can be the target |
+| `e_max` | `344` | fact capacity per frame; overflow drops spatial before affordance before physical. Size it with `tools/max_relations.py` |
 | `k_persist` | `-1` | negative keeps a registered vertex for the whole episode |
 | `dino_model` | `dinov2_vits14_reg` | registers keep artifact tokens out of the patch features |
 | `dino_res` | `112` | must be a multiple of the patch size 14 |
@@ -168,8 +164,8 @@ dark flag is otherwise indistinguishable from a resolved one.
 
 | key | default | meaning |
 |---|---|---|
-| `layers` | `2` | message-passing rounds |
-| `units` | `256` | node / fact width — **the size preset's `.*\.units` wildcard overrides this** |
+| `layers` | `1` | message-passing rounds |
+| `units` | `256` | node / fact width — **the size preset's `.*\.units` wildcard overrides this**, so the `mshab` preset re-pins it |
 | `embed` | `64` | embedding-table width |
 | `app_dim` | `384` | stored DINO width; must match `env.maniskill.graph.app_dim` |
 | `app` | `64` | learned projection width *per camera* |
@@ -257,11 +253,10 @@ All config-only, no code changes:
 
 Deliberate for this version, listed so they are not rediscovered as bugs:
 
-* **Cross-subtask retention.** `merge_persistent` runs after `apply_whitelist`,
-  so a vertex admitted under one MS-HAB subtask stays after the whitelist
-  rebinds and keeps its old entity key. With `k_persist: -1` and an append-only
-  registry it can consume slots out of `n_max` and displace a current-subtask
-  entity. Not fixed; watch `graph_overflow_drops`.
+* **Same-category siblings occupy slots.** Instances are not filtered, so every
+  bowl in the scene is its own vertex against `n_max` while only one carries
+  `graph_node_target`. Sizing assumes a bounded number of copies; watch
+  `graph_overflow_drops`.
 * **Terminal graphs are one frame stale.** The vector env auto-resets inside
   `step`, so the terminal transition re-emits the previous packed graph. Every
   graph loss and both semantic KLs are masked at `is_last`; the image, state,

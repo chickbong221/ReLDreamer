@@ -461,6 +461,69 @@ class AdmitGateTests(unittest.TestCase):
         self.assertEqual(spy.call_count, 1)
 
 
+class TaskConditionedBindingTests(unittest.TestCase):
+    """One whitelist per episode, every admitted instance, one target flag."""
+
+    def _actor(self, key, instance):
+        return Node(
+            node_id=f"{key}-{instance}", node_type="object", name=key,
+            attributes={"entity_key": key, "is_actor": True},
+        )
+
+    def test_same_category_siblings_both_survive(self):
+        """Instances share a whitelist key. Filtering to the target would take
+        the supporters and the scene background with it, because a per-target
+        file marks every member ``interacted``."""
+        from scenegraph.core.selector import NodeSelector
+        from scenegraph.core.whitelist import Whitelist
+
+        wl = Whitelist(
+            subtask="pick", target="actor:024_bowl",
+            by_key={"actor:024_bowl": {"interacted"},
+                    "actor:013_apple": {"interacted"}},
+            interaction_types={"actor:024_bowl": {"grasp"},
+                               "actor:013_apple": {"contact"}},
+        )
+        selector = NodeSelector({"selection": {"n_max": 8, "k_persist": 0}})
+        selector.set_whitelist(wl)
+        nodes = {
+            n.node_id: n for n in (
+                self._actor("actor:024_bowl", 0),
+                self._actor("actor:024_bowl", 3),
+                self._actor("actor:013_apple", 0),
+            )
+        }
+        self.assertEqual(sorted(selector.apply_whitelist(nodes)), sorted(nodes))
+
+    def _builder(self, subtask, target):
+        builder = GraphBuilder.__new__(GraphBuilder)
+        builder.cfg = {}
+        builder._whitelist_dir = "unused"
+        builder._whitelist_key = (subtask, target)
+        builder._bin_edges_subtask = subtask
+        builder.selector = type("_S", (), {"whitelist": object()})()
+        return builder
+
+    def _state(self, obj_id):
+        return type("_St", (), {
+            "active_subtask_type": "pick",
+            "active_handle_link": None,
+            "active_obj_id": obj_id,
+        })()
+
+    def test_an_unchanged_target_rebinds_nothing(self):
+        builder = self._builder("pick", "actor:024_bowl")
+        builder._resolve_and_bind_whitelist(self._state("024_bowl"))
+        self.assertEqual(builder._whitelist_key, ("pick", "actor:024_bowl"))
+
+    def test_a_target_change_mid_episode_raises(self):
+        # The vertex set, appearance cache and edge history all carry one
+        # target's membership, so there is nothing to carry across.
+        builder = self._builder("pick", "actor:024_bowl")
+        with self.assertRaisesRegex(RuntimeError, "changed mid-episode"):
+            builder._resolve_and_bind_whitelist(self._state("013_apple"))
+
+
 class LinkNameCacheTests(unittest.TestCase):
     def test_robot_link_names_cached_on_scene(self):
         from scenegraph.adapters.privileged_state import _robot_link_names

@@ -67,15 +67,13 @@ defaults:
         profile: room_scale
         thresholds_path: ''
         whitelist_dir: ''
-        whitelist_union: auto    # auto → merged whitelist when mshab_obj is 'all'
         cameras: [fetch_head, fetch_hand]   # first entry also renders overlays
-        # The merged whitelist admits 19 categories plus the ee, so 20 leaves no
-        # room for a second instance of one; overflow drops the newcomer, which
-        # can be the target itself. 24 keeps headroom for four duplicates.
-        n_max: 24                # vertex capacity including the ee node
-        # Measured 437 facts at 15 vertices; the merged whitelist allows 19,
-        # and facts grow with vertex pairs, so the ceiling is around 720.
-        e_max: 1024
+        # Coupled: n_max is headroom for repeated instances of one asset type,
+        # which share a whitelist key but are separate vertices, and every slot
+        # of that headroom costs e_max a full row of pairs. Size both with
+        # tools/max_relations.py before a long run.
+        n_max: 16                # vertex capacity including the ee node
+        e_max: 344
         k_persist: -1            # <0 → a registered vertex stays for the episode
         dino_model: dinov2_vits14_reg
         dino_res: 112            # must be a multiple of the patch size 14
@@ -146,9 +144,10 @@ defaults:
       typ: rssm
       rssm: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, semstoch: 16, semclasses: 16, semlayers: 1, act: silu, norm: rms, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0}
     # app_dim is the stored DINO width; app/bbox are the learned per-camera
-    # projections. units follows the size preset's `.*\.units` wildcard.
+    # projections. units follows the size preset's `.*\.units` wildcard, so
+    # pinning it needs an explicit override or a CLI flag.
     # entity_vocab is overwritten from the mined whitelists at startup.
-    graph: {layers: 2, units: 256, embed: 64, app_dim: 384, app: 64, bbox: 8, reverse_edges: True, condition_on_deter: True, entity_vocab: 64}
+    graph: {layers: 1, units: 256, embed: 64, app_dim: 384, app: 64, bbox: 8, reverse_edges: True, condition_on_deter: True, entity_vocab: 64}
     enc:
       typ: simple
       simple: {depth: 64, mults: [2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: rms, winit: trunc_normal_in, symlog: True, outer: False, kernel: 5, strided: False}
@@ -323,6 +322,11 @@ maniskill_rgb:
 mshab:
   <<: *size50m
   batch_size: 32
+  agent:
+    # Narrower than the size preset: the edge tensors are [B*T, 2*e_max, units]
+    # and dominate peak memory, while the task-conditioned graph is small.
+    # Confirm it took by reading the graphdec param count at startup.
+    graph.units: 256
   jax:
     prealloc: false     # critical: ManiSkill and JAX share GPU
   logger:
@@ -347,10 +351,6 @@ mshab:
       frame_stack: 1                # no MSHab FrameStack; RSSM provides temporal context
       graph.enabled: true
       graph.whitelist_dir: scenegraph/configs/subtask_whitelists
-      # auto → one merged whitelist when mshab_obj is 'all', one per target
-      # otherwise. The merged file also turns off the same-instance filter,
-      # which would otherwise leave only the active object.
-      graph.whitelist_union: auto
       # Every arm is language-conditioned, so this is not optional: a run
       # without it fails at construction rather than training a model the
       # baseline comparison cannot use.

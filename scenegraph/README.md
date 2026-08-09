@@ -51,15 +51,15 @@ Two cameras, stored separately and never fused. Camera index 0 is
 `fetch_head`, 1 is `fetch_hand`.
 
 ```text
-graph_node_ent     [24]          uint16
-graph_node_app     [24,2,384]    float16
-graph_node_bbox    [24,2,4]      float16
-graph_node_target  [24]          uint8
-graph_edge_src     [1024]        uint8
-graph_edge_dst     [1024]        uint8
-graph_edge_rel     [1024]        uint8
-graph_edge_abs     [1024]        uint8
-graph_edge_temp    [1024]        uint8
+graph_node_ent     [16]          uint16
+graph_node_app     [16,2,384]    float16
+graph_node_bbox    [16,2,4]      float16
+graph_node_target  [16]          uint8
+graph_edge_src     [344]         uint8
+graph_edge_dst     [344]         uint8
+graph_edge_rel     [344]         uint8
+graph_edge_abs     [344]         uint8
+graph_edge_temp    [344]         uint8
 ```
 
 Nothing derivable is stored — no masks, no counts. Index zero is padding in
@@ -171,7 +171,9 @@ Normalizers live under `cfg["compat_norm"]` (defaults in
 
 `planar-distance`, `height-offset`, and every `*-change` relation use equal-
 width splits of `[0, max]` (unsigned) or `[-max, max]` (signed), where `max`
-is the 0.9 quantile across all demo samples for the same `(subtask, target)`.
+is the 0.9 quantile across demo samples. The runtime reads one bin set per
+subtask, from `<subtask>_all.json` — per-target edges would leave the same
+relation token meaning a different metric distance in each episode.
 Compatibility absolute edges are fixed at `[1/3, 2/3]` (score is already in
 `[0, 1]`). `configs/thresholds.yaml` provides fallbacks for relations the
 asset omits.

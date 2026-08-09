@@ -1,20 +1,16 @@
 """Merge per-target whitelists into one ``<subtask>_all.json``.
 
-A per-target whitelist answers "what may exist while picking this object". A
-run over every object wants "what may exist in these scenes at all", so this
-unions the members of every ``<subtask>_<target>.json`` in a directory.
+The merged file is not a runtime membership whitelist -- an episode binds the
+per-target file for its own target. What the runtime reads from it is
+``bin_edges``, the one relation-bin set the whole run shares. Each per-target
+file calibrates its bins against the scenes that target appeared in, so binding
+those per episode would leave the same relation token meaning a different
+metric distance from one episode to the next.
 
-Roles are unioned along with the members, which matters at runtime: every
-object is ``interacted`` in its own file, so the union marks all of them that
-way and the instance filter in ``NodeSelector.apply_whitelist`` has to be off
-for a union to admit more than one object. ``graph.whitelist_union`` does both
-together.
-
-Bin edges are re-derived rather than copied. Each per-target file calibrates
-its relation bins against the scenes that target appeared in; the union takes
-the elementwise maximum of the observed statistics and runs the same
-``derive_bin_edges`` the miner uses, so the merged file is calibrated for the
-widest scene rather than for whichever target happened to be first.
+Bin edges are re-derived rather than copied: this takes the elementwise maximum
+of the observed statistics and runs the same ``derive_bin_edges`` the miner
+uses, so the merged bins are never narrower than any target's and nothing
+clips. Members and roles are unioned for inspection only.
 """
 
 from __future__ import annotations

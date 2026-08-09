@@ -39,7 +39,6 @@ class GraphBuilder:
         camera: Optional[str] = None,
         camera_order: Optional[List[str]] = None,
         staleness_enabled: bool = True,
-        whitelist_union: bool = False,
     ):
         self.env = env
         self.cfg = cfg
@@ -48,11 +47,6 @@ class GraphBuilder:
         self.camera = camera
         self.camera_order = list(camera_order) if camera_order else None
         self.staleness_enabled = bool(staleness_enabled)
-        # One merged whitelist for every target instead of one per target, for
-        # runs where the object changes each episode. Also turns off the
-        # instance filter below: in the merged file every object carries the
-        # ``interacted`` role, which would otherwise leave only the active one.
-        self.whitelist_union = bool(whitelist_union)
 
         self.temporal = TemporalBuffer(K=cfg["temporal"]["K"])
         self.selector = NodeSelector(cfg)
@@ -61,6 +55,7 @@ class GraphBuilder:
 
         self._whitelist_dir: Optional[str] = cfg.get("whitelist_dir")
         self._whitelist_key: Optional[Tuple[str, str]] = None
+        self._bin_edges_subtask: Optional[str] = None
 
         self._last_seen: Dict[str, int] = {}
         self._first_unseen: Dict[str, int] = {}
@@ -81,33 +76,65 @@ class GraphBuilder:
         self.cfg.setdefault("_affordance_selection_cache", {}).clear()
         self._whitelist_key = None
 
+    def _bind_global_bin_edges(self, subtask: str) -> None:
+        """One relation-bin set per subtask, taken from the union asset.
+
+        Each per-target file calibrates its bins against the scenes that target
+        appeared in, so binding them per episode would leave the same relation
+        token meaning a different metric distance from one episode to the next.
+        The union file is the elementwise maximum of those statistics, so it
+        never clips and holds one interpretation for the whole run.
+
+        cfg["profile"] stays the fallback for relations the asset omits, and
+        cfg["compat_norm"] is untouched.
+        """
+        if self._bin_edges_subtask == subtask:
+            return
+        path = resolve_whitelist_path(self._whitelist_dir, subtask, "all")
+        if path is None:
+            raise FileNotFoundError(
+                f"union whitelist not found for subtask={subtask!r} under "
+                f"whitelist_dir={self._whitelist_dir!r}; it supplies the global "
+                "relation bins. Build it with tools/build_union_whitelist.py."
+            )
+        self.cfg["bin_edges"] = dict(load_whitelist(path).bin_edges or {})
+        self._bin_edges_subtask = subtask
+
     def _resolve_and_bind_whitelist(self, state) -> None:
-        """Bind the whitelist for (subtask, target). Cached; rebinds on key change."""
+        """Bind the whitelist for this episode's (subtask, target).
+
+        Bound once per episode and pinned: the vertex set, the appearance cache
+        and the edge history all carry one target's membership, so a change of
+        target has no meaning to transfer and raises instead.
+        """
         subtask = state.active_subtask_type
         if subtask is None:
             raise RuntimeError(
                 "whitelist selection requires an active subtask type; got "
                 "None. Probe must run inside an MS-HAB-like env."
             )
-        if self.whitelist_union:
-            target = "all"
+        self._bind_global_bin_edges(subtask)
+        if state.active_handle_link is not None:
+            target = stable_entity_key(state.active_handle_link)
         else:
-            if state.active_handle_link is not None:
-                target = stable_entity_key(state.active_handle_link)
-            else:
-                canonical = (
-                    canonical_affordance_key(state.active_obj_id)
-                    if state.active_obj_id else None
-                )
-                target = f"actor:{canonical}" if canonical else None
-            if target is None:
-                raise RuntimeError(
-                    "whitelist selection requires a target key; got "
-                    f"active_obj_id={state.active_obj_id!r}, "
-                    f"active_handle_link={state.active_handle_link!r}. Probe "
-                    "must run inside an MS-HAB-like env."
-                )
+            canonical = (
+                canonical_affordance_key(state.active_obj_id)
+                if state.active_obj_id else None
+            )
+            target = f"actor:{canonical}" if canonical else None
+        if target is None:
+            raise RuntimeError(
+                "whitelist selection requires a target key; got "
+                f"active_obj_id={state.active_obj_id!r}, "
+                f"active_handle_link={state.active_handle_link!r}. Probe "
+                "must run inside an MS-HAB-like env."
+            )
         key = (subtask, target)
+        if self._whitelist_key is not None and self._whitelist_key != key:
+            raise RuntimeError(
+                f"whitelist target changed mid-episode: {self._whitelist_key} "
+                f"-> {key}. One episode binds one target."
+            )
         if self._whitelist_key == key and self.selector.whitelist is not None:
             return
         self.cfg.setdefault("_affordance_selection_cache", {}).clear()
@@ -118,21 +145,14 @@ class GraphBuilder:
                 f"target={target!r} under whitelist_dir={self._whitelist_dir!r}. "
                 "Mine assets with tools/build_subtask_whitelists.py."
             )
-        wl = load_whitelist(path)
-        self.selector.set_whitelist(wl)
-        # Push per-(subtask, target) bin edges into cfg so relation_rules and
-        # the temporal buffer pick them up. cfg["profile"] remains the fallback
-        # for any relation the asset omits; cfg["compat_norm"] (from
-        # thresholds.yaml or runtime defaults) is untouched.
-        self.cfg["bin_edges"] = dict(wl.bin_edges or {})
+        self.selector.set_whitelist(load_whitelist(path))
         self._whitelist_key = key
 
     def _entity_admitted(self, entity) -> bool:
-        """Early whitelist gate for build_nodes: superset of apply_whitelist.
+        """Early whitelist gate for build_nodes, matching apply_whitelist.
 
-        Instance-level target filtering still happens in apply_whitelist, so
-        this only skips entities whose match key is absent from the whitelist
-        -- exactly the nodes apply_whitelist would drop unconditionally.
+        Skips entities whose match key is absent from the whitelist, which is
+        exactly what apply_whitelist drops.
         """
         wl = self.selector.whitelist
         if wl is None:
@@ -158,7 +178,6 @@ class GraphBuilder:
 
         state = get_privileged_state(self.env, self.env_idx)
 
-        # Re-bind every step: MS-HAB advances subtasks mid-episode.
         self._resolve_and_bind_whitelist(state)
 
         nodes, masks, cam, rgb = build_nodes(
@@ -183,10 +202,10 @@ class GraphBuilder:
         # are never persisted.
         active_target_node_id: Optional[str] = None
         if state.active_obj is not None:
-            # Fail open if active-object resolution fell back to the merged
-            # MS-HAB handle itself. Its node id is like ``actor:obj_0``, which
-            # matches no visible segmentation node, so it would both drop every
-            # target instance from the graph and flag no vertex as the goal.
+            # Leave the goal unflagged if active-object resolution fell back to
+            # the merged MS-HAB handle itself. Its node id is like
+            # ``actor:obj_0`` and matches no visible segmentation node, so
+            # flagging it would name a vertex that does not exist.
             active_obj_merged = getattr(state, "active_obj_merged", None)
             resolution_fell_back = (
                 active_obj_merged is not None
@@ -197,15 +216,7 @@ class GraphBuilder:
                     active_target_node_id = stable_node_id(state.active_obj)
                 except Exception:
                     active_target_node_id = None
-        nodes = self.selector.apply_whitelist(
-            nodes,
-            # The instance filter stays off in union mode: every object in the
-            # merged whitelist carries the ``interacted`` role, so filtering to
-            # the target would delete the supporters with it. The target is
-            # still named -- it rides on the graph as a vertex flag instead.
-            active_target_node_id=(
-                None if self.whitelist_union else active_target_node_id),
-        )
+        nodes = self.selector.apply_whitelist(nodes)
         if self.staleness_enabled:
             nodes = self.selector.merge_persistent(nodes, frame)
 
