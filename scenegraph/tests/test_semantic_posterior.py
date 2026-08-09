@@ -40,7 +40,9 @@ def _graph(n_max, e_max, n_nodes, edges, order=None, seed=0, target=1):
     node_app = np.zeros((n_max, CAMS, APP_DIM), np.float16)
     node_bbox = np.zeros((n_max, CAMS, 4), np.float16)
     node_target = np.zeros(n_max, np.uint8)
-    if target is not None:
+    # The default target applies only when that vertex exists; an empty graph
+    # flags nothing, which is what the runtime packs too.
+    if target is not None and target in slot:
         node_target[slot[target]] = 1
     base_app = rng.rand(n_nodes, CAMS, APP_DIM).astype(np.float16)
     xy = rng.rand(n_nodes, CAMS, 2).astype(np.float16) * 0.4
