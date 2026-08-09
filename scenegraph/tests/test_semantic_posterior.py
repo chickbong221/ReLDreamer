@@ -12,13 +12,21 @@ import numpy as np
 
 try:
     import jax
+    import jax.numpy as jnp
     import ninjax as nj
 except ImportError:  # pragma: no cover - jax is optional for the sim tests
     jax = None
 
 # Imported unguarded so a broken encoder raises here instead of hiding as a skip.
 if jax is not None:
-    from dreamerv3.graph_encoder import GraphPosterior, derive_masks, unpack
+    from dreamerv3.graph_encoder import (
+        GraphPosterior,
+        _edge_selectors,
+        _select_nodes,
+        _sum_to_nodes,
+        derive_masks,
+        unpack,
+    )
 
 
 N_ENT = 8
@@ -120,6 +128,53 @@ class DerivedMaskTests(unittest.TestCase):
         m = self._masks(_graph(6, 8, 3, EDGES))
         np.testing.assert_array_equal(m['edge_valid'][0, :4], [1, 1, 1, 0])
         np.testing.assert_array_equal(m['temp_mask'][0, :4], [0, 1, 0, 0])
+
+
+@unittest.skipIf(jax is None, 'jax is not installed')
+class DenseEdgeContractionTests(unittest.TestCase):
+
+    def test_matches_explicit_gather_and_scatter_with_duplicates_and_padding(self):
+        nodes = np.arange(2 * 4 * 3, dtype=np.float32).reshape(2, 4, 3)
+        src = np.array([[0, 1, 1, 0, 0], [3, 2, 0, 0, 0]], np.int32)
+        dst = np.array([[1, 2, 2, 0, 0], [0, 1, 3, 0, 0]], np.int32)
+        mask = np.array([[1, 1, 1, 0, 0], [1, 1, 1, 0, 0]], np.float32)
+        messages = (np.arange(2 * 5 * 3, dtype=np.float32).reshape(2, 5, 3)
+                    - 5.0) * mask[..., None]
+
+        source, destination = _edge_selectors(
+            jnp.asarray(src), jnp.asarray(dst), jnp.asarray(mask),
+            nodes.shape[1], jnp.float32)
+        gathered = np.asarray(_select_nodes(source, jnp.asarray(nodes)))
+        total = np.asarray(_sum_to_nodes(
+            destination, jnp.asarray(messages)))
+        count = np.asarray(destination.astype(jnp.float32).sum(1))
+
+        expected_gathered = np.zeros_like(messages)
+        expected_total = np.zeros_like(nodes)
+        expected_count = np.zeros(nodes.shape[:2], np.float32)
+        for batch in range(nodes.shape[0]):
+            for edge in range(src.shape[1]):
+                if not mask[batch, edge]:
+                    continue
+                expected_gathered[batch, edge] = nodes[batch, src[batch, edge]]
+                expected_total[batch, dst[batch, edge]] += messages[batch, edge]
+                expected_count[batch, dst[batch, edge]] += 1
+
+        np.testing.assert_allclose(gathered, expected_gathered)
+        np.testing.assert_allclose(total, expected_total)
+        np.testing.assert_array_equal(count, expected_count)
+
+    def test_count_accumulates_in_float32_past_bfloat16_integer_precision(self):
+        edges = 540
+        src = jnp.zeros((1, edges), jnp.int32)
+        dst = jnp.full((1, edges), 2, jnp.int32)
+        mask = jnp.ones((1, edges), jnp.float32)
+        _, destination = _edge_selectors(
+            src, dst, mask, num_nodes=4, dtype=jnp.bfloat16)
+        count = destination.astype(jnp.float32).sum(1)
+
+        self.assertEqual(count.dtype, jnp.float32)
+        self.assertEqual(float(count[0, 2]), 540.0)
 
 
 @unittest.skipIf(jax is None, 'jax is not installed')

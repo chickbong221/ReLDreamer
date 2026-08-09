@@ -92,6 +92,31 @@ def derive_masks(g):
     )
 
 
+def _edge_selectors(src, dst, mask, num_nodes, dtype):
+    """Masked dense incidence matrices for a small fixed-capacity graph.
+
+    The packed edge arrays are padded to a static width for JIT compilation.
+    Advanced gathers and scatter-adds still execute those padded slots and their
+    reverse-mode transposes, with every padding index colliding at node zero.
+    With only ``num_nodes`` <= 10 nodes, dense one-hot contractions are both
+    small and much friendlier to the GPU. Padding rows are exactly zero.
+    """
+    weight = mask.astype(dtype)[..., None]
+    source = jax.nn.one_hot(src, num_nodes, dtype=dtype) * weight
+    destination = jax.nn.one_hot(dst, num_nodes, dtype=dtype) * weight
+    return source, destination
+
+
+def _select_nodes(selector, nodes):
+    """Select one node per edge without an indexed gather."""
+    return jnp.einsum('ben,bnu->beu', selector, nodes, optimize='optimal')
+
+
+def _sum_to_nodes(selector, values):
+    """Sum edge values at their destinations without an atomic scatter."""
+    return jnp.einsum('ben,beu->bnu', selector, values, optimize='optimal')
+
+
 class GraphPosterior(nj.Module):
 
     layers: int = 2
@@ -132,7 +157,6 @@ class GraphPosterior(nj.Module):
         emask = nn.cast(m['edge_valid'], force=True)
         B, N = ent.shape
         C = app.shape[-2]
-        U = self.units
 
         # Gated after projection, not before: the projections carry a bias, so
         # a zeroed input would still emit a constant that reads as content.
@@ -174,16 +198,19 @@ class GraphPosterior(nj.Module):
             from_idx, to_idx, facts, mask = src, dst, fact, emask
             direction = jnp.zeros_like(emask)[..., None]
 
-        bidx = jnp.repeat(jnp.arange(B)[:, None], from_idx.shape[1], 1)
+        source, destination = _edge_selectors(
+            from_idx, to_idx, mask, N, x.dtype)
+        # Keep the reduction in f32: bf16 loses integer precision past 256,
+        # which a reversed e_max above 128 can otherwise silently hit.
+        count = destination.astype(f32).sum(1)
         for i in range(self.layers):
-            gathered = x[bidx, from_idx]
+            gathered = _select_nodes(source, x)
             msg = self._mlp(
                 f'msg{i}', jnp.concatenate([gathered, facts, direction], -1))
+            # The message MLP carries a bias, so a zero selector alone does not
+            # make a padding message zero. Keep this gate after the projection.
             msg = msg * mask[..., None]
-            total = jnp.zeros((B, N, U), msg.dtype).at[bidx, to_idx].add(msg)
-            # Counts accumulate in f32: bf16 loses integer precision past 256,
-            # which an e_max above that would silently hit.
-            count = jnp.zeros((B, N), f32).at[bidx, to_idx].add(mask.astype(f32))
+            total = _sum_to_nodes(destination, msg)
             agg = total / nn.cast(jnp.maximum(count, 1.0))[..., None]
             x = self._mlp(f'upd{i}', jnp.concatenate([x, agg], -1))
             x = x * valid[..., None]
@@ -287,7 +314,8 @@ class GraphDecoder(nj.Module):
         losses['node'] = (node_app + node_bbox + node_vis) / 3
 
         rel = g['graph_edge_rel']
-        pair = self._pair(x, g['graph_edge_src'], g['graph_edge_dst'], rel)
+        pair = self._pair(
+            x, g['graph_edge_src'], g['graph_edge_dst'], rel, emask)
         losses['relabs'], metrics['relabs_acc'] = self._categorical(
             'abs', pair, g['graph_edge_abs'],
             jnp.asarray(self.tables['abs_valid'])[rel], emask,
@@ -345,10 +373,15 @@ class GraphDecoder(nj.Module):
         mask[0] = 0.0
         return mask
 
-    def _pair(self, x, src, dst, rel):
-        bidx = jnp.repeat(jnp.arange(x.shape[0])[:, None], src.shape[1], 1)
+    def _pair(self, x, src, dst, rel, mask):
+        source, destination = _edge_selectors(
+            src, dst, mask, x.shape[1], x.dtype)
         rel_e = self.sub('reltype', nn.Embed, self.tables['n_rel'], self.embed)(rel)
-        inp = jnp.concatenate([x[bidx, src], x[bidx, dst], rel_e], -1)
+        inp = jnp.concatenate([
+            _select_nodes(source, x),
+            _select_nodes(destination, x),
+            rel_e,
+        ], -1)
         h = self.sub('pair', nn.Linear, self.units, **self.kw)(inp)
         return nn.act(self.act)(self.sub('pairnorm', nn.Norm, self.norm)(h))
 
