@@ -119,10 +119,12 @@ def main():
     obs = env.step(act)
     act["reset"] = np.zeros(args.num_envs, bool)
 
+    episode_step = np.zeros(args.num_envs, dtype=np.int64)
     n_nodes, n_edges, n_visible, truncated = [], [], [], 0
     app_seen = np.zeros((args.num_envs, 2), bool)
     terminal_frames = 0
     target_frames, graph_frames = 0, 0
+    unresolved_frames, first_seen = 0, []
     for step in range(args.steps):
         act["action"] = np.clip(
             np.random.randn(*act["action"].shape).astype(np.float32) * 0.2,
@@ -152,8 +154,19 @@ def main():
         n_visible.append(seen.any(-1).sum(-1))
         truncated += int(((obs["graph_edge_rel"] != 0).sum(-1) >= args.e_max).sum())
         app_seen |= (np.abs(app).sum(-1) > 0).any(1)
-        target_frames += int((obs["graph_node_target"].sum(-1) > 0).sum())
+        flagged = obs["graph_node_target"].sum(-1) > 0
+        target_frames += int(flagged.sum())
         graph_frames += args.num_envs
+        unresolved_frames += int(env._graph.target_unresolved.sum())
+        # Step index within the episode at which the target is first flagged,
+        # which separates "never resolved" from "not visible yet".
+        for i in np.nonzero(flagged)[0]:
+            if episode_step[i] >= 0:
+                first_seen.append(episode_step[i])
+                episode_step[i] = -1
+        episode_step[episode_step >= 0] += 1
+        for i in np.nonzero(obs["is_last"])[0]:
+            episode_step[i] = 0
 
         if obs["is_last"].any():
             terminal_frames += int(obs["is_last"].sum())
@@ -177,6 +190,14 @@ def main():
     print(f"  facts      min {edges.min():3d}  mean {edges.mean():6.2f}  "
           f"max {edges.max():3d}   (cap {args.e_max})")
     print(f"  target flagged:   {target_frames}/{graph_frames} frames")
+    print(f"    unresolved:     {unresolved_frames} "
+          "(builder named no target)")
+    print(f"    named, absent:  {graph_frames - target_frames - unresolved_frames} "
+          "(named a target that is not a vertex)")
+    if first_seen:
+        seen = np.asarray(first_seen)
+        print(f"    first flagged at step {seen.min()}..{seen.max()}, "
+              f"median {int(np.median(seen))}, in {len(seen)} episodes")
     print(f"  truncated frames: {truncated}")
     print(f"  terminal frames:  {terminal_frames}")
     print(f"  overflow drops:   {env._graph.overflow_drops}")

@@ -87,7 +87,7 @@ def pack_graph(
             node_bbox[i] = node.bbox
         if node.appearance is not None:
             node_app[i] = node.appearance
-        if target_id is not None and node.node_id == target_id:
+        if node.node_id == target_id:
             node_target[i] = 1
         position[node.node_id] = i
         n_nodes += 1
@@ -137,6 +137,9 @@ def pack_graph(
     graph.meta["n_edges_packed"] = len(kept)
     graph.meta["n_edges_dropped"] = len(candidates) - len(kept)
     graph.meta["target_packed"] = bool(node_target.any())
+    # Separates the two ways the flag goes dark: the builder never named a
+    # target, or it named one that is not a vertex.
+    graph.meta["target_resolved"] = target_id is not None
 
     return {
         "graph_node_ent": node_ent,

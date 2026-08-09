@@ -181,6 +181,7 @@ class GraphObsBuilder:
         # fail open for a whole episode at a time, and the flag is zero either
         # way, so without this counter a run trains ungrounded and looks fine.
         self._target_missing = np.zeros(self.num_envs, dtype=np.float32)
+        self._target_unresolved = np.zeros(self.num_envs, dtype=np.float32)
         self._scene_cache_signature = None
         self._cpu_buffers: Dict[Tuple[str, str], torch.Tensor] = {}
 
@@ -222,6 +223,15 @@ class GraphObsBuilder:
     def target_missing(self) -> np.ndarray:
         """Per-env 1.0 where the last packed frame flagged no target vertex."""
         return self._target_missing.copy()
+
+    @property
+    def target_unresolved(self) -> np.ndarray:
+        """Per-env 1.0 where the builder never named a target at all.
+
+        The complement of ``target_missing`` is the other failure: a target was
+        named but no vertex carried its node id.
+        """
+        return self._target_unresolved.copy()
 
     def cache_stats(self) -> Dict[str, int]:
         """Sizes of every container that could grow without bound, for leak
@@ -490,6 +500,8 @@ class GraphObsBuilder:
                     graphs[i].meta.get("n_edges_dropped", 0))
                 self._target_missing[i] = float(
                     not graphs[i].meta.get("target_packed", False))
+                self._target_unresolved[i] = float(
+                    not graphs[i].meta.get("target_resolved", False))
             else:
                 out = self._last_packed[i] or self._zero_pack()
             packed.append(out)
