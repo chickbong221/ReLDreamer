@@ -313,7 +313,7 @@ maniskill_rgb:
       num_frames: 1          # no frame stacking → 3 channels input to CNN
 
 mshab:
-  <<: *size100m
+  <<: *size200m
   batch_size: 32
   jax:
     prealloc: false     # critical: ManiSkill and JAX share GPU
