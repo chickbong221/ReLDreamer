@@ -69,7 +69,9 @@ defaults:
         whitelist_union: auto    # auto → merged whitelist when mshab_obj is 'all'
         cameras: [fetch_head, fetch_hand]   # first entry also renders overlays
         n_max: 20                # vertex capacity including the ee node
-        e_max: 256
+        # Measured 437 facts at 15 vertices; the merged whitelist allows 19,
+        # and facts grow with vertex pairs, so the ceiling is around 720.
+        e_max: 1024
         k_persist: -1            # <0 → a registered vertex stays for the episode
         dino_model: dinov2_vits14_reg
         dino_res: 112            # must be a multiple of the patch size 14

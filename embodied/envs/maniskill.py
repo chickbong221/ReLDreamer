@@ -416,6 +416,9 @@ class ManiSkill(embodied.Env):
       # Registry overflow means a retained vertex displaced a current one.
       # log/ keeps it out of the world model; train.py reads it at is_last.
       spaces['log/graph_overflow_drops'] = elements.Space(np.float32, ())
+      # Facts truncated at e_max. Nonzero means spatial edges are being lost;
+      # graph_pack keeps physical, then affordance, then spatial.
+      spaces['log/graph_fact_drops'] = elements.Space(np.float32, ())
       # Entries in the caches that outlive an episode. Flat is healthy; a
       # steady climb over millions of steps is the leak signature.
       spaces['log/graph_cache_entries'] = elements.Space(np.float32, ())
@@ -624,6 +627,7 @@ class ManiSkill(embodied.Env):
       out[key] = obs[key].cpu().numpy().astype(np.uint8)
     if self._graph is not None:
       out['log/graph_overflow_drops'] = self._graph.overflow_drops
+      out['log/graph_fact_drops'] = self._graph.fact_drops
       out['log/graph_cache_entries'] = np.full(
           self._num_envs, float(self._graph.cache_entries), np.float32)
     if self._depth_obs:

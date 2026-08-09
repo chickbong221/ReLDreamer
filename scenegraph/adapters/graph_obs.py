@@ -177,6 +177,10 @@ class GraphObsBuilder:
         self.last_graph_by_env: Dict[int, Any] = {}
         self.last_masks_by_env: Dict[int, Any] = {}
         self._cams_checked = False
+        # Facts the packer could not seat this frame. Vertex overflow has its
+        # own counter; without this one an e_max that is too small drops
+        # spatial edges silently for a whole run.
+        self._fact_drops = np.zeros(self.num_envs, dtype=np.float32)
         self._scene_cache_signature = None
         self._cpu_buffers: Dict[Tuple[str, str], torch.Tensor] = {}
 
@@ -207,6 +211,11 @@ class GraphObsBuilder:
         """Per-env count of vertices the registry could not seat this episode."""
         return np.array(
             [b.registry.overflow_drops for b in self.builders], np.float32)
+
+    @property
+    def fact_drops(self) -> np.ndarray:
+        """Per-env facts the packer could not seat in the last packed frame."""
+        return self._fact_drops.copy()
 
     def cache_stats(self) -> Dict[str, int]:
         """Sizes of every container that could grow without bound, for leak
@@ -470,6 +479,8 @@ class GraphObsBuilder:
                     n_cams=self.n_cams, app_dim=self.app_dim,
                 )
                 self._last_packed[i] = out
+                self._fact_drops[i] = float(
+                    graphs[i].meta.get("n_edges_dropped", 0))
             else:
                 out = self._last_packed[i] or self._zero_pack()
             packed.append(out)

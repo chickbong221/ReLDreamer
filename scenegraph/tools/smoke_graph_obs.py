@@ -30,7 +30,7 @@ def parse_args():
     p.add_argument("--steps", type=int, default=20)
     p.add_argument("--image-size", type=int, default=112)
     p.add_argument("--n-max", type=int, default=20)
-    p.add_argument("--e-max", type=int, default=256)
+    p.add_argument("--e-max", type=int, default=1024)
     p.add_argument("--whitelist-dir",
                    default="scenegraph/configs/subtask_whitelists")
     p.add_argument("--whitelist-union", default="auto",
