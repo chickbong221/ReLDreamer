@@ -698,22 +698,28 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
             continue
         subtask = str(data.get("subtask_type") or path.parent.name)
-        target = _target_key(data)
-        if not target:
-            log.warning("skip %s: entity_key is required", path)
-            continue
-        builder = builders.setdefault(
-            (subtask, target),
-            _WhitelistBuilder(
-                subtask,
-                target,
-                affordance_set=affordance_set,
-            ),
-        )
+        # Group by each rollout's own target rather than the file's. A
+        # multi-object collection (the ``all`` policy) puts many targets in one
+        # pkl, where the file-level entity_key is only the first rollout's.
+        fallback = _target_key(data)
         for rollout in rollouts:
-            if isinstance(rollout, dict):
-                builder.absorb(rollout)
-                n_rollouts += 1
+            if not isinstance(rollout, dict):
+                continue
+            target = (
+                normalize_asset_key(rollout.get("target_key")) or fallback)
+            if not target:
+                log.warning("skip a rollout in %s: no target_key", path)
+                continue
+            builder = builders.setdefault(
+                (subtask, target),
+                _WhitelistBuilder(
+                    subtask,
+                    target,
+                    affordance_set=affordance_set,
+                ),
+            )
+            builder.absorb(rollout)
+            n_rollouts += 1
 
     if not builders:
         log.error("no successful interaction rollouts found under %s", root)

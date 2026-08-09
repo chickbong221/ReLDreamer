@@ -66,8 +66,9 @@ defaults:
         profile: room_scale
         thresholds_path: ''
         whitelist_dir: ''
+        whitelist_union: auto    # auto → merged whitelist when mshab_obj is 'all'
         cameras: [fetch_head, fetch_hand]   # first entry also renders overlays
-        n_max: 11                # vertex capacity including the ee node
+        n_max: 20                # vertex capacity including the ee node
         e_max: 256
         k_persist: -1            # <0 → a registered vertex stays for the episode
         dino_model: dinov2_vits14_reg
@@ -336,6 +337,10 @@ mshab:
       frame_stack: 1                # no MSHab FrameStack; RSSM provides temporal context
       graph.enabled: true
       graph.whitelist_dir: scenegraph/configs/subtask_whitelists
+      # auto → one merged whitelist when mshab_obj is 'all', one per target
+      # otherwise. The merged file also turns off the same-instance filter,
+      # which would otherwise leave only the active object.
+      graph.whitelist_union: auto
       # Every arm is language-conditioned, so this is not optional: a run
       # without it fails at construction rather than training a model the
       # baseline comparison cannot use.

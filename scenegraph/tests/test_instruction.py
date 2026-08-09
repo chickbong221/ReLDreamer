@@ -13,7 +13,7 @@ import numpy as np
 
 from embodied.envs.instruction import InstructionReader, InstructionTable
 from embodied.envs.maniskill import (
-    _holdout_set, _plan_objects, _use_named_cameras,
+    _flag, _holdout_set, _plan_objects, _use_named_cameras,
 )
 
 
@@ -198,6 +198,22 @@ class NamedCameraFlagTests(unittest.TestCase):
     def test_an_unrecognised_setting_is_rejected(self):
         with self.assertRaisesRegex(ValueError, 'named_cameras'):
             _use_named_cameras('sometimes', {'enabled': True})
+
+
+class WhitelistUnionFlagTests(unittest.TestCase):
+    """The merged whitelist is for runs whose target changes each episode."""
+
+    def test_auto_follows_whether_the_run_picks_one_object(self):
+        self.assertTrue(_flag('auto', True, 'whitelist_union'))
+        self.assertFalse(_flag('auto', False, 'whitelist_union'))
+
+    def test_an_explicit_setting_overrides_auto(self):
+        self.assertTrue(_flag('true', False, 'whitelist_union'))
+        self.assertFalse(_flag('false', True, 'whitelist_union'))
+
+    def test_the_name_reaches_the_error(self):
+        with self.assertRaisesRegex(ValueError, 'whitelist_union'):
+            _flag('maybe', False, 'whitelist_union')
 
 
 if __name__ == '__main__':

@@ -39,6 +39,7 @@ class GraphBuilder:
         camera: Optional[str] = None,
         camera_order: Optional[List[str]] = None,
         staleness_enabled: bool = True,
+        whitelist_union: bool = False,
     ):
         self.env = env
         self.cfg = cfg
@@ -47,6 +48,11 @@ class GraphBuilder:
         self.camera = camera
         self.camera_order = list(camera_order) if camera_order else None
         self.staleness_enabled = bool(staleness_enabled)
+        # One merged whitelist for every target instead of one per target, for
+        # runs where the object changes each episode. Also turns off the
+        # instance filter below: in the merged file every object carries the
+        # ``interacted`` role, which would otherwise leave only the active one.
+        self.whitelist_union = bool(whitelist_union)
 
         self.temporal = TemporalBuffer(K=cfg["temporal"]["K"])
         self.selector = NodeSelector(cfg)
@@ -78,22 +84,29 @@ class GraphBuilder:
     def _resolve_and_bind_whitelist(self, state) -> None:
         """Bind the whitelist for (subtask, target). Cached; rebinds on key change."""
         subtask = state.active_subtask_type
-        if state.active_handle_link is not None:
-            target = stable_entity_key(state.active_handle_link)
-        else:
-            canonical = (
-                canonical_affordance_key(state.active_obj_id)
-                if state.active_obj_id else None
-            )
-            target = f"actor:{canonical}" if canonical else None
-        if subtask is None or target is None:
+        if subtask is None:
             raise RuntimeError(
-                "whitelist selection requires an active subtask type and "
-                f"target key; got subtask={subtask!r}, "
-                f"active_obj_id={state.active_obj_id!r}, "
-                f"active_handle_link={state.active_handle_link!r}. Probe must "
-                "run inside an MS-HAB-like env."
+                "whitelist selection requires an active subtask type; got "
+                "None. Probe must run inside an MS-HAB-like env."
             )
+        if self.whitelist_union:
+            target = "all"
+        else:
+            if state.active_handle_link is not None:
+                target = stable_entity_key(state.active_handle_link)
+            else:
+                canonical = (
+                    canonical_affordance_key(state.active_obj_id)
+                    if state.active_obj_id else None
+                )
+                target = f"actor:{canonical}" if canonical else None
+            if target is None:
+                raise RuntimeError(
+                    "whitelist selection requires a target key; got "
+                    f"active_obj_id={state.active_obj_id!r}, "
+                    f"active_handle_link={state.active_handle_link!r}. Probe "
+                    "must run inside an MS-HAB-like env."
+                )
         key = (subtask, target)
         if self._whitelist_key == key and self.selector.whitelist is not None:
             return
@@ -169,7 +182,7 @@ class GraphBuilder:
         # the vertex set for the rest of the episode. Non-whitelisted entities
         # are never persisted.
         active_target_node_id: Optional[str] = None
-        if state.active_obj is not None:
+        if state.active_obj is not None and not self.whitelist_union:
             # Fail open if active-object resolution fell back to the merged
             # MS-HAB handle itself. Its node id is like ``actor:obj_0``, which
             # matches no visible segmentation node and would drop every target

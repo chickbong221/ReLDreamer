@@ -57,7 +57,10 @@ def _discover_work(
             continue
         task = parts[-4]
         obj_id = parts[-2]
-        if obj_id == "all":
+        # 'all' is a multi-object policy, not a per-object one, so it is only
+        # collected when asked for by name. Its rollouts carry a target_key
+        # each, and the whitelist miner groups on that rather than on the file.
+        if obj_id == "all" and "all" not in obj_filter:
             continue
         if task_filter and task not in task_filter:
             continue

@@ -30,6 +30,24 @@ def _holdout_set(value):
   return {p.strip() for p in map(str, parts) if p.strip()}
 
 
+def _flag(value, auto, name):
+  """Parse an auto/true/false config value; 'auto' resolves to ``auto``.
+
+  elements.Config hands command-line overrides through as strings, and bool()
+  of a non-empty string is True, so 'false' has to be read rather than cast.
+  """
+  if isinstance(value, str):
+    text = value.strip().lower()
+    if text == 'auto':
+      return bool(auto)
+    if text in ('true', 'yes', '1'):
+      return True
+    if text in ('false', 'no', '0'):
+      return False
+    raise ValueError(f'{name} must be auto, true or false; got {value!r}')
+  return bool(value)
+
+
 def _use_named_cameras(setting, graph_cfg):
   """Whether to emit one image key per camera instead of one concatenated one.
 
@@ -37,17 +55,7 @@ def _use_named_cameras(setting, graph_cfg):
   what lets a graph-free baseline see exactly the pixels the graph run sees,
   instead of silently switching to the concatenated single-image encoder.
   """
-  if isinstance(setting, str):
-    text = setting.strip().lower()
-    if text == 'auto':
-      return bool(graph_cfg.get('enabled', False))
-    if text in ('true', 'yes', '1'):
-      return True
-    if text in ('false', 'no', '0'):
-      return False
-    raise ValueError(
-        f'named_cameras must be auto, true or false; got {setting!r}')
-  return bool(setting)
+  return _flag(setting, graph_cfg.get('enabled', False), 'named_cameras')
 
 
 def _plan_objects(plan):
@@ -109,6 +117,11 @@ class ManiSkill(embodied.Env):
     self._max_depth = float(max_depth)
     self._mshab_active = mshab_task is not None and mshab_task != 'none'
     self._graph_cfg = dict(graph or {})
+    # One merged whitelist per subtask when the target changes every episode,
+    # one per target when it does not. 'auto' reads that off mshab_obj.
+    self._graph_cfg['whitelist_union'] = _flag(
+        self._graph_cfg.get('whitelist_union', 'auto'),
+        str(mshab_obj) == 'all', 'whitelist_union')
     # One uint8 image per named camera, no depth. Mutually exclusive with the
     # concatenated single-image path below.
     #

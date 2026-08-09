@@ -56,13 +56,16 @@ _DTYPES: Dict[str, np.dtype] = {
 }
 
 
-def _verify_whitelist_coverage(env, whitelist_dir: str) -> None:
+def _verify_whitelist_coverage(env, whitelist_dir: str, union: bool = False) -> None:
     """Fail at startup if any object-target plan lacks a mined whitelist.
 
     Catches the common split mismatch early, for example training with
     train-mined whitelists while eval uses val task plans. Only pick/place are
     checked because their runtime target is exactly actor:<obj>; open and close
     bind through live handle links and fail loudly at runtime instead.
+
+    Union mode binds one merged file per subtask instead, so that is what gets
+    checked -- the per-target files it was merged from need not still be there.
     """
     from ..core.affordance import canonical_affordance_key
     from ..core.whitelist import resolve_whitelist_path
@@ -89,11 +92,11 @@ def _verify_whitelist_coverage(env, whitelist_dir: str) -> None:
                 key = canonical_affordance_key(str(obj_id))
                 if not key:
                     continue
-                pair = (str(st_type), key)
+                pair = (str(st_type), "all" if union else key)
                 if pair in checked:
                     continue
                 checked.add(pair)
-                target = f"actor:{key}"
+                target = pair[1] if union else f"actor:{key}"
                 if resolve_whitelist_path(whitelist_dir, str(st_type), target) is None:
                     missing.add(pair)
 
@@ -102,7 +105,7 @@ def _verify_whitelist_coverage(env, whitelist_dir: str) -> None:
         raise FileNotFoundError(
             f"graph: {len(missing)} object-target whitelist(s) missing under "
             f"{whitelist_dir!r}: {listing}. Mine them with "
-            "tools/build_subtask_whitelists.py for the active mshab_split/"
+            "tools/prepare_assets.py for the active mshab_split/"
             "mshab_eval_split before training."
         )
 
@@ -125,9 +128,11 @@ class GraphObsBuilder:
         app_dim: int = 384,
         bypass_teemo: bool = False,
         staleness_enabled: bool = True,
+        whitelist_union: bool = False,
     ):
         self.env = env
         self.sensor_source = sensor_source
+        self.whitelist_union = bool(whitelist_union)
         self.num_envs = int(num_envs)
         self.vocab = vocab
         self.n_max = int(n_max)
@@ -151,7 +156,8 @@ class GraphObsBuilder:
                 GraphBuilder(env, cfg_i, env_idx=i, env_id=f"env{i}",
                              camera=self.record_camera,
                              camera_order=self.cameras,
-                             staleness_enabled=self.staleness_enabled)
+                             staleness_enabled=self.staleness_enabled,
+                             whitelist_union=self.whitelist_union)
             )
         self._frames = np.zeros(self.num_envs, dtype=np.int64)
         # Last packed arrays per env, re-emitted on terminal frames whose
@@ -511,7 +517,8 @@ def build_graph_obs(
             "graph.whitelist_dir or configure scenegraph/configs/thresholds.yaml."
         )
 
-    _verify_whitelist_coverage(env, teemo_cfg["whitelist_dir"])
+    union = bool(graph_cfg.get("whitelist_union", False))
+    _verify_whitelist_coverage(env, teemo_cfg["whitelist_dir"], union=union)
     vocab = build_graph_vocab(teemo_cfg["whitelist_dir"])
 
     n_max = int(teemo_cfg["selection"]["n_max"])
@@ -549,4 +556,5 @@ def build_graph_obs(
         app_dim=app_dim,
         bypass_teemo=bool(graph_cfg.get("bypass_teemo", False)),
         staleness_enabled=bool(graph_cfg.get("staleness_enabled", True)),
+        whitelist_union=union,
     )

@@ -188,6 +188,14 @@ def main(argv=None) -> int:
             '--affordance-json', str(affordances),
         ], args.dry_run)
 
+        # One merged file per subtask for runs whose target changes each
+        # episode. Written from the per-target files, so it follows them.
+        _run([
+            'scenegraph.tools.build_union_whitelist',
+            '--whitelist-dir', str(whitelist_dir),
+            '--subtask', *args.subtask,
+        ], args.dry_run)
+
     if not args.skip_instructions:
         print('\n[prep] instructions')
         common = [

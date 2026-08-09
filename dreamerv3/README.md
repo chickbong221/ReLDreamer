@@ -55,6 +55,16 @@ rebuild, because the miners only write the keys they mined.
 Whitelist coverage is verified at startup for `pick` and `place`; a missing
 file raises before the first rollout.
 
+`graph.whitelist_union` picks which whitelist binds. A per-target file answers
+"what may exist while picking this object"; the merged `<subtask>_all.json`
+answers "what may exist in these scenes at all". `auto` uses the merged file
+when `mshab_obj` is `all` and the per-target one otherwise.
+
+The merged file also switches off the same-instance filter in
+`apply_whitelist`. It has to: every object is `interacted` in its own file, so
+the union marks all of them that way, and the filter would leave only the
+active target — collapsing the union back to one object.
+
 ## Train
 
 ```bash
