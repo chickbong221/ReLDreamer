@@ -29,8 +29,8 @@ def parse_args():
     p.add_argument("--num-envs", type=int, default=4)
     p.add_argument("--steps", type=int, default=20)
     p.add_argument("--image-size", type=int, default=112)
-    p.add_argument("--n-max", type=int, default=12)
-    p.add_argument("--e-max", type=int, default=396)
+    p.add_argument("--n-max", type=int, default=10)
+    p.add_argument("--e-max", type=int, default=160)
     p.add_argument("--whitelist-dir",
                    default="scenegraph/configs/subtask_whitelists")
     p.add_argument("--num-build-configs", type=int, default=4)
@@ -220,9 +220,17 @@ def main():
         print("FAIL: no frame flagged a target vertex; the goal channel is "
               "dark and the semantic target loss trains on nothing")
         ok = False
+    if unresolved_frames:
+        print(f"FAIL: {unresolved_frames} frames resolved no target at all; "
+              "active-object resolution is broken, not just unlucky framing")
+        ok = False
     elif target_frames < graph_frames:
-        print(f"WARN: {graph_frames - target_frames} frames flagged no target; "
-              "check log/graph_target_missing during training")
+        # Expected here: this drives random actions, and MS-HAB targets start
+        # inside the fridge, so many episodes never bring one into view. Under
+        # a trained policy log/graph_target_missing should fall.
+        print(f"NOTE: {graph_frames - target_frames} frames saw no target "
+              "vertex; every one of them named a target, so this is framing, "
+              "not resolution")
     print("\nOK" if ok else "\nFAILED")
     env.close()
     return 0 if ok else 1

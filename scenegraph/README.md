@@ -51,15 +51,15 @@ Two cameras, stored separately and never fused. Camera index 0 is
 `fetch_head`, 1 is `fetch_hand`.
 
 ```text
-graph_node_ent     [12]          uint16
-graph_node_app     [12,2,384]    float16
-graph_node_bbox    [12,2,4]      float16
-graph_node_target  [12]          uint8
-graph_edge_src     [396]         uint8
-graph_edge_dst     [396]         uint8
-graph_edge_rel     [396]         uint8
-graph_edge_abs     [396]         uint8
-graph_edge_temp    [396]         uint8
+graph_node_ent     [10]          uint16
+graph_node_app     [10,2,384]    float16
+graph_node_bbox    [10,2,4]      float16
+graph_node_target  [10]          uint8
+graph_edge_src     [160]         uint8
+graph_edge_dst     [160]         uint8
+graph_edge_rel     [160]         uint8
+graph_edge_abs     [160]         uint8
+graph_edge_temp    [160]         uint8
 ```
 
 Nothing derivable is stored — no masks, no counts. Index zero is padding in
