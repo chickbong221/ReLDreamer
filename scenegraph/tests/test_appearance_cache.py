@@ -119,6 +119,7 @@ def _builder(num_envs=1):
     obj.env = SimpleNamespace(unwrapped=SimpleNamespace(scene=None))
     obj._appearance = [{} for _ in range(num_envs)]
     obj._last_packed = [None for _ in range(num_envs)]
+    obj._fact_drops = np.zeros(num_envs, np.float32)
     obj.plan = [[] for _ in range(num_envs)]
     return obj
 
