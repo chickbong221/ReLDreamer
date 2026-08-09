@@ -28,9 +28,10 @@ CAMS = 2
 APP_DIM = 6
 
 
-def _graph(n_max, e_max, n_nodes, edges, order=None, seed=0):
+def _graph(n_max, e_max, n_nodes, edges, order=None, seed=0, target=1):
     """Pack one batch element by hand. ``edges`` is a list of (src, dst, rel,
-    abs, temp); ``order`` permutes the valid vertex slots."""
+    abs, temp); ``order`` permutes the valid vertex slots; ``target`` names the
+    goal vertex by its pre-permutation index, or None for no target."""
     rng = np.random.RandomState(seed)
     perm = list(order) if order is not None else list(range(n_nodes))
     slot = {old: new for new, old in enumerate(perm)}
@@ -38,6 +39,9 @@ def _graph(n_max, e_max, n_nodes, edges, order=None, seed=0):
     ent = np.zeros(n_max, np.uint16)
     node_app = np.zeros((n_max, CAMS, APP_DIM), np.float16)
     node_bbox = np.zeros((n_max, CAMS, 4), np.float16)
+    node_target = np.zeros(n_max, np.uint8)
+    if target is not None:
+        node_target[slot[target]] = 1
     base_app = rng.rand(n_nodes, CAMS, APP_DIM).astype(np.float16)
     xy = rng.rand(n_nodes, CAMS, 2).astype(np.float16) * 0.4
     for old in range(n_nodes):
@@ -68,7 +72,8 @@ def _graph(n_max, e_max, n_nodes, edges, order=None, seed=0):
 
     out = {
         'graph_node_ent': ent, 'graph_node_app': node_app,
-        'graph_node_bbox': node_bbox, **arrays,
+        'graph_node_bbox': node_bbox, 'graph_node_target': node_target,
+        **arrays,
     }
     return {k: v[None] for k, v in out.items()}
 
@@ -168,6 +173,18 @@ class PoolingInvarianceTests(unittest.TestCase):
     def test_hand_appearance_moves_the_token_independently(self):
         a, b = self._perturbed(
             'graph_node_app', (0, 1, 1), np.full(APP_DIM, 0.5, np.float16))
+        self.assertGreater(float(np.abs(a - b).max()), 1e-3)
+
+    def test_moving_the_target_flag_moves_the_token(self):
+        # Same vertices, same facts, different goal: the token has to separate
+        # these or pick_all cannot tell one episode from another.
+        a = self._token(_graph(6, 8, 3, EDGES, target=1))
+        b = self._token(_graph(6, 8, 3, EDGES, target=2))
+        self.assertGreater(float(np.abs(a - b).max()), 1e-3)
+
+    def test_dropping_the_target_flag_moves_the_token(self):
+        a = self._token(_graph(6, 8, 3, EDGES, target=1))
+        b = self._token(_graph(6, 8, 3, EDGES, target=None))
         self.assertGreater(float(np.abs(a - b).max()), 1e-3)
 
     def test_bbox_moves_the_token(self):

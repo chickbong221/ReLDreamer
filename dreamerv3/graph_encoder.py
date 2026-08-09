@@ -7,9 +7,10 @@ decoder reconstructs appearance, the bounding box, visibility, and both
 relation states from the posterior node representations, so the semantic loss
 grounds the encoder trunk the pooling reads from.
 
-A vertex is ``[AppProj_c(a_c), BBoxProj_c(b_c), ..., EntityEmbed(id)]`` over
-cameras ``c``. Appearance arrives on ``graph_node_app`` as frozen DINO features
-read straight from replay; nothing here produces it.
+A vertex is ``[AppProj_c(a_c), BBoxProj_c(b_c), ..., EntityEmbed(id),
+TargetEmbed(flag)]`` over cameras ``c``. Appearance arrives on
+``graph_node_app`` as frozen DINO features read straight from replay; nothing
+here produces it.
 
 Node count and fact count never reach the semantic state's shape: pooling is
 masked and permutation invariant, so padding width is irrelevant and only the
@@ -144,6 +145,12 @@ class GraphPosterior(nj.Module):
                 f'bbox{cam}', nn.Linear, self.bbox, **self.kw)(bbox[..., cam, :])
             parts.append(b * seen[..., cam, None])
         parts.append(self.sub('ent', nn.Embed, self.entity_vocab, self.embed)(ent))
+        # Which vertex the subtask is acting on. Two tokens rather than a
+        # widened entity vocabulary: a category means the same thing whether or
+        # not it is this episode's goal, so the appearance statistics behind
+        # its embedding should not be split in half.
+        parts.append(self.sub('tgt', nn.Embed, 2, self.embed)(
+            g['graph_node_target']))
         x = self._mlp('node', jnp.concatenate(parts, -1), cond) * valid[..., None]
 
         fact = jnp.concatenate([
@@ -217,6 +224,7 @@ class GraphDecoder(nj.Module):
 
     units: int = 256
     embed: int = 64
+    entity_vocab: int = 64
     norm: str = 'rms'
     act: str = 'gelu'
     # Normalised box coordinates live in [0, 1], so a beta of 1 would leave the
@@ -228,13 +236,14 @@ class GraphDecoder(nj.Module):
         self.kw = kw
         self.tables = relation_tables()
 
-    def __call__(self, nodes, graph, step_valid):
+    def __call__(self, nodes, graph, sem, step_valid):
         """Reconstruct the graph from posterior node representations.
 
         ``nodes`` is (B, T, N, U); ``graph`` holds the already-unpacked
-        (B, T, ...) arrays; ``step_valid`` is (B, T) and drops the terminal
-        transition, whose graph is the previous frame's re-emitted copy.
-        Returns per-head (B, T) losses and scalar metrics.
+        (B, T, ...) arrays; ``sem`` is the semantic state (B, T, S, C), which
+        only the target head reads; ``step_valid`` is (B, T) and drops the
+        terminal transition, whose graph is the previous frame's re-emitted
+        copy. Returns per-head (B, T) losses and scalar metrics.
         """
         B, T = nodes.shape[:2]
         x = nodes.reshape((B * T, *nodes.shape[2:]))
@@ -293,7 +302,46 @@ class GraphDecoder(nj.Module):
             'temp', pair, g['graph_edge_temp'],
             jnp.asarray(self._temp_classes), tmask,
             self.tables['n_temp'], B, T)
+
+        losses['semtgt'], metrics['semtgt_acc'], metrics['semtgt_frac'] = (
+            self._target(sem, g, valid, B, T))
         return losses, metrics
+
+    def _target(self, sem, g, valid, B, T):
+        """Goal identity read out of the semantic state alone.
+
+        The flag is a per-vertex input to the posterior, so a head reading the
+        node representations would copy it back out through a widening path and
+        settle at ceiling accuracy with no gradient left. Reading ``sem`` puts
+        the discrete bottleneck and the semantic KL in between, which is the
+        only thing that makes goal identity persist into h_t -- and imagination
+        never sees a graph, so that persistence is the whole point.
+
+        The label is the target's entity id, not its slot. Vertex indices are
+        assigned in order of first sight and pooling is permutation invariant
+        by construction, so a slot is neither stable nor recoverable here.
+        """
+        flag = nn.cast(g['graph_node_target'], force=True) * valid
+        # valid already carries step_valid, so a terminal frame's re-emitted
+        # graph cannot contribute a label.
+        present = (flag.sum(-1, keepdims=True) > 0).astype(f32)
+        label = (g['graph_node_target'] * g['graph_node_ent']).sum(-1)
+
+        x = self.sub('tgtin', nn.Linear, self.units, **self.kw)(
+            nn.cast(sem).reshape((B * T, -1)))
+        x = nn.act(self.act)(self.sub('tgtnorm', nn.Norm, self.norm)(x))
+        logits = self.sub('tgt', nn.Linear, self.entity_vocab, **self.kw)(x)
+        # Index 0 is the pad entity and never a legal target, masked the same
+        # way the relation heads mask labels their relation cannot take.
+        classes = jnp.arange(self.entity_vocab) > 0
+        logits = jnp.where(classes, logits, -1e9)
+        logp = jax.nn.log_softmax(logits.astype(f32), -1)
+        picked = jnp.take_along_axis(logp, label[..., None], -1)
+
+        loss = self._masked_mean(-picked, present, B, T)
+        acc = self._masked(
+            (logp.argmax(-1) == label).astype(f32)[..., None], present)
+        return loss, acc, present.mean()
 
     @property
     def _temp_classes(self):

@@ -219,7 +219,7 @@ _HAND_BOX = {"ee": [0.0, 0.0, 0.0, 0.0], "bowl": [0.1, 0.4, 0.1, 0.4]}
 
 class PackingTests(unittest.TestCase):
 
-    def _packed(self, n_max=4, e_max=8, support=True):
+    def _packed(self, n_max=4, e_max=8, support=True, target="bowl"):
         ee = _ee()
         obj = _obj("bowl", (0.05, 0.0, 0.0))
         if support:
@@ -231,6 +231,7 @@ class PackingTests(unittest.TestCase):
                 if name == "ee":
                     node.appearance[1] = 0.0
         g = _graph(ee, obj)
+        g.meta["active_target_node_id"] = target
         cfg = _cfg()
         state = _StubState(grasping=True, contact_force=5.0)
         g.edges.extend(ee_object_spatial_edges(g, state, cfg))
@@ -253,8 +254,22 @@ class PackingTests(unittest.TestCase):
         self.assertEqual(packed["graph_node_bbox"].shape, (4, CAMS, 4))
         self.assertEqual(packed["graph_node_app"].shape, (4, CAMS, DIM))
 
-    def test_target_is_not_packed(self):
-        self.assertNotIn("graph_target_ent", self._packed())
+    def test_the_target_flag_lands_on_the_goal_slot(self):
+        packed = self._packed()
+        # ee holds slot 0, the bowl slot 1.
+        np.testing.assert_array_equal(
+            packed["graph_node_target"], [0, 1, 0, 0])
+        self.assertEqual(packed["graph_node_target"].dtype, np.uint8)
+
+    def test_an_unresolved_target_flags_nothing(self):
+        # Active-object resolution fails open rather than guessing, and the
+        # all-zero flag is what the semantic target loss masks on.
+        packed = self._packed(target=None)
+        self.assertFalse(packed["graph_node_target"].any())
+
+    def test_a_target_outside_the_vertex_set_flags_nothing(self):
+        packed = self._packed(target="apple")
+        self.assertFalse(packed["graph_node_target"].any())
 
     def test_appearance_lands_on_the_owning_slot(self):
         packed = self._packed()

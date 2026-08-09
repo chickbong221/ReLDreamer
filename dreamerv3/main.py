@@ -243,9 +243,15 @@ def make_replay(config, folder, mode='train'):
   length = consec * batlen + config.replay_context
   assert config.batch_size * length <= capacity
 
-  directory = elements.Path(config.logdir) / folder
-  if config.replicas > 1:
-    directory /= f'{config.replica:05}'
+  # replay.save False keeps the buffer in RAM only. At ~109 KiB per graph
+  # transition a full buffer is tens of GB on disk, and nothing reloads it:
+  # the checkpoint does not carry replay, so a resumed run refills from
+  # scratch either way.
+  directory = None
+  if config.replay.save:
+    directory = elements.Path(config.logdir) / folder
+    if config.replicas > 1:
+      directory /= f'{config.replica:05}'
   kwargs = dict(
       length=length, capacity=int(capacity), online=config.replay.online,
       chunksize=config.replay.chunksize, directory=directory)

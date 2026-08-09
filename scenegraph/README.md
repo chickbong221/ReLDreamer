@@ -51,21 +51,26 @@ Two cameras, stored separately and never fused. Camera index 0 is
 `fetch_head`, 1 is `fetch_hand`.
 
 ```text
-graph_node_ent   [11]          uint16
-graph_node_app   [11,2,384]    float16
-graph_node_bbox  [11,2,4]      float16
-graph_edge_src   [256]         uint8
-graph_edge_dst   [256]         uint8
-graph_edge_rel   [256]         uint8
-graph_edge_abs   [256]         uint8
-graph_edge_temp  [256]         uint8
+graph_node_ent     [24]          uint16
+graph_node_app     [24,2,384]    float16
+graph_node_bbox    [24,2,4]      float16
+graph_node_target  [24]          uint8
+graph_edge_src     [1024]        uint8
+graph_edge_dst     [1024]        uint8
+graph_edge_rel     [1024]        uint8
+graph_edge_abs     [1024]        uint8
+graph_edge_temp    [1024]        uint8
 ```
 
-Nothing derivable is stored — no masks, no counts, no target. Index zero is
-padding in every vocabulary, so the model reads validity, per-camera
-visibility, per-camera appearance support and both counts back off the ids,
-the boxes and the embedding norms. `dreamerv3/graph_encoder.derive_masks` is
-the single place those derivations live.
+Nothing derivable is stored — no masks, no counts. Index zero is padding in
+every vocabulary, so the model reads validity, per-camera visibility,
+per-camera appearance support and both counts back off the ids, the boxes and
+the embedding norms. `dreamerv3/graph_encoder.derive_masks` is the single place
+those derivations live.
+
+`graph_node_target` is the exception that proves the rule: which vertex the
+current subtask acts on is not derivable from anything else in the pack, and
+under `mshab_obj: all` it changes from subtask to subtask.
 
 Appearance comes from frozen `dinov2_vits14_reg` at 112px (8x8 patches),
 pooled under each camera's fractional patch coverage, in the collector only.

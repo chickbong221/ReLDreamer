@@ -182,11 +182,11 @@ class GraphBuilder:
         # the vertex set for the rest of the episode. Non-whitelisted entities
         # are never persisted.
         active_target_node_id: Optional[str] = None
-        if state.active_obj is not None and not self.whitelist_union:
+        if state.active_obj is not None:
             # Fail open if active-object resolution fell back to the merged
             # MS-HAB handle itself. Its node id is like ``actor:obj_0``, which
-            # matches no visible segmentation node and would drop every target
-            # instance from the graph.
+            # matches no visible segmentation node, so it would both drop every
+            # target instance from the graph and flag no vertex as the goal.
             active_obj_merged = getattr(state, "active_obj_merged", None)
             resolution_fell_back = (
                 active_obj_merged is not None
@@ -198,7 +198,13 @@ class GraphBuilder:
                 except Exception:
                     active_target_node_id = None
         nodes = self.selector.apply_whitelist(
-            nodes, active_target_node_id=active_target_node_id,
+            nodes,
+            # The instance filter stays off in union mode: every object in the
+            # merged whitelist carries the ``interacted`` role, so filtering to
+            # the target would delete the supporters with it. The target is
+            # still named -- it rides on the graph as a vertex flag instead.
+            active_target_node_id=(
+                None if self.whitelist_union else active_target_node_id),
         )
         if self.staleness_enabled:
             nodes = self.selector.merge_persistent(nodes, frame)
@@ -238,6 +244,7 @@ class GraphBuilder:
                 is_mshab=state.is_mshab,
                 active_subtask=state.active_subtask_type,
                 active_obj_id=state.active_obj_id,
+                active_target_node_id=active_target_node_id,
                 n_objects=sum(1 for n in ordered if n.node_type == "object"),
                 n_visible=sum(1 for n in ordered if n.visible),
             ),

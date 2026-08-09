@@ -405,10 +405,30 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
         carry_report, mets = agent.report(carry_report, next(stream_report))
         agg.add(mets)
       report_mets = agg.result()
-      video_mets = {
-          k: v for k, v in report_mets.items()
-          if isinstance(v, np.ndarray) and v.ndim == 4 and v.dtype == np.uint8}
-      scalar_mets = {k: v for k, v in report_mets.items() if k not in video_mets}
+
+      def _as_video(value):
+        """[T, H, W, C] uint8 frames, or None for a scalar metric.
+
+        A video that fails this test falls through to logger.add, where
+        elements' WandBOutput builds a wandb.Video with no format and W&B
+        encodes a gif. Two things used to make it fail: agg.result() can hand
+        back a jax array, which isinstance(np.ndarray) rejects, and averaging
+        uint8 frames yields float.
+        """
+        array = _to_numpy(value)
+        if array.ndim != 4 or array.shape[-1] not in (1, 3):
+          return None
+        if array.dtype != np.uint8:
+          array = np.clip(array, 0, 255).astype(np.uint8)
+        return array
+
+      video_mets, scalar_mets = {}, {}
+      for key, value in report_mets.items():
+        video = _as_video(value)
+        if video is None:
+          scalar_mets[key] = value
+        else:
+          video_mets[key] = video
       logger.add(scalar_mets, prefix='report')
       if video_mets:
         try:

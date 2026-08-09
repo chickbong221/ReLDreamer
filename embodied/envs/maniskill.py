@@ -209,6 +209,18 @@ class ManiSkill(embodied.Env):
           raise ValueError(
               f'mshab_holdout_mode must be auto, exclude or only; got {mode!r}')
         want = (mode == 'only')
+        seen = set().union(*(_plan_objects(p) for p in task_plans)) \
+            if task_plans else set()
+        # A key that names nothing removes nothing, and mode='exclude' would
+        # then pretrain on the very categories the few-shot claim holds out.
+        # Only 'only' fails on its own below, so check the keys themselves.
+        unknown = holdout - seen
+        if unknown:
+          raise ValueError(
+              f'mshab_holdout_objs {sorted(unknown)} match no object in split '
+              f'{split!r} (it has {sorted(seen)}). Pass canonical keys as a '
+              "comma-separated string, e.g. '024_bowl,013_apple' -- a list "
+              'literal is read as one key and would silently hold out nothing.')
         task_plans = [
             p for p in task_plans if bool(_plan_objects(p) & holdout) == want]
         print(f'[env] holdout {sorted(holdout)} mode={mode}: '
@@ -419,6 +431,10 @@ class ManiSkill(embodied.Env):
       # Facts truncated at e_max. Nonzero means spatial edges are being lost;
       # graph_pack keeps physical, then affordance, then spatial.
       spaces['log/graph_fact_drops'] = elements.Space(np.float32, ())
+      # Fraction of frames whose graph names no target vertex. Anything but
+      # near-zero means the goal flag is dark and the semantic target loss is
+      # training on nothing.
+      spaces['log/graph_target_missing'] = elements.Space(np.float32, ())
       # Entries in the caches that outlive an episode. Flat is healthy; a
       # steady climb over millions of steps is the leak signature.
       spaces['log/graph_cache_entries'] = elements.Space(np.float32, ())
@@ -628,6 +644,7 @@ class ManiSkill(embodied.Env):
     if self._graph is not None:
       out['log/graph_overflow_drops'] = self._graph.overflow_drops
       out['log/graph_fact_drops'] = self._graph.fact_drops
+      out['log/graph_target_missing'] = self._graph.target_missing
       out['log/graph_cache_entries'] = np.full(
           self._num_envs, float(self._graph.cache_entries), np.float32)
     if self._depth_obs:

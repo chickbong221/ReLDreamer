@@ -106,13 +106,15 @@ Two cameras, stored separately and never fused. Camera index 0 is
 `fetch_head`, 1 is `fetch_hand`.
 
 ```
-image_head       [112,112,3]   uint8
-image_hand       [112,112,3]   uint8
-state            [D]           float32
-graph_node_ent   [11]          uint16
-graph_node_app   [11,2,384]    float16
-graph_node_bbox  [11,2,4]      float16
-graph_edge_*     [256]         uint8
+image_head         [112,112,3]   uint8
+image_hand         [112,112,3]   uint8
+state              [D]           float32
+instruction        [768]         float32
+graph_node_ent     [24]          uint16
+graph_node_app     [24,2,384]    float16
+graph_node_bbox    [24,2,4]      float16
+graph_node_target  [24]          uint8
+graph_edge_*       [1024]        uint8
 ```
 
 Nothing derivable is stored. The model reads validity, per-camera visibility
@@ -138,6 +140,11 @@ pooled per camera under that camera's fractional patch coverage and cached per
 embedding; a camera that has never seen it stays at exactly zero. The box does
 not persist — an unseen camera packs a zero box every frame.
 
+**Target** marks the vertex the current subtask acts on, which changes per
+subtask under `mshab_obj: all`. It is all-zero when the active object cannot be
+resolved to a vertex; `log/graph_target_missing` reports how often, since a
+dark flag is otherwise indistinguishable from a resolved one.
+
 ## Configuration
 
 **`env.maniskill.graph`** — what the environment emits.
@@ -148,8 +155,8 @@ not persist — an unseen camera packs a zero box every frame.
 | `whitelist_dir` | `''` | mined whitelists; falls back to `thresholds.yaml` |
 | `profile` | `room_scale` | threshold profile for bin fallbacks |
 | `cameras` | `[fetch_head, fetch_hand]` | camera order for the stored axis; the first also renders overlays |
-| `n_max` | `11` | vertex capacity including the ee node; must stay under 256 |
-| `e_max` | `256` | fact capacity per frame; overflow drops spatial before affordance before physical |
+| `n_max` | `24` | vertex capacity including the ee node; must stay under 256. The merged whitelist admits 19 categories plus the ee, so the surplus is headroom for duplicate instances — overflow drops the newcomer, which can be the target |
+| `e_max` | `1024` | fact capacity per frame; overflow drops spatial before affordance before physical |
 | `k_persist` | `-1` | negative keeps a registered vertex for the whole episode |
 | `dino_model` | `dinov2_vits14_reg` | registers keep artifact tokens out of the patch features |
 | `dino_res` | `112` | must be a multiple of the patch size 14 |
@@ -171,17 +178,24 @@ not persist — an unseen camera packs a zero box every frame.
 | `condition_on_deter` | `True` | condition node and fact encodings on `h_t`, per the method. This puts the GNN inside the scan — set `False` to hoist it out and trade fidelity for speed |
 | `entity_vocab` | `64` | placeholder, overwritten from the mined whitelists at startup; do not set by hand |
 
-A vertex is `[AppProj_c(a_c), BBoxProj_c(b_c) for each camera, EntityEmbed(id)]`
-= 2*64 + 2*8 + 64 = 208, projected to `units`. Each block is gated to zero when
-that camera has no embedding or no box, so a projection bias cannot stand in
-for missing data. There is no target input and no global visibility scalar: the
-per-camera boxes already carry it.
+A vertex is `[AppProj_c(a_c), BBoxProj_c(b_c) for each camera, EntityEmbed(id),
+TargetEmbed(flag)]` = 2*64 + 2*8 + 64 + 64 = 272, projected to `units`. Each
+per-camera block is gated to zero when that camera has no embedding or no box,
+so a projection bias cannot stand in for missing data. There is no global
+visibility scalar: the per-camera boxes already carry it.
+
+The target is a two-token embedding rather than a widened entity vocabulary. A
+category means the same thing whether or not it is this episode's goal, so
+splitting `actor:bowl` into goal and non-goal ids would halve the data behind
+each and buy nothing.
 
 **`agent.dyn.rssm`** — `semstoch: 16`, `semclasses: 16`, `semlayers: 1`,
 `free_nats: 1.0`.
 
-**`agent.loss_scales`** — `node`, `relabs`, `reltemp`, `semdyn`, `semrep`.
-`node` is the mean of the appearance, box and visibility heads.
+**`agent.loss_scales`** — `node`, `relabs`, `reltemp`, `semtgt`, `semdyn`,
+`semrep`. `node` is the mean of the appearance, box and visibility heads.
+`semtgt` reads goal identity out of the semantic state; it is small because a
+handful of bits saturates it.
 
 Every width other than the four above resolves from the selected size preset.
 Nothing in the model hard-codes a channel count or token width, so `size1m`
@@ -197,9 +211,12 @@ through `size400m` all build.
 | `train/node_app_var` | spread of the appearance target across vertices. Read this before `node_app_cos` |
 | `train/node_bbox_iou` | box reconstruction, current camera-visible entries only |
 | `train/node_vis_acc` | per-camera visibility. The hand camera sees few objects, so a constant-zero head scores well here — read it against the positive rate |
+| `train/semtgt_acc` | goal identity recovered from the semantic state alone. Low means the semantic KL is evicting the target and imagination is running blind to it |
+| `train/semtgt_frac` | fraction of steps carrying a target label. Read it before `semtgt_acc` — an accuracy over almost no steps means nothing |
 | `train/sem_ent` | semantic posterior entropy |
 | `episode/log/graph_overflow_drops` | vertices the registry could not seat. Nonzero means retained nodes from an earlier subtask are displacing current ones |
 | `episode/log/graph_fact_drops` | facts truncated at `e_max`. Nonzero means spatial edges are being lost — `graph_pack` keeps physical, then affordance, then spatial |
+| `episode/log/graph_target_missing` | frames whose graph flags no target vertex. Active-object resolution fails open for a whole episode at a time, so anything but near-zero means part of the run is training ungrounded |
 | `episode/log/graph_cache_entries` | entries held by the caches that outlive an episode. A sawtooth under the cap is healthy; a climb that never levels off is a leak, and `GraphObsBuilder.cache_stats()` names which container |
 | `replay/ram_gb` | roughly 93 KiB/step, images and appearance dominating |
 
@@ -229,6 +246,7 @@ All config-only, no code changes:
 
 ```bash
 --agent.loss_scales.relabs 0 --agent.loss_scales.reltemp 0   # no relation supervision
+--agent.loss_scales.semtgt 0                                 # target flag as input only, unsupervised
 --agent.graph.reverse_edges False                            # one-directional message passing
 --agent.graph.condition_on_deter False                       # h_t-free encoder, GNN outside the scan
 --env.maniskill.graph.e_max 128                              # tighter fact budget

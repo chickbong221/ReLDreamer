@@ -1,10 +1,10 @@
 """Hyper-relational per-frame packing.
 
 Nodes fill a compact prefix in vertex-index order, ee first, each carrying one
-bbox and one appearance vector per camera; each fact is one row of (relation,
-absolute, temporal). Arrays use the narrowest dtype holding their vocabulary
-since these land in the replay buffer every step; the encoder casts back on
-read.
+bbox and one appearance vector per camera plus a flag marking the subtask's
+target; each fact is one row of (relation, absolute, temporal). Arrays use the
+narrowest dtype holding their vocabulary since these land in the replay buffer
+every step; the encoder casts back on read.
 
 Nothing derivable is stored. Index zero is padding in every vocabulary, so
 validity, per-camera visibility, whether a camera ever observed a node, and
@@ -60,6 +60,12 @@ def pack_graph(
     node_ent = np.zeros(n_max, dtype=np.uint16)
     node_app = np.zeros((n_max, n_cams, app_dim), dtype=np.float16)
     node_bbox = np.zeros((n_max, n_cams, 4), dtype=np.float16)
+    # Which vertex the current subtask is acting on. All-zero is the honest
+    # encoding of "unknown": the target may be unresolved, not yet admitted, or
+    # displaced by vertex overflow, and a bit on the wrong instance is worse
+    # than no bit at all.
+    node_target = np.zeros(n_max, dtype=np.uint8)
+    target_id = graph.meta.get("active_target_node_id")
 
     position: Dict[str, int] = {}
     n_nodes = 0
@@ -81,6 +87,8 @@ def pack_graph(
             node_bbox[i] = node.bbox
         if node.appearance is not None:
             node_app[i] = node.appearance
+        if target_id is not None and node.node_id == target_id:
+            node_target[i] = 1
         position[node.node_id] = i
         n_nodes += 1
 
@@ -128,11 +136,13 @@ def pack_graph(
     graph.meta["n_nodes_packed"] = n_nodes
     graph.meta["n_edges_packed"] = len(kept)
     graph.meta["n_edges_dropped"] = len(candidates) - len(kept)
+    graph.meta["target_packed"] = bool(node_target.any())
 
     return {
         "graph_node_ent": node_ent,
         "graph_node_app": node_app,
         "graph_node_bbox": node_bbox,
+        "graph_node_target": node_target,
         "graph_edge_src": edge_src,
         "graph_edge_dst": edge_dst,
         "graph_edge_rel": edge_rel,
@@ -142,7 +152,7 @@ def pack_graph(
 
 
 GRAPH_KEYS = (
-    "graph_node_ent", "graph_node_app", "graph_node_bbox",
+    "graph_node_ent", "graph_node_app", "graph_node_bbox", "graph_node_target",
     "graph_edge_src", "graph_edge_dst", "graph_edge_rel", "graph_edge_abs",
     "graph_edge_temp",
 )

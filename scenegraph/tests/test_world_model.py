@@ -84,6 +84,7 @@ def _obs_space(app_dim=APP_DIM):
         'graph_node_ent': elements.Space(np.uint16, (N,)),
         'graph_node_app': elements.Space(np.float16, (N, CAMS, app_dim)),
         'graph_node_bbox': elements.Space(np.float16, (N, CAMS, 4)),
+        'graph_node_target': elements.Space(np.uint8, (N,)),
         'graph_edge_src': elements.Space(np.uint8, (E,)),
         'graph_edge_dst': elements.Space(np.uint8, (E,)),
         'graph_edge_rel': elements.Space(np.uint8, (E,)),
@@ -116,6 +117,10 @@ def _graph_batch(rng, n_valid=N - 1, n_facts=E - 3):
             x, y = xy[i, c]
             bbox[i, c] = [x, x + 0.3, y, y + 0.3]
 
+    # Vertex 3 is the subtask target; the ee at 0 never is.
+    target = np.zeros(N, np.uint8)
+    target[3] = 1
+
     src = np.zeros(E, np.uint8)
     dst = np.zeros(E, np.uint8)
     rel = np.zeros(E, np.uint8)
@@ -131,7 +136,7 @@ def _graph_batch(rng, n_valid=N - 1, n_facts=E - 3):
 
     return {
         'graph_node_ent': tile(ent), 'graph_node_app': tile(app),
-        'graph_node_bbox': tile(bbox),
+        'graph_node_bbox': tile(bbox), 'graph_node_target': tile(target),
         'graph_edge_src': tile(src), 'graph_edge_dst': tile(dst),
         'graph_edge_rel': tile(rel), 'graph_edge_abs': tile(sig),
         'graph_edge_temp': tile(tau),
@@ -363,7 +368,9 @@ class WorldModelTests(unittest.TestCase):
                 entity_vocab=ENT_VOCAB, condition_on_deter=True),
             deter=32, hidden=16, stoch=4, classes=4,
             semstoch=4, semclasses=4, semlayers=1, blocks=4, name='dyn')
-        self.dec = GraphDecoder(APP_DIM, units=16, embed=8, name='graphdec')
+        self.dec = GraphDecoder(
+            APP_DIM, units=16, embed=8, entity_vocab=ENT_VOCAB,
+            name='graphdec')
         self.graph = unpack(jax.tree.map(jnp.asarray, _graph_batch(rng)))
         self.tokens = jnp.asarray(rng.rand(B, T, 8), jnp.float32)
         self.acts = {'action': jnp.asarray(
@@ -426,45 +433,64 @@ class WorldModelTests(unittest.TestCase):
             self.assertTrue(bool(jnp.isfinite(grad).all()))
 
     def test_decoder_gradients_are_finite_when_every_node_is_padding(self):
-        def fn(nodes):
-            losses, _ = self.dec(nodes, self.graph, self.live)
+        def fn(nodes, sem):
+            losses, _ = self.dec(nodes, self.graph, sem, self.live)
             return sum(v.sum() for v in losses.values())
         pure = nj.pure(fn)
         # The compute dtype, not float32: the decoder's layers assert on it,
         # and _loss() hands the real path nodes that are already cast.
         nodes = jnp.zeros((B, T, N, 16), nn.COMPUTE_DTYPE)
-        params, _ = pure({}, nodes, seed=jax.random.PRNGKey(0),
+        sem = jnp.zeros((B, T, 4, 4), nn.COMPUTE_DTYPE)
+        params, _ = pure({}, nodes, sem, seed=jax.random.PRNGKey(0),
                          create=True, modify=True)
         grads = jax.grad(
-            lambda p: pure(p, nodes, seed=jax.random.PRNGKey(1))[1])(params)
+            lambda p: pure(p, nodes, sem, seed=jax.random.PRNGKey(1))[1])(params)
         for key, value in grads.items():
             self.assertTrue(np.isfinite(np.asarray(value)).all(), key)
 
     def test_decoder_heads_reduce_to_batch_time(self):
         def fn():
-            _, _, _, _, nodes, _ = self._loss()
-            return self.dec(nodes, self.graph, self.live)
+            _, _, _, feat, nodes, _ = self._loss()
+            return self.dec(nodes, self.graph, feat['sem'], self.live)
         losses, metrics = self._run(fn)
-        self.assertEqual(set(losses), {'node', 'relabs', 'reltemp'})
+        self.assertEqual(set(losses), {'node', 'relabs', 'reltemp', 'semtgt'})
         for key, value in losses.items():
             self.assertEqual(value.shape, (B, T), key)
             self.assertTrue(np.isfinite(np.asarray(value)).all(), key)
         for key, value in metrics.items():
             self.assertTrue(np.isfinite(float(value)), key)
         for key in ('node_vis_acc', 'relabs_acc', 'reltemp_acc',
-                    'node_bbox_iou'):
+                    'node_bbox_iou', 'semtgt_acc', 'semtgt_frac'):
             self.assertTrue(0.0 <= float(metrics[key]) <= 1.0, key)
+        # Every frame in the fixture flags vertex 3, so the head is never
+        # training on an all-masked batch.
+        self.assertEqual(float(metrics['semtgt_frac']), 1.0)
         self.assertTrue(-1.0 <= float(metrics['node_app_cos']) <= 1.0)
         # The appearance target is random per vertex here, so a flat spread
         # would mean the masking collapsed it rather than the encoder.
         self.assertGreater(float(metrics['node_app_var']), 0.0)
 
+    def test_a_frame_with_no_target_contributes_no_semtgt_loss(self):
+        # Unresolved active objects fail open with an all-zero flag, so the
+        # head must train on nothing there rather than on the pad entity.
+        blind = dict(self.graph)
+        blind['graph_node_target'] = jnp.zeros_like(blind['graph_node_target'])
+
+        def fn():
+            _, _, _, feat, nodes, _ = self._loss()
+            return self.dec(nodes, blind, feat['sem'], self.live)
+        losses, metrics = self._run(fn)
+        np.testing.assert_allclose(
+            np.asarray(losses['semtgt']), 0.0, atol=1e-6)
+        self.assertEqual(float(metrics['semtgt_frac']), 0.0)
+        self.assertTrue(np.isfinite(float(metrics['semtgt_acc'])))
+
     def test_terminal_steps_drop_every_graph_loss(self):
         valid = jnp.ones((B, T), jnp.float32).at[:, -1].set(0.0)
 
         def fn():
-            _, _, _, _, nodes, _ = self._loss()
-            return self.dec(nodes, self.graph, valid)
+            _, _, _, feat, nodes, _ = self._loss()
+            return self.dec(nodes, self.graph, feat['sem'], valid)
         losses, _ = self._run(fn)
         for key, value in losses.items():
             np.testing.assert_allclose(

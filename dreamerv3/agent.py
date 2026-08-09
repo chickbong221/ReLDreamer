@@ -75,6 +75,7 @@ class Agent(embodied.jax.Agent):
     self.graphdec = GraphDecoder(
         config.graph.app_dim,
         units=config.graph.units, embed=config.graph.embed,
+        entity_vocab=config.graph.entity_vocab,
         act=dynkw['act'], norm=dynkw['norm'], winit=dynkw['winit'],
         name='graphdec') if self.semantic else None
 
@@ -119,7 +120,7 @@ class Agent(embodied.jax.Agent):
     rec = scales.pop('rec')
     scales.update({k: rec for k in dec_space})
     if not self.semantic:
-      for key in ('node', 'relabs', 'reltemp', 'semdyn', 'semrep'):
+      for key in ('node', 'relabs', 'reltemp', 'semtgt', 'semdyn', 'semrep'):
         scales.pop(key, None)
     self.scales = scales
 
@@ -219,7 +220,7 @@ class Agent(embodied.jax.Agent):
     losses.update(los)
     metrics.update(mets)
     if self.semantic:
-      los, mets = self.graphdec(nodes, graph, step_valid)
+      los, mets = self.graphdec(nodes, graph, repfeat['sem'], step_valid)
       losses.update(los)
       metrics.update(mets)
     dec_carry, dec_entries, recons = self.dec(

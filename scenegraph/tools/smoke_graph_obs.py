@@ -125,6 +125,7 @@ def main():
     n_nodes, n_edges, n_visible, truncated = [], [], [], 0
     app_seen = np.zeros((args.num_envs, 2), bool)
     terminal_frames = 0
+    target_frames, graph_frames = 0, 0
     for step in range(args.steps):
         act["action"] = np.clip(
             np.random.randn(*act["action"].shape).astype(np.float32) * 0.2,
@@ -154,6 +155,8 @@ def main():
         n_visible.append(seen.any(-1).sum(-1))
         truncated += int(((obs["graph_edge_rel"] != 0).sum(-1) >= args.e_max).sum())
         app_seen |= (np.abs(app).sum(-1) > 0).any(1)
+        target_frames += int((obs["graph_node_target"].sum(-1) > 0).sum())
+        graph_frames += args.num_envs
 
         if obs["is_last"].any():
             terminal_frames += int(obs["is_last"].sum())
@@ -176,6 +179,7 @@ def main():
           f"max {visible.max():3.0f}")
     print(f"  facts      min {edges.min():3d}  mean {edges.mean():6.2f}  "
           f"max {edges.max():3d}   (cap {args.e_max})")
+    print(f"  target flagged:   {target_frames}/{graph_frames} frames")
     print(f"  truncated frames: {truncated}")
     print(f"  terminal frames:  {terminal_frames}")
     print(f"  overflow drops:   {env._graph.overflow_drops}")
@@ -194,6 +198,13 @@ def main():
               "wrist view sees an admitted entity")
     if truncated:
         print(f"WARN: {truncated} frames hit e_max; raise it or facts are lost")
+    if not target_frames:
+        print("FAIL: no frame flagged a target vertex; the goal channel is "
+              "dark and the semantic target loss trains on nothing")
+        ok = False
+    elif target_frames < graph_frames:
+        print(f"WARN: {graph_frames - target_frames} frames flagged no target; "
+              "check log/graph_target_missing during training")
     print("\nOK" if ok else "\nFAILED")
     env.close()
     return 0 if ok else 1

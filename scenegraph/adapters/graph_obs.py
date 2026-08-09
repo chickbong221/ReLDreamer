@@ -48,6 +48,7 @@ _DTYPES: Dict[str, np.dtype] = {
     "graph_node_ent": np.uint16,
     "graph_node_app": np.float16,
     "graph_node_bbox": np.float16,
+    "graph_node_target": np.uint8,
     "graph_edge_src": np.uint8,
     "graph_edge_dst": np.uint8,
     "graph_edge_rel": np.uint8,
@@ -181,6 +182,10 @@ class GraphObsBuilder:
         # own counter; without this one an e_max that is too small drops
         # spatial edges silently for a whole run.
         self._fact_drops = np.zeros(self.num_envs, dtype=np.float32)
+        # Frames whose graph names no target vertex. Unresolved active objects
+        # fail open for a whole episode at a time, and the flag is zero either
+        # way, so without this counter a run trains ungrounded and looks fine.
+        self._target_missing = np.zeros(self.num_envs, dtype=np.float32)
         self._scene_cache_signature = None
         self._cpu_buffers: Dict[Tuple[str, str], torch.Tensor] = {}
 
@@ -195,6 +200,7 @@ class GraphObsBuilder:
             "graph_node_ent":  (self.n_max,),
             "graph_node_app":  (self.n_max, self.n_cams, self.app_dim),
             "graph_node_bbox": (self.n_max, self.n_cams, 4),
+            "graph_node_target": (self.n_max,),
             "graph_edge_src":  (self.e_max,),
             "graph_edge_dst":  (self.e_max,),
             "graph_edge_rel":  (self.e_max,),
@@ -216,6 +222,11 @@ class GraphObsBuilder:
     def fact_drops(self) -> np.ndarray:
         """Per-env facts the packer could not seat in the last packed frame."""
         return self._fact_drops.copy()
+
+    @property
+    def target_missing(self) -> np.ndarray:
+        """Per-env 1.0 where the last packed frame flagged no target vertex."""
+        return self._target_missing.copy()
 
     def cache_stats(self) -> Dict[str, int]:
         """Sizes of every container that could grow without bound, for leak
@@ -481,6 +492,8 @@ class GraphObsBuilder:
                 self._last_packed[i] = out
                 self._fact_drops[i] = float(
                     graphs[i].meta.get("n_edges_dropped", 0))
+                self._target_missing[i] = float(
+                    not graphs[i].meta.get("target_packed", False))
             else:
                 out = self._last_packed[i] or self._zero_pack()
             packed.append(out)
