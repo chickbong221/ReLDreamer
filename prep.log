@@ -1,0 +1,261 @@
+[instr] set_table/pick/train: 2 (subtask, object) pairs
+[instr] set_table/pick/val: 2 (subtask, object) pairs
+[instr] prepare_groceries/pick/train: 9 (subtask, object) pairs
+[instr] prepare_groceries/pick/val: 9 (subtask, object) pairs
+[instr] tidy_house/pick/train: 9 (subtask, object) pairs
+[instr] tidy_house/pick/val: 9 (subtask, object) pairs
+
+[prep] task plans name 10 (subtask, object) pairs
+  pick   002_master_chef_can          ckpt no[33;1m2026-08-09 01:22:50,371 - mani_skill  - WARNING - shader_dir argument will be deprecated after ManiSkill v3.0.0 official release. Please use sensor_configs/human_render_camera_configs to set shaders.[0m
+[33;1m2026-08-09 01:38:38,377 - mani_skill  - WARNING - shader_dir argument will be deprecated after ManiSkill v3.0.0 official release. Please use sensor_configs/human_render_camera_configs to set shaders.[0m
+[33;1m2026-08-09 01:47:49,578 - mani_skill  - WARNING - shader_dir argument will be deprecated after ManiSkill v3.0.0 official release. Please use sensor_configs/human_render_camera_configs to set shaders.[0m
+[33;1m2026-08-09 01:59:28,115 - mani_skill  - WARNING - shader_dir argument will be deprecated after ManiSkill v3.0.0 official release. Please use sensor_configs/human_render_camera_configs to set shaders.[0m
+[33;1m2026-08-09 02:14:24,728 - mani_skill  - WARNING - shader_dir argument will be deprecated after ManiSkill v3.0.0 official release. Please use sensor_configs/human_render_camera_configs to set shaders.[0m
+[33;1m2026-08-09 02:24:35,413 - mani_skill  - WARNING - shader_dir argument will be deprecated after ManiSkill v3.0.0 official release. Please use sensor_configs/human_render_camera_configs to set shaders.[0m
+[33;1m2026-08-09 02:34:17,931 - mani_skill  - WARNING - shader_dir argument will be deprecated after ManiSkill v3.0.0 official release. Please use sensor_configs/human_render_camera_configs to set shaders.[0m
+[33;1m2026-08-09 02:48:39,028 - mani_skill  - WARNING - shader_dir argument will be deprecated after ManiSkill v3.0.0 official release. Please use sensor_configs/human_render_camera_configs to set shaders.[0m
+[plan] 10 (task, obj) units; n_success target=30
+[plan] writing under /root/.maniskill/data/robot_success_states/fetch/pick/
+
+=== prepare_groceries/002_master_chef_can   ckpt=002_master_chef_can ===
+[env] plan=002_master_chef_can.json num_envs=8
+[policy] detected algo = sac
+[policy] loaded mshab SAC Agent from /root/projects/ReLDreamer/mshab_checkpoints/rl/prepare_groceries/pick/002_master_chef_can/policy.pt
+  [002_master_chef_can] step=200 successes=4 (3.4 steps/s)
+  [002_master_chef_can] step=400 successes=10 (2.4 steps/s)
+  [002_master_chef_can] step=600 successes=16 (1.8 steps/s)
+  [002_master_chef_can] step=800 successes=21 (1.7 steps/s)
+  [002_master_chef_can] step=1000 successes=27 (1.7 steps/s)
+[ok] 002_master_chef_can: reached 30/30 successes in 1038 steps (592.2s)
+[wrote] /root/.maniskill/data/robot_success_states/fetch/pick/002_master_chef_can.pkl  (30 samples)
+
+=== prepare_groceries/003_cracker_box   ckpt=003_cracker_box ===
+[env] plan=003_cracker_box.json num_envs=8
+[policy] detected algo = sac
+[policy] loaded mshab SAC Agent from /root/projects/ReLDreamer/mshab_checkpoints/rl/prepare_groceries/pick/003_cracker_box/policy.pt
+  [003_cracker_box] step=200 successes=6 (5.0 steps/s)
+  [003_cracker_box] step=400 successes=11 (3.4 steps/s)
+  [003_cracker_box] step=600 successes=18 (2.9 steps/s)
+  [003_cracker_box] step=800 successes=24 (2.8 steps/s)
+  [003_cracker_box] step=1000 successes=29 (2.7 steps/s)
+[ok] 003_cracker_box: reached 30/30 successes in 1036 steps (389.0s)
+[wrote] /root/.maniskill/data/robot_success_states/fetch/pick/003_cracker_box.pkl  (30 samples)
+
+=== prepare_groceries/004_sugar_box   ckpt=004_sugar_box ===
+[env] plan=004_sugar_box.json num_envs=8
+[policy] detected algo = sac
+[policy] loaded mshab SAC Agent from /root/projects/ReLDreamer/mshab_checkpoints/rl/prepare_groceries/pick/004_sugar_box/policy.pt
+  [004_sugar_box] step=200 successes=2 (1.9 steps/s)
+  [004_sugar_box] step=400 successes=6 (1.9 steps/s)
+  [004_sugar_box] step=600 successes=9 (2.0 steps/s)
+  [004_sugar_box] step=800 successes=12 (2.0 steps/s)
+  [004_sugar_box] step=1000 successes=13 (1.9 steps/s)
+  [004_sugar_box] step=1200 successes=17 (1.9 steps/s)
+  [004_sugar_box] step=1400 successes=22 (2.0 steps/s)
+  [004_sugar_box] step=1600 successes=24 (2.0 steps/s)
+  [004_sugar_box] step=1800 successes=29 (2.0 steps/s)
+[ok] 004_sugar_box: reached 30/30 successes in 1840 steps (918.7s)
+[wrote] /root/.maniskill/data/robot_success_states/fetch/pick/004_sugar_box.pkl  (30 samples)
+
+=== prepare_groceries/005_tomato_soup_can   ckpt=005_tomato_soup_can ===
+[env] plan=005_tomato_soup_can.json num_envs=8
+[policy] detected algo = sac
+[policy] loaded mshab SAC Agent from /root/projects/ReLDreamer/mshab_checkpoints/rl/prepare_groceries/pick/005_tomato_soup_can/policy.pt
+  [005_tomato_soup_can] step=200 successes=4 (2.3 steps/s)
+  [005_tomato_soup_can] step=400 successes=8 (2.4 steps/s)
+  [005_tomato_soup_can] step=600 successes=12 (2.4 steps/s)
+  [005_tomato_soup_can] step=800 successes=16 (2.4 steps/s)
+  [005_tomato_soup_can] step=1000 successes=23 (2.4 steps/s)
+  [005_tomato_soup_can] step=1200 successes=26 (2.4 steps/s)
+[ok] 005_tomato_soup_can: reached 30/30 successes in 1240 steps (521.7s)
+[wrote] /root/.maniskill/data/robot_success_states/fetch/pick/005_tomato_soup_can.pkl  (30 samples)
+
+=== prepare_groceries/007_tuna_fish_can   ckpt=007_tuna_fish_can ===
+[env] plan=007_tuna_fish_can.json num_envs=8
+[policy] detected algo = sac
+[policy] loaded mshab SAC Agent from /root/projects/ReLDreamer/mshab_checkpoints/rl/prepare_groceries/pick/007_tuna_fish_can/policy.pt
+  [007_tuna_fish_can] step=200 successes=3 (1.9 steps/s)
+  [007_tuna_fish_can] step=400 successes=8 (1.7 steps/s)
+  [007_tuna_fish_can] step=600 successes=13 (1.8 steps/s)
+  [007_tuna_fish_can] step=800 successes=18 (1.9 steps/s)
+  [007_tuna_fish_can] step=1000 successes=23 (1.9 steps/s)
+  [007_tuna_fish_can] step=1200 successes=28 (1.9 steps/s)
+[ok] 007_tuna_fish_can: reached 30/30 successes in 1242 steps (669.4s)
+[wrote] /root/.maniskill/data/robot_success_states/fetch/pick/007_tuna_fish_can.pkl  (30 samples)
+
+=== prepare_groceries/008_pudding_box   ckpt=008_pudding_box ===
+[env] plan=008_pudding_box.json num_envs=8
+[policy] detected algo = sac
+[policy] loaded mshab SAC Agent from /root/projects/ReLDreamer/mshab_checkpoints/rl/prepare_groceries/pick/008_pudding_box/policy.pt
+  [008_pudding_box] step=200 successes=6 (1.1 steps/s)
+  [008_pudding_box] step=400 successes=10 (1.2 steps/s)
+  [008_pudding_box] step=600 successes=15 (1.2 steps/s)
+  [008_pudding_box] step=800 successes=19 (1.2 steps/s)
+  [008_pudding_box] step=1000 successes=26 (1.2 steps/s)
+[ok] 008_pudding_box: reached 31/30 successes in 1043 steps (866.4s)
+[wrote] /root/.maniskill/data/robot_success_states/fetch/pick/008_pudding_box.pkl  (31 samples)
+
+=== prepare_groceries/009_gelatin_box   ckpt=009_gelatin_box ===
+[env] plan=009_gelatin_box.json num_envs=8
+[policy] detected algo = sac
+[policy] loaded mshab SAC Agent from /root/projects/ReLDreamer/mshab_checkpoints/rl/prepare_groceries/pick/009_gelatin_box/policy.pt
+  [009_gelatin_box] step=200 successes=5 (1.6 steps/s)
+  [009_gelatin_box] step=400 successes=12 (1.7 steps/s)
+  [009_gelatin_box] step=600 successes=18 (1.7 steps/s)
+  [009_gelatin_box] step=800 successes=22 (1.7 steps/s)
+  [009_gelatin_box] step=1000 successes=28 (1.8 steps/s)
+[ok] 009_gelatin_box: reached 30/30 successes in 1028 steps (583.8s)
+[wrote] /root/.maniskill/data/robot_success_states/fetch/pick/009_gelatin_box.pkl  (30 samples)
+
+=== prepare_groceries/010_potted_meat_can   ckpt=010_potted_meat_can ===
+[env] plan=010_potted_meat_can.json num_envs=8
+[policy] detected algo = sac
+[policy] loaded mshab SAC Agent from /root/projects/ReLDreamer/mshab_checkpoints/rl/prepare_groceries/pick/010_potted_meat_can/policy.pt
+  [010_potted_meat_can] step=200 successes=6 (2.6 steps/s)
+  [010_potted_meat_can] step=400 successes=10 (2.3 steps/s)
+  [010_potted_meat_can] step=600 successes=15 (2.2 steps/s)
+  [010_potted_meat_can] step=800 successes=19 (2.2 steps/s)
+  [010_potted_meat_can] step=1000 successes=23 (2.2 steps/s)
+  [010_potted_meat_can] step=1200 successes=28 (2.2 steps/s)
+[ok] 010_potted_meat_can: reached 30/30 successes in 1237 steps (555.9s)
+[wrote] /root/.maniskill/data/robot_success_states/fetch/pick/010_potted_meat_can.pkl  (30 samples)
+
+=== set_table/013_apple   ckpt=013_apple ===
+[env] plan=013_apple.json num_envs=8
+[policy] detected algo = sac
+[policy] loaded mshab SAC Agent from /root/projects/ReLDreamer/mshab_checkpoints/rl/set_table/pick/013_apple/policy.pt
+  [013_apple] step=200 successes=5 (1.3 steps/s)
+  [013_apple] step=400 successes=11 (1.2 steps/s)
+  [013_apple] step=600 successes=17 (1.3 steps/s)
+  [013_apple] step=800 successes=22 (1.2 steps/s)
+  [013_apple] step=1000 successes=28 (1.2 steps/s)
+[ok] 013_apple: reached 30/30 successes in 1031 steps (823.6s)
+[wrote] /root/.maniskill/data/robot_success_states/fetch/pick/013_apple.pkl  (30 samples)
+
+=== prepare_groceries/024_bowl   ckpt=024_bowl ===
+[env] plan=024_bowl.json num_envs=8
+[policy] detected algo = sac
+[policy] loaded mshab SAC Agent from /root/projects/ReLDreamer/mshab_checkpoints/rl/prepare_groceries/pick/024_bowl/policy.pt
+  [024_bowl] step=200 successes=6 (1.5 steps/s)
+  [024_bowl] step=400 successes=10 (1.5 steps/s)
+  [024_bowl] step=600 successes=15 (1.9 steps/s)
+  [024_bowl] step=800 successes=20 (2.2 steps/s)
+  [024_bowl] step=1000 successes=26 (2.4 steps/s)
+[ok] 024_bowl: reached 30/30 successes in 1042 steps (435.1s)
+[wrote] /root/.maniskill/data/robot_success_states/fetch/pick/024_bowl.pkl  (30 samples)
+
+[summary] 10/10 units produced .pkl files
+02:56:26 INFO build_affordances: FK URDF (legacy fallback): /root/projects/dreamer-maniskill-hab/ManiSkill/mani_skill/assets/robots/fetch/fetch.urdf
+02:56:27 INFO build_affordances: 002_master_chef_can.pkl -> actor:002_master_chef_can : 30 raw affordance candidates
+02:56:27 INFO build_affordances: 003_cracker_box.pkl -> actor:003_cracker_box : 30 raw affordance candidates
+02:56:27 INFO build_affordances: 004_sugar_box.pkl -> actor:004_sugar_box : 30 raw affordance candidates
+02:56:27 INFO build_affordances: 005_tomato_soup_can.pkl -> actor:005_tomato_soup_can : 30 raw affordance candidates
+02:56:27 INFO build_affordances: 007_tuna_fish_can.pkl -> actor:007_tuna_fish_can : 30 raw affordance candidates
+02:56:27 INFO build_affordances: 008_pudding_box.pkl -> actor:008_pudding_box : 31 raw affordance candidates
+02:56:27 INFO build_affordances: 009_gelatin_box.pkl -> actor:009_gelatin_box : 30 raw affordance candidates
+02:56:27 INFO build_affordances: 010_potted_meat_can.pkl -> actor:010_potted_meat_can : 30 raw affordance candidates
+02:56:27 INFO build_affordances: 013_apple.pkl -> actor:013_apple : 30 raw affordance candidates
+02:56:27 INFO build_affordances: 024_bowl.pkl -> actor:024_bowl : 30 raw affordance candidates
+02:56:27 INFO build_affordances: wrote 18 objects (336 components total) to /root/projects/ReLDreamer/scenegraph/configs/affordances.json
+2026-08-09 02:56:28,364 INFO build_subtask_whitelists: wrote pick_002_master_chef_can.json (6 members)
+2026-08-09 02:56:28,679 INFO build_subtask_whitelists: wrote pick_003_cracker_box.json (6 members)
+2026-08-09 02:56:28,999 INFO build_subtask_whitelists: wrote pick_004_sugar_box.json (10 members)
+2026-08-09 02:56:29,324 INFO build_subtask_whitelists: wrote pick_005_tomato_soup_can.json (9 members)
+2026-08-09 02:56:29,910 INFO build_subtask_whitelists: wrote pick_007_tuna_fish_can.json (10 members)
+2026-08-09 02:56:30,322 INFO build_subtask_whitelists: wrote pick_008_pudding_box.json (12 members)
+2026-08-09 02:56:30,758 INFO build_subtask_whitelists: wrote pick_009_gelatin_box.json (10 members)
+2026-08-09 02:56:31,160 INFO build_subtask_whitelists: wrote pick_010_potted_meat_can.json (4 members)
+2026-08-09 02:56:31,561 INFO build_subtask_whitelists: wrote pick_013_apple.json (4 members)
+2026-08-09 02:56:32,097 INFO build_subtask_whitelists: wrote pick_024_bowl.json (8 members)
+2026-08-09 02:56:32,097 INFO build_subtask_whitelists: mined 10 whitelists from 301 successful rollouts
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[instr] set_table/pick/train: 2 (subtask, object) pairs
+[instr] set_table/pick/val: 2 (subtask, object) pairs
+[instr] prepare_groceries/pick/train: 9 (subtask, object) pairs
+[instr] prepare_groceries/pick/val: 9 (subtask, object) pairs
+[instr] tidy_house/pick/train: 9 (subtask, object) pairs
+[instr] tidy_house/pick/val: 9 (subtask, object) pairs
+Loading weights:   0%|          | 0/99 [00:00<?, ?it/s]Loading weights: 100%|██████████| 99/99 [00:00<00:00, 11301.09it/s]
+[instr] 10 entries, dim 768, model t5-base
+[instr] wrote /root/projects/ReLDreamer/scenegraph/configs/instructions.npz
+[instr] in val but not train: none
+[instr] in train but not val: none
+  pick/actor:002_master_chef_can               pick up the master chef can
+  pick/actor:003_cracker_box                   pick up the cracker box
+  pick/actor:004_sugar_box                     pick up the sugar box
+  pick/actor:005_tomato_soup_can               pick up the tomato soup can
+  pick/actor:007_tuna_fish_can                 pick up the tuna fish can
+  pick/actor:008_pudding_box                   pick up the pudding box
+  pick/actor:009_gelatin_box                   pick up the gelatin box
+  pick/actor:010_potted_meat_can               pick up the potted meat can
+  pick/actor:013_apple                         pick up the apple
+  pick/actor:024_bowl                          pick up the bowl
+[instr] set_table/pick/train: 2 (subtask, object) pairs
+[instr] set_table/pick/val: 2 (subtask, object) pairs
+[instr] prepare_groceries/pick/train: 9 (subtask, object) pairs
+[instr] prepare_groceries/pick/val: 9 (subtask, object) pairs
+[instr] tidy_house/pick/train: 9 (subtask, object) pairs
+[instr] tidy_house/pick/val: 9 (subtask, object) pairs
+[instr] 10 entries, dim 768, model random-orthonormal-768-seed0
+[instr] wrote /root/projects/ReLDreamer/scenegraph/configs/instructions_random.npz
+[instr] in val but not train: none
+[instr] in train but not val: none
+  pick/actor:002_master_chef_can               pick up the master chef can
+  pick/actor:003_cracker_box                   pick up the cracker box
+  pick/actor:004_sugar_box                     pick up the sugar box
+  pick/actor:005_tomato_soup_can               pick up the tomato soup can
+  pick/actor:007_tuna_fish_can                 pick up the tuna fish can
+  pick/actor:008_pudding_box                   pick up the pudding box
+  pick/actor:009_gelatin_box                   pick up the gelatin box
+  pick/actor:010_potted_meat_can               pick up the potted meat can
+  pick/actor:013_apple                         pick up the apple
+  pick/actor:024_bowl                          pick up the bowl
+[instr] set_table/pick/train: 2 (subtask, object) pairs
+[instr] set_table/pick/val: 2 (subtask, object) pairs
+[instr] prepare_groceries/pick/train: 9 (subtask, object) pairs
+[instr] prepare_groceries/pick/val: 9 (subtask, object) pairs
+[instr] tidy_house/pick/train: 9 (subtask, object) pairs
+[instr] tidy_house/pick/val: 9 (subtask, object) pairs
+
+[prep] task plans name 10 (subtask, object) pairs
+  pick   002_master_chef_can          ckpt no-wl no-instr
+  pick   003_cracker_box              ckpt no-wl no-instr
+  pick   004_sugar_box                ckpt no-wl no-instr
+  pick   005_tomato_soup_can          ckpt no-wl no-instr
+  pick   007_tuna_fish_can            ckpt no-wl no-instr
+  pick   008_pudding_box              ckpt no-wl no-instr
+  pick   009_gelatin_box              ckpt no-wl no-instr
+  pick   010_potted_meat_can          ckpt no-wl no-instr
+  pick   013_apple                    ckpt no-wl no-instr
+  pick   024_bowl                     ckpt no-wl no-instr
+
+[prep] clean
+  rm -r /root/.maniskill/data/robot_success_states/fetch/pick
+
+[prep] collect
+  $ scenegraph.tools.collect_robot_success_states --ckpt-root /root/projects/ReLDreamer/mshab_checkpoints/rl --subtask pick --n-success 30 --num-envs 8 --asset-dir /root/.maniskill/data --no-skip-done --task set_table --task prepare_groceries --task tidy_house
+
+[prep] affordances
+  $ scenegraph.tools.build_affordances --success-states-dir /root/.maniskill/data/robot_success_states --robot fetch --subtask pick --out /root/projects/ReLDreamer/scenegraph/configs/affordances.json
+
+[prep] whitelists
+  $ scenegraph.tools.build_subtask_whitelists --success-states-dir /root/.maniskill/data/robot_success_states --out-dir /root/projects/ReLDreamer/scenegraph/configs/subtask_whitelists --affordance-json /root/projects/ReLDreamer/scenegraph/configs/affordances.json
+
+[prep] instructions
+  $ scenegraph.tools.build_instruction_embeddings --mshab-task set_table prepare_groceries tidy_house --subtask pick --splits train val --obj all --out /root/projects/ReLDreamer/scenegraph/configs/instructions.npz --model t5-base
+  $ scenegraph.tools.build_instruction_embeddings --mshab-task set_table prepare_groceries tidy_house --subtask pick --splits train val --obj all --out /root/projects/ReLDreamer/scenegraph/configs/instructions_random.npz --random
+
+[prep] verify
+
+[prep] task plans name 10 (subtask, object) pairs
+  pick   002_master_chef_can          ckpt wl instr
+  pick   003_cracker_box              ckpt wl instr
+  pick   004_sugar_box                ckpt wl instr
+  pick   005_tomato_soup_can          ckpt wl instr
+  pick   007_tuna_fish_can            ckpt wl instr
+  pick   008_pudding_box              ckpt wl instr
+  pick   009_gelatin_box              ckpt wl instr
+  pick   010_potted_meat_can          ckpt wl instr
+  pick   013_apple                    ckpt wl instr
+  pick   024_bowl                     ckpt wl instr
+[prep] every (subtask, object) pair the task plans name is covered
