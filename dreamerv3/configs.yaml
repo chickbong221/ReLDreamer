@@ -351,7 +351,7 @@ mshab:
       # the graph-free baseline on identical pixels.
       named_cameras: true
   replay:
-    size: 300000
+    size: 500000
 
 behavior1k:
   <<: *size100m
