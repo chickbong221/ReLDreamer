@@ -62,6 +62,7 @@ defaults:
       frame_stack: 1             # mshab path: no FrameStack wrapper
       reward_mode: normalized_dense  # 'sparse' | 'dense' | 'normalized_dense'
       graph:                     # scene graph obs; obs_mode must include rgb and segmentation
+        # false: exact plain DreamerV3 model; true: graph-semantic extension
         enabled: false
         profile: room_scale
         thresholds_path: ''

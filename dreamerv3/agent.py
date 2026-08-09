@@ -36,10 +36,15 @@ class Agent(embodied.jax.Agent):
     self.act_space = act_space
     self.config = config
 
-    # Graph keys route to the semantic posterior, not the observation encoder
-    # or decoder: they are vocabulary ids, not sensor readings. Suites that
-    # emit no graph run the plain RSSM with a constant zero semantic state.
-    self.semantic = all(k in obs_space for k in GRAPH_KEYS)
+    # graph.enabled controls whether the environment emits this complete key
+    # set. Accept either all graph keys or none so a partially wrapped
+    # environment cannot silently select the wrong architecture.
+    present = tuple(k for k in GRAPH_KEYS if k in obs_space)
+    if present and len(present) != len(GRAPH_KEYS):
+      missing = tuple(k for k in GRAPH_KEYS if k not in obs_space)
+      raise ValueError(
+          f'Incomplete scene graph observation space; missing keys: {missing}')
+    self.semantic = bool(present)
     exclude = ('is_first', 'is_last', 'is_terminal', 'reward', *GRAPH_KEYS)
     enc_space = {k: v for k, v in obs_space.items() if k not in exclude}
     # The instruction is an input, not a sensor reading. The encoder conditions
@@ -63,7 +68,9 @@ class Agent(embodied.jax.Agent):
         **config.dyn[config.dyn.typ], name='dyn')
     self.dec = {
         'simple': rssm.Decoder,
-    }[config.dec.typ](dec_space, **config.dec[config.dec.typ], name='dec')
+    }[config.dec.typ](
+        dec_space, semantic=self.semantic,
+        **config.dec[config.dec.typ], name='dec')
     dynkw = config.dyn[config.dyn.typ]
     self.graphdec = GraphDecoder(
         config.graph.app_dim,
@@ -71,10 +78,15 @@ class Agent(embodied.jax.Agent):
         act=dynkw['act'], norm=dynkw['norm'], winit=dynkw['winit'],
         name='graphdec') if self.semantic else None
 
-    self.feat2tensor = lambda x: jnp.concatenate([
-        nn.cast(x['deter']),
-        nn.cast(x['sem'].reshape((*x['sem'].shape[:-2], -1))),
-        nn.cast(x['stoch'].reshape((*x['stoch'].shape[:-2], -1)))], -1)
+    if self.semantic:
+      self.feat2tensor = lambda x: jnp.concatenate([
+          nn.cast(x['deter']),
+          nn.cast(x['sem'].reshape((*x['sem'].shape[:-2], -1))),
+          nn.cast(x['stoch'].reshape((*x['stoch'].shape[:-2], -1)))], -1)
+    else:
+      self.feat2tensor = lambda x: jnp.concatenate([
+          nn.cast(x['deter']),
+          nn.cast(x['stoch'].reshape((*x['stoch'].shape[:-2], -1)))], -1)
 
     scalar = elements.Space(np.float32, ())
     binary = elements.Space(bool, (), 0, 2)

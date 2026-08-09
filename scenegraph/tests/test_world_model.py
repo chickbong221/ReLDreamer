@@ -1,9 +1,9 @@
 """Semantic world model on synthetic data. No simulator, no assets.
 
 Exercises everything the sim tests cannot reach: agent construction against the
-real config at several model sizes, the RSSM with a semantic state, the graph
-decoder heads and their masks, terminal masking, and the fact that imagination
-runs without a graph at all.
+real config at several model sizes, both the exact plain RSSM and its semantic
+extension, the graph decoder heads and their masks, terminal masking, and the
+fact that imagination runs without a graph at all.
 
 Run on a machine with jax installed:
 
@@ -28,7 +28,7 @@ if jax is not None:
     import embodied.jax.nets as nn
 
     from dreamerv3.agent import Agent
-    from dreamerv3.graph_encoder import GraphDecoder, unpack
+    from dreamerv3.graph_encoder import GRAPH_KEYS, GraphDecoder, unpack
     from dreamerv3.rssm import Decoder, Encoder, RSSM
 
 B, T, N, E = 2, 4, 5, 12
@@ -183,6 +183,21 @@ class AgentConstructionTests(unittest.TestCase):
         self.assertFalse(agent.semantic)
         self.assertIsNone(agent.graphdec)
         self.assertNotIn('relabs', agent.scales)
+        self.assertNotIn('sem', agent.dyn.entry_space)
+        self.assertFalse(agent.dec.semantic)
+        feat = dict(
+            deter=jnp.zeros((2, agent.dyn.deter), jnp.float32),
+            stoch=jnp.zeros(
+                (2, agent.dyn.stoch, agent.dyn.classes), jnp.float32))
+        self.assertEqual(
+            agent.feat2tensor(feat).shape[-1],
+            agent.dyn.deter + agent.dyn.stoch * agent.dyn.classes)
+
+    def test_partial_graph_observation_space_is_rejected(self):
+        space = _obs_space()
+        del space[GRAPH_KEYS[-1]]
+        with self.assertRaisesRegex(ValueError, 'Incomplete scene graph'):
+            self._agent(space)
 
     def test_semantic_state_reaches_the_entry_space(self):
         self.assertIn('sem', self._agent().dyn.entry_space)
@@ -251,7 +266,7 @@ class ImageShapeTests(unittest.TestCase):
         enc = Encoder(self._spaces(), depth=4, mults=(2, 3, 4, 4), kernel=3,
                       layers=1, units=8, name='enc')
         dec = Decoder(self._spaces(), depth=4, mults=(2, 3, 4, 4), kernel=3,
-                      layers=1, units=8, bspace=8, name='dec')
+                      layers=1, units=8, bspace=8, semantic=True, name='dec')
         obs = {k: jnp.asarray(rng.randint(0, 256, (B, T, *IMAGE), np.uint8))
                for k in self._spaces()}
         reset = jnp.zeros((B, T), bool)
@@ -268,6 +283,72 @@ class ImageShapeTests(unittest.TestCase):
         _, _, recons = self._run(lambda: dec({}, feat, reset, True))
         for key in self._spaces():
             self.assertEqual(recons[key].pred().shape, (B, T, *IMAGE))
+
+    def test_plain_decoder_needs_no_semantic_feature(self):
+        dec = Decoder(self._spaces(), depth=4, mults=(2, 3, 4, 4), kernel=3,
+                      layers=1, units=8, bspace=8, semantic=False, name='dec')
+        reset = jnp.zeros((B, T), bool)
+        feat = dict(
+            deter=jnp.zeros((B, T, 32), jnp.float32),
+            stoch=jnp.zeros((B, T, 4, 4), jnp.float32))
+        _, _, recons = self._run(lambda: dec({}, feat, reset, True))
+        for key in self._spaces():
+            self.assertEqual(recons[key].pred().shape, (B, T, *IMAGE))
+
+
+@unittest.skipIf(jax is None, 'jax is not installed')
+class PlainWorldModelTests(unittest.TestCase):
+    """The graph-off branch must retain the pre-semantic architecture."""
+
+    def setUp(self):
+        rng = np.random.RandomState(0)
+        self.act_space = {
+            'action': elements.Space(np.float32, (4,), -1, 1)}
+        self.dyn = RSSM(
+            self.act_space, semantic=False,
+            deter=32, hidden=16, stoch=4, classes=4, blocks=4, name='dyn')
+        self.tokens = jnp.asarray(rng.rand(B, T, 8), jnp.float32)
+        self.acts = {'action': jnp.asarray(
+            rng.rand(B, T, 4).astype(np.float32))}
+        self.reset = jnp.zeros((B, T), bool).at[:, 0].set(True)
+
+    def _create(self, fn):
+        pure = nj.pure(fn)
+        params, out = pure(
+            {}, seed=jax.random.PRNGKey(0), create=True, modify=True)
+        return params, out
+
+    def test_state_losses_and_parameters_match_the_plain_rssm(self):
+        self.assertEqual(set(self.dyn.entry_space), {'deter', 'stoch'})
+        self.assertEqual(set(self.dyn.initial(B)), {'deter', 'stoch'})
+
+        def fn():
+            return self.dyn.loss(
+                self.dyn.initial(B), self.tokens, {}, self.acts,
+                self.reset, True)
+
+        params, (_, entries, losses, feat, nodes, metrics) = self._create(fn)
+        self.assertEqual(set(entries), {'deter', 'stoch'})
+        self.assertEqual(set(feat), {'deter', 'stoch', 'logit'})
+        self.assertEqual(set(losses), {'dyn', 'rep'})
+        self.assertEqual(set(metrics), {'dyn_ent', 'rep_ent'})
+        self.assertIsNone(nodes)
+
+        semantic_names = ('dynin3', 'graphenc', 'semobs', 'semprior')
+        for key in params:
+            self.assertFalse(any(name in key for name in semantic_names), key)
+        # Original Dreamer input per recurrent block: h/g + three projections
+        # (h, z, action). The semantic model has a fourth projection.
+        self.assertEqual(params['dyn/dynhid0/kernel'].shape[1], 32 // 4 + 3 * 16)
+
+    def test_plain_imagination_carries_no_semantic_state(self):
+        def fn():
+            policy = {'action': jnp.zeros((B, 3, 4), jnp.float32)}
+            return self.dyn.imagine(self.dyn.initial(B), policy, 3, False)
+
+        _, (carry, feat, _) = self._create(fn)
+        self.assertEqual(set(carry), {'deter', 'stoch'})
+        self.assertEqual(set(feat), {'deter', 'stoch', 'logit'})
 
 
 @unittest.skipIf(jax is None, 'jax is not installed')

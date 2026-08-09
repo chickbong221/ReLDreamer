@@ -16,13 +16,11 @@ sg = jax.lax.stop_gradient
 
 
 class RSSM(nj.Module):
-  """RSSM with a semantic stochastic state between h_t and z_t.
+  """Plain Dreamer RSSM, optionally extended with a semantic graph state.
 
-  The sequence model advances h_t from the previous recurrent, semantic and
-  low-level states; the semantic posterior reads the scene graph while the
-  semantic prior predicts the same state from temporal context alone. The
-  low-level prior and posterior are both conditioned on the semantic state, so
-  imagination never needs a graph.
+  With ``semantic=False``, this constructs the original DreamerV3 state and
+  parameter shapes. With ``semantic=True``, the semantic stochastic state sits
+  between h_t and z_t and is inferred from the scene graph during observation.
   """
 
   deter: int = 4096
@@ -54,17 +52,24 @@ class RSSM(nj.Module):
 
   @property
   def entry_space(self):
+    if self.semantic:
+      return dict(
+          deter=elements.Space(np.float32, self.deter),
+          sem=elements.Space(np.float32, (self.semstoch, self.semclasses)),
+          stoch=elements.Space(np.float32, (self.stoch, self.classes)))
     return dict(
         deter=elements.Space(np.float32, self.deter),
-        sem=elements.Space(np.float32, (self.semstoch, self.semclasses)),
         stoch=elements.Space(np.float32, (self.stoch, self.classes)))
 
   def initial(self, bsize):
-    carry = nn.cast(dict(
+    if self.semantic:
+      return nn.cast(dict(
+          deter=jnp.zeros([bsize, self.deter], f32),
+          sem=jnp.zeros([bsize, self.semstoch, self.semclasses], f32),
+          stoch=jnp.zeros([bsize, self.stoch, self.classes], f32)))
+    return nn.cast(dict(
         deter=jnp.zeros([bsize, self.deter], f32),
-        sem=jnp.zeros([bsize, self.semstoch, self.semclasses], f32),
         stoch=jnp.zeros([bsize, self.stoch, self.classes], f32)))
-    return carry
 
   def truncate(self, entries, carry=None):
     assert entries['deter'].ndim == 3, entries['deter'].shape
@@ -78,36 +83,62 @@ class RSSM(nj.Module):
 
   def observe(self, carry, tokens, graph, action, reset, training, single=False):
     carry, tokens, action = nn.cast((carry, tokens, action))
-    if single:
-      carry, (entry, feat, nodes) = self._observe(
-          carry, tokens, graph, action, reset, training)
-      return carry, entry, feat, nodes
-    else:
+    if self.semantic:
+      if single:
+        carry, (entry, feat, nodes) = self._observe_semantic(
+            carry, tokens, graph, action, reset, training)
+        return carry, entry, feat, nodes
       unroll = jax.tree.leaves(tokens)[0].shape[1] if self.unroll else 1
       carry, (entries, feat, nodes) = nj.scan(
-          lambda carry, inputs: self._observe(
+          lambda carry, inputs: self._observe_semantic(
               carry, *inputs, training),
           carry, (tokens, graph, action, reset), unroll=unroll, axis=1)
       return carry, entries, feat, nodes
+    if single:
+      carry, (entry, feat) = self._observe_plain(
+          carry, tokens, action, reset, training)
+      return carry, entry, feat, None
+    else:
+      unroll = jax.tree.leaves(tokens)[0].shape[1] if self.unroll else 1
+      carry, (entries, feat) = nj.scan(
+          lambda carry, inputs: self._observe_plain(
+              carry, *inputs, training),
+          carry, (tokens, action, reset), unroll=unroll, axis=1)
+      return carry, entries, feat, None
 
-  def _observe(self, carry, tokens, graph, action, reset, training):
+  def _observe_plain(self, carry, tokens, action, reset, training):
+    deter, stoch, action = nn.mask(
+        (carry['deter'], carry['stoch'], action), ~reset)
+    action = nn.DictConcat(self.act_space, 1)(action)
+    action = nn.mask(action, ~reset)
+    deter = self._core(deter, stoch, action)
+    tokens = tokens.reshape((*deter.shape[:-1], -1))
+    x = tokens if self.absolute else jnp.concatenate([deter, tokens], -1)
+    for i in range(self.obslayers):
+      x = self.sub(f'obs{i}', nn.Linear, self.hidden, **self.kw)(x)
+      x = nn.act(self.act)(self.sub(f'obs{i}norm', nn.Norm, self.norm)(x))
+    logit = self._logit('obslogit', x)
+    stoch = nn.cast(self._dist(logit).sample(seed=nj.seed()))
+    carry = dict(deter=deter, stoch=stoch)
+    feat = dict(deter=deter, stoch=stoch, logit=logit)
+    entry = dict(deter=deter, stoch=stoch)
+    assert all(x.dtype == nn.COMPUTE_DTYPE for x in (deter, stoch, logit))
+    return carry, (entry, feat)
+
+  def _observe_semantic(self, carry, tokens, graph, action, reset, training):
     deter, sem, stoch, action = nn.mask(
         (carry['deter'], carry['sem'], carry['stoch'], action), ~reset)
     action = nn.DictConcat(self.act_space, 1)(action)
     action = nn.mask(action, ~reset)
-    deter = self._core(deter, sem, stoch, action)
+    deter = self._core(deter, stoch, action, sem)
 
-    if self.semantic:
-      # Built through sub() so the posterior's params live under dyn/, which is
-      # what policy_keys ships to the policy worker.
-      enc = self.sub('graphenc', GraphPosterior, **self.graph_kw)
-      nodes, token = enc(graph, deter)
-      semlogit = self._semhead(
-          'semobs', jnp.concatenate([deter, self._flat(sem), token], -1))
-      sem = nn.cast(self._dist(semlogit).sample(seed=nj.seed()))
-    else:
-      nodes = jnp.zeros((deter.shape[0], 0, 0), deter.dtype)
-      semlogit = jnp.zeros_like(sem)
+    # Built through sub() so the posterior's params live under dyn/, which is
+    # what policy_keys ships to the policy worker.
+    enc = self.sub('graphenc', GraphPosterior, **self.graph_kw)
+    nodes, token = enc(graph, deter)
+    semlogit = self._semhead(
+        'semobs', jnp.concatenate([deter, self._flat(sem), token], -1))
+    sem = nn.cast(self._dist(semlogit).sample(seed=nj.seed()))
 
     tokens = tokens.reshape((*deter.shape[:-1], -1))
     x = jnp.concatenate([self._flat(sem), tokens], -1)
@@ -129,20 +160,25 @@ class RSSM(nj.Module):
     if single:
       action = policy(sg(carry)) if callable(policy) else policy
       actemb = nn.DictConcat(self.act_space, 1)(action)
-      deter = self._core(
-          carry['deter'], carry['sem'], carry['stoch'], actemb)
       if self.semantic:
+        deter = self._core(
+            carry['deter'], carry['stoch'], actemb, carry['sem'])
         semlogit = self._sem_prior(deter, carry['sem'])
         sem = nn.cast(self._dist(semlogit).sample(seed=nj.seed()))
+        logit = self._prior(deter, sem)
+        stoch = nn.cast(self._dist(logit).sample(seed=nj.seed()))
+        carry = nn.cast(dict(deter=deter, sem=sem, stoch=stoch))
+        feat = nn.cast(dict(
+            deter=deter, sem=sem, stoch=stoch,
+            logit=logit, semlogit=semlogit))
+        assert all(x.dtype == nn.COMPUTE_DTYPE for x in (deter, sem, stoch))
       else:
-        sem = semlogit = carry['sem']
-      logit = self._prior(deter, sem)
-      stoch = nn.cast(self._dist(logit).sample(seed=nj.seed()))
-      carry = nn.cast(dict(deter=deter, sem=sem, stoch=stoch))
-      feat = nn.cast(dict(
-          deter=deter, sem=sem, stoch=stoch,
-          logit=logit, semlogit=semlogit))
-      assert all(x.dtype == nn.COMPUTE_DTYPE for x in (deter, sem, stoch))
+        deter = self._core(carry['deter'], carry['stoch'], actemb)
+        logit = self._prior(deter)
+        stoch = nn.cast(self._dist(logit).sample(seed=nj.seed()))
+        carry = nn.cast(dict(deter=deter, stoch=stoch))
+        feat = nn.cast(dict(deter=deter, stoch=stoch, logit=logit))
+        assert all(x.dtype == nn.COMPUTE_DTYPE for x in (deter, stoch, logit))
       return carry, (feat, action)
     else:
       unroll = length if self.unroll else 1
@@ -161,10 +197,11 @@ class RSSM(nj.Module):
 
   def loss(self, carry, tokens, graph, acts, reset, training, step_valid=None):
     metrics = {}
-    prev_sem = nn.cast(carry['sem'])
+    prev_sem = nn.cast(carry['sem']) if self.semantic else None
     carry, entries, feat, nodes = self.observe(
         carry, tokens, graph, acts, reset, training)
-    prior = self._prior(feat['deter'], feat['sem'])
+    prior = self._prior(
+        feat['deter'], feat['sem'] if self.semantic else None)
     post = feat['logit']
     losses = {
         'dyn': self._dist(sg(post)).kl(self._dist(prior)),
@@ -209,9 +246,8 @@ class RSSM(nj.Module):
   def _flat(self, x):
     return x.reshape((*x.shape[:-2], -1))
 
-  def _core(self, deter, sem, stoch, action):
+  def _core(self, deter, stoch, action, sem=None):
     stoch = stoch.reshape((stoch.shape[0], -1))
-    sem = sem.reshape((sem.shape[0], -1))
     action /= sg(jnp.maximum(1, jnp.abs(action)))
     g = self.blocks
     flat2group = lambda x: einops.rearrange(x, '... (g h) -> ... g h', g=g)
@@ -222,9 +258,13 @@ class RSSM(nj.Module):
     x1 = nn.act(self.act)(self.sub('dynin1norm', nn.Norm, self.norm)(x1))
     x2 = self.sub('dynin2', nn.Linear, self.hidden, **self.kw)(action)
     x2 = nn.act(self.act)(self.sub('dynin2norm', nn.Norm, self.norm)(x2))
-    x3 = self.sub('dynin3', nn.Linear, self.hidden, **self.kw)(sem)
-    x3 = nn.act(self.act)(self.sub('dynin3norm', nn.Norm, self.norm)(x3))
-    x = jnp.concatenate([x0, x1, x2, x3], -1)[..., None, :].repeat(g, -2)
+    inputs = [x0, x1, x2]
+    if sem is not None:
+      sem = sem.reshape((sem.shape[0], -1))
+      x3 = self.sub('dynin3', nn.Linear, self.hidden, **self.kw)(sem)
+      x3 = nn.act(self.act)(self.sub('dynin3norm', nn.Norm, self.norm)(x3))
+      inputs.append(x3)
+    x = jnp.concatenate(inputs, -1)[..., None, :].repeat(g, -2)
     x = group2flat(jnp.concatenate([flat2group(deter), x], -1))
     for i in range(self.dynlayers):
       x = self.sub(f'dynhid{i}', nn.BlockLinear, self.deter, g, **self.kw)(x)
@@ -238,8 +278,9 @@ class RSSM(nj.Module):
     deter = update * cand + (1 - update) * deter
     return deter
 
-  def _prior(self, deter, sem):
-    x = jnp.concatenate([deter, self._flat(sem)], -1)
+  def _prior(self, deter, sem=None):
+    x = deter if sem is None else jnp.concatenate(
+        [deter, self._flat(sem)], -1)
     for i in range(self.imglayers):
       x = self.sub(f'prior{i}', nn.Linear, self.hidden, **self.kw)(x)
       x = nn.act(self.act)(self.sub(f'prior{i}norm', nn.Norm, self.norm)(x))
@@ -368,6 +409,7 @@ class Decoder(nj.Module):
   bspace: int = 8
   outer: bool = False
   strided: bool = False
+  semantic: bool = False
 
   def __init__(self, obs_space, **kw):
     assert all(len(s.shape) <= 3 for s in obs_space.values()), obs_space
@@ -394,7 +436,8 @@ class Decoder(nj.Module):
     K = self.kernel
     recons = {}
     bshape = reset.shape
-    inp = [nn.cast(feat[k]) for k in ('stoch', 'sem', 'deter')]
+    keys = ('stoch', 'sem', 'deter') if self.semantic else ('stoch', 'deter')
+    inp = [nn.cast(feat[k]) for k in keys]
     inp = [x.reshape((math.prod(bshape), -1)) for x in inp]
     inp = jnp.concatenate(inp, -1)
 
@@ -417,10 +460,12 @@ class Decoder(nj.Module):
       shape = (*minres, self.depths[-1])
       if self.bspace:
         u, g = math.prod(shape), self.bspace
-        x0, x1, x2 = nn.cast((feat['deter'], feat['stoch'], feat['sem']))
-        x1 = jnp.concatenate([
-            x1.reshape((*x1.shape[:-2], -1)),
-            x2.reshape((*x2.shape[:-2], -1))], -1)
+        x0, x1 = nn.cast((feat['deter'], feat['stoch']))
+        x1 = x1.reshape((*x1.shape[:-2], -1))
+        if self.semantic:
+          x2 = nn.cast(feat['sem'])
+          x1 = jnp.concatenate([
+              x1, x2.reshape((*x2.shape[:-2], -1))], -1)
         x0 = x0.reshape((-1, x0.shape[-1]))
         x1 = x1.reshape((-1, x1.shape[-1]))
         x0 = self.sub('sp0', nn.BlockLinear, u, g, **self.kw)(x0)
