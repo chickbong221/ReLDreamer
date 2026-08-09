@@ -24,6 +24,7 @@ from .dino import DinoFeatures
 from .privileged_state import (
     begin_frame_cache,
     clear_privileged_state_caches,
+    clear_resolve_cache,
     end_frame_cache,
     purge_scene_caches,
 )
@@ -275,6 +276,7 @@ class GraphObsBuilder:
         need_masks = env_idx in self.record_env_indices
         if episode_boundary:
             self._frames[env_idx] = 0
+            clear_resolve_cache(self.env, env_idx)
         graph, masks, _, _ = self.builders[env_idx].step(
             {},
             int(self._frames[env_idx]),

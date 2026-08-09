@@ -3,18 +3,6 @@
   "subtask": "pick",
   "target": "actor:005_tomato_soup_can",
   "members": {
-    "actor:003_cracker_box": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-30_003_cracker_box-0",
-      "interaction_rollouts": 2
-    },
     "actor:005_tomato_soup_can": {
       "roles": [
         "interacted",
@@ -33,18 +21,6 @@
         "actor:008_pudding_box"
       ]
     },
-    "actor:007_tuna_fish_can": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-27_007_tuna_fish_can-0",
-      "interaction_rollouts": 2
-    },
     "actor:008_pudding_box": {
       "roles": [
         "interacted",
@@ -62,29 +38,6 @@
         "actor:005_tomato_soup_can"
       ]
     },
-    "actor:009_gelatin_box": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-29_009_gelatin_box-0",
-      "interaction_rollouts": 1
-    },
-    "actor:scs-[6,7]_scene_background": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact"
-      ],
-      "kind": "actor",
-      "name": "scs-[6,7]_scene_background",
-      "interaction_rollouts": 1
-    },
     "link:fridge-0/body": {
       "roles": [
         "interacted",
@@ -99,23 +52,9 @@
       "interaction_rollouts": 9,
       "support_rollouts": 21,
       "supports": [
-        "actor:003_cracker_box",
         "actor:005_tomato_soup_can",
-        "actor:007_tuna_fish_can",
-        "actor:008_pudding_box",
-        "actor:009_gelatin_box"
+        "actor:008_pudding_box"
       ]
-    },
-    "link:fridge-0/top_door": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact"
-      ],
-      "kind": "link",
-      "name": "top_door",
-      "interaction_rollouts": 1
     },
     "link:kitchen_counter-0/body": {
       "roles": [

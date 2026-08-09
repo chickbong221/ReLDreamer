@@ -106,11 +106,11 @@ image_head         [112,112,3]   uint8
 image_hand         [112,112,3]   uint8
 state              [D]           float32
 instruction        [768]         float32
-graph_node_ent     [16]          uint16
-graph_node_app     [16,2,384]    float16
-graph_node_bbox    [16,2,4]      float16
-graph_node_target  [16]          uint8
-graph_edge_*       [344]         uint8
+graph_node_ent     [12]          uint16
+graph_node_app     [12,2,384]    float16
+graph_node_bbox    [12,2,4]      float16
+graph_node_target  [12]          uint8
+graph_edge_*       [396]         uint8
 ```
 
 Nothing derivable is stored. The model reads validity, per-camera visibility
@@ -151,8 +151,8 @@ dark flag is otherwise indistinguishable from a resolved one.
 | `whitelist_dir` | `''` | mined whitelists; falls back to `thresholds.yaml` |
 | `profile` | `room_scale` | threshold profile for bin fallbacks |
 | `cameras` | `[fetch_head, fetch_hand]` | camera order for the stored axis; the first also renders overlays |
-| `n_max` | `16` | vertex capacity including the ee node; must stay under 256. The largest per-target whitelist admits 12 objects, so the surplus is headroom for duplicate instances — overflow drops the newcomer, which can be the target |
-| `e_max` | `344` | fact capacity per frame; overflow drops spatial before affordance before physical. Size it with `tools/max_relations.py` |
+| `n_max` | `12` | vertex capacity including the ee node; must stay under 256. The largest per-target whitelist admits 3 objects, so the surplus is headroom for duplicate instances — overflow drops the newcomer, which can be the target |
+| `e_max` | `396` | fact capacity per frame; overflow drops spatial before affordance before physical. Size it with `tools/max_relations.py` |
 | `k_persist` | `-1` | negative keeps a registered vertex for the whole episode |
 | `dino_model` | `dinov2_vits14_reg` | registers keep artifact tokens out of the patch features |
 | `dino_res` | `112` | must be a multiple of the patch size 14 |

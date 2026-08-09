@@ -51,15 +51,15 @@ Two cameras, stored separately and never fused. Camera index 0 is
 `fetch_head`, 1 is `fetch_hand`.
 
 ```text
-graph_node_ent     [16]          uint16
-graph_node_app     [16,2,384]    float16
-graph_node_bbox    [16,2,4]      float16
-graph_node_target  [16]          uint8
-graph_edge_src     [344]         uint8
-graph_edge_dst     [344]         uint8
-graph_edge_rel     [344]         uint8
-graph_edge_abs     [344]         uint8
-graph_edge_temp    [344]         uint8
+graph_node_ent     [12]          uint16
+graph_node_app     [12,2,384]    float16
+graph_node_bbox    [12,2,4]      float16
+graph_node_target  [12]          uint8
+graph_edge_src     [396]         uint8
+graph_edge_dst     [396]         uint8
+graph_edge_rel     [396]         uint8
+graph_edge_abs     [396]         uint8
+graph_edge_temp    [396]         uint8
 ```
 
 Nothing derivable is stored — no masks, no counts. Index zero is padding in
@@ -99,8 +99,11 @@ a camera that loses sight keeps its last one, and a camera that has never seen
 the node holds exactly zero. Retention lives in the adapter-level cache, not in
 the registry.
 
-A node appears only if (a) an ee link touched it during a successful demo
-and (b) it is listed in the active per-`(subtask, target)` whitelist.
+A node appears only if it is listed in the episode's per-`(subtask, target)`
+whitelist, which holds the target plus the entities that directly support it.
+Contact alone does not admit anything: a rollout touches whatever is in the
+way, so admitting every contacted entity fills a pick-the-bowl graph with the
+groceries the arm brushed past.
 
 ### Relation vocabulary
 

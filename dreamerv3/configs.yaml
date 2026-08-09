@@ -70,10 +70,11 @@ defaults:
         cameras: [fetch_head, fetch_hand]   # first entry also renders overlays
         # Coupled: n_max is headroom for repeated instances of one asset type,
         # which share a whitelist key but are separate vertices, and every slot
-        # of that headroom costs e_max a full row of pairs. Size both with
-        # tools/max_relations.py before a long run.
-        n_max: 16                # vertex capacity including the ee node
-        e_max: 344
+        # of that headroom costs e_max a full row of pairs. e_max here is the
+        # truncation-proof ceiling for this n_max; size both with
+        # tools/max_relations.py after any change to the mined whitelists.
+        n_max: 12                # vertex capacity including the ee node
+        e_max: 396
         k_persist: -1            # <0 → a registered vertex stays for the episode
         dino_model: dinov2_vits14_reg
         dino_res: 112            # must be a multiple of the patch size 14

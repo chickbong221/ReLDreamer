@@ -327,6 +327,27 @@ def clear_privileged_state_caches(env_or_scene) -> None:
             d.pop(key, None)
 
 
+def clear_resolve_cache(env_or_scene, env_idx: int) -> None:
+    """Drop one env's merged-handle resolutions at an episode boundary.
+
+    ``_resolve_actual_entity`` keys on the MS-HAB handle name (``obj_0``) and
+    guards the hit by identity on that same handle. Both outlive the episode:
+    the handle is a task-level actor, and a reset re-randomizes the task plan
+    without reconfiguring the scene. So without this the next episode resolves
+    ``obj_0`` to the previous episode's object and flags a vertex that is no
+    longer there.
+    """
+    for d in _cache_dicts(env_or_scene):
+        cache = d.get("_teemo_resolve_cache")
+        if not cache:
+            continue
+        for key in [
+            k for k in list(cache)
+            if isinstance(k, tuple) and k and k[-1] == env_idx
+        ]:
+            cache.pop(key, None)
+
+
 def scene_cache_size(env_or_scene) -> int:
     """Entries in the largest scene-attached cache."""
     return max(

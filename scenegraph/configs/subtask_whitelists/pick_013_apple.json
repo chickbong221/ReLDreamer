@@ -3,30 +3,6 @@
   "subtask": "pick",
   "target": "actor:013_apple",
   "members": {
-    "actor:003_cracker_box": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-0_003_cracker_box-0",
-      "interaction_rollouts": 10
-    },
-    "actor:008_pudding_box": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-2_008_pudding_box-0",
-      "interaction_rollouts": 3
-    },
     "actor:013_apple": {
       "roles": [
         "interacted"
@@ -54,8 +30,6 @@
       "interaction_rollouts": 24,
       "support_rollouts": 43,
       "supports": [
-        "actor:003_cracker_box",
-        "actor:008_pudding_box",
         "actor:013_apple"
       ]
     }

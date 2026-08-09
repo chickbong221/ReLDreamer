@@ -3,18 +3,6 @@
   "subtask": "pick",
   "target": "actor:010_potted_meat_can",
   "members": {
-    "actor:005_tomato_soup_can": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-0_005_tomato_soup_can-0",
-      "interaction_rollouts": 3
-    },
     "actor:010_potted_meat_can": {
       "roles": [
         "interacted"
@@ -42,20 +30,8 @@
       "interaction_rollouts": 4,
       "support_rollouts": 33,
       "supports": [
-        "actor:005_tomato_soup_can",
         "actor:010_potted_meat_can"
       ]
-    },
-    "link:fridge-0/top_door": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact"
-      ],
-      "kind": "link",
-      "name": "top_door",
-      "interaction_rollouts": 1
     }
   },
   "bin_edges": {

@@ -1,15 +1,14 @@
-"""Mine one-hop per-subtask whitelists from successful rollout interactions.
+"""Mine per-subtask whitelists from successful rollout interactions.
 
-For each ``(subtask, target)`` the output contains exactly the union of:
+For each ``(subtask, target)`` the output contains the target plus the entities
+that directly support it. Nothing else: a rollout contacts whatever is in the
+way, so admitting every contacted entity would fill a pick-the-bowl graph with
+groceries the arm brushed past. Support is never expanded recursively.
 
-* every non-robot entity contacted by an ee link during a successful rollout;
-* direct supporters of those contacted entities.
-
-Support is never expanded recursively. Frequency counts are emitted for audit
-but do not filter membership. In addition the asset records, per member, the
-set of ee-driven interaction types (``contact`` and/or ``grasp``) seen across
-rollouts and, at the asset level, the per-relation bin edges derived from the
-collector's per-rollout running maxes.
+Frequency counts are emitted for audit but do not filter membership. The asset
+also records, per member, the ee-driven interaction types (``contact`` and/or
+``grasp``) seen across rollouts and, at the asset level, the per-relation bin
+edges derived from the collector's per-rollout running maxes.
 """
 
 from __future__ import annotations
@@ -594,9 +593,27 @@ class _WhitelistBuilder:
                         del history[key]
         return samples
 
+    def _admitted(self) -> Set[str]:
+        """The target plus whatever directly supports it.
+
+        Contact alone is not enough. A rollout touches whatever is in the way,
+        so admitting every contacted entity fills a pick-the-bowl graph with
+        the groceries the arm brushed past, which have nothing to do with the
+        bowl. Direct support is the relation that makes an entity part of the
+        task: it is what the target rests on and what it must be lifted off.
+        """
+        keep = {self.target} if self.target else set()
+        for key, supported in self.supports.items():
+            if self.target in supported:
+                keep.add(key)
+        return keep
+
     def payload(self) -> Dict[str, Any]:
+        admitted = self._admitted()
         members: Dict[str, Dict[str, Any]] = {}
         for key in sorted(self.roles):
+            if key not in admitted:
+                continue
             entry: Dict[str, Any] = {
                 "roles": sorted(self.roles[key]),
                 "interaction_types": sorted(self.interaction_types.get(key, set())),
@@ -608,7 +625,11 @@ class _WhitelistBuilder:
                 entry["interaction_rollouts"] = self.interaction_count[key]
             if self.support_count.get(key):
                 entry["support_rollouts"] = self.support_count[key]
-                entry["supports"] = sorted(self.supports[key])
+                # Only references that survived admission, so no member points
+                # at a key the file does not contain.
+                supports = sorted(self.supports[key] & admitted)
+                if supports:
+                    entry["supports"] = supports
             members[key] = entry
 
         # Surface the missing-supporter regression loudly. A pick target that
@@ -617,20 +638,17 @@ class _WhitelistBuilder:
         # arm broke it -- widen the pre-grasp observation window (or lower
         # _RESET_WARMUP_TICKS / observe_stride) so at least one tick lands
         # while the target is still on its receptacle.
-        has_supporter = any("support" in roles for roles in self.roles.values())
+        has_supporter = any(
+            "support" in entry["roles"] for entry in members.values())
         if not has_supporter:
-            interacted_targets = [
-                k for k, roles in self.roles.items() if "interacted" in roles
-            ]
-            for k in interacted_targets:
-                log.warning(
-                    "subtask=%s target=%s: '%s' is interacted across %d "
-                    "rollouts but no supporters were recorded; the collector "
-                    "likely missed the resting contact window before the arm "
-                    "broke it",
-                    self.subtask, self.target, k,
-                    self.interaction_count.get(k, 0),
-                )
+            log.warning(
+                "subtask=%s target=%s: interacted across %d rollouts but no "
+                "supporter of it was recorded, so the whitelist is the target "
+                "alone; the collector likely missed the resting contact window "
+                "before the arm broke it",
+                self.subtask, self.target,
+                self.interaction_count.get(self.target, 0),
+            )
 
         robust, _observed = self._aggregate_bins()
         compatibility_samples = self._mine_compatibility_samples(

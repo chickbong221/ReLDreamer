@@ -16,41 +16,6 @@
       "name": "obj_0",
       "interaction_rollouts": 30
     },
-    "actor:007_tuna_fish_can": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-19_007_tuna_fish_can-0",
-      "interaction_rollouts": 1
-    },
-    "actor:008_pudding_box": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-26_008_pudding_box-0",
-      "interaction_rollouts": 1
-    },
-    "actor:scs-[14,15]_scene_background": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact"
-      ],
-      "kind": "actor",
-      "name": "scs-[14,15]_scene_background",
-      "interaction_rollouts": 1
-    },
     "link:fridge-0/body": {
       "roles": [
         "interacted",
@@ -65,9 +30,7 @@
       "interaction_rollouts": 3,
       "support_rollouts": 15,
       "supports": [
-        "actor:002_master_chef_can",
-        "actor:007_tuna_fish_can",
-        "actor:008_pudding_box"
+        "actor:002_master_chef_can"
       ]
     },
     "link:kitchen_counter-0/body": {

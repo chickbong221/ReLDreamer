@@ -3,54 +3,6 @@
   "subtask": "pick",
   "target": "actor:024_bowl",
   "members": {
-    "actor:002_master_chef_can": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-7_002_master_chef_can-0",
-      "interaction_rollouts": 6
-    },
-    "actor:003_cracker_box": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-7_003_cracker_box-0",
-      "interaction_rollouts": 6
-    },
-    "actor:005_tomato_soup_can": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-7_005_tomato_soup_can-0",
-      "interaction_rollouts": 6
-    },
-    "actor:010_potted_meat_can": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-5_010_potted_meat_can-0",
-      "interaction_rollouts": 10
-    },
     "actor:024_bowl": {
       "roles": [
         "interacted"
@@ -63,23 +15,6 @@
       "kind": "actor",
       "name": "obj_0",
       "interaction_rollouts": 30
-    },
-    "actor:scs-[4,5]_scene_background": {
-      "roles": [
-        "interacted",
-        "support"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "scs-[4,5]_scene_background",
-      "interaction_rollouts": 2,
-      "support_rollouts": 3,
-      "supports": [
-        "actor:010_potted_meat_can"
-      ]
     },
     "link:fridge-0/body": {
       "roles": [
@@ -95,7 +30,6 @@
       "interaction_rollouts": 23,
       "support_rollouts": 32,
       "supports": [
-        "actor:010_potted_meat_can",
         "actor:024_bowl"
       ]
     },
@@ -113,9 +47,6 @@
       "interaction_rollouts": 6,
       "support_rollouts": 25,
       "supports": [
-        "actor:002_master_chef_can",
-        "actor:003_cracker_box",
-        "actor:005_tomato_soup_can",
         "actor:024_bowl"
       ]
     }

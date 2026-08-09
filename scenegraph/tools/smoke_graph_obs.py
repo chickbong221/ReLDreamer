@@ -29,8 +29,8 @@ def parse_args():
     p.add_argument("--num-envs", type=int, default=4)
     p.add_argument("--steps", type=int, default=20)
     p.add_argument("--image-size", type=int, default=112)
-    p.add_argument("--n-max", type=int, default=16)
-    p.add_argument("--e-max", type=int, default=344)
+    p.add_argument("--n-max", type=int, default=12)
+    p.add_argument("--e-max", type=int, default=396)
     p.add_argument("--whitelist-dir",
                    default="scenegraph/configs/subtask_whitelists")
     p.add_argument("--num-build-configs", type=int, default=4)

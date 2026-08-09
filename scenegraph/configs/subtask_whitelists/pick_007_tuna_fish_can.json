@@ -3,42 +3,6 @@
   "subtask": "pick",
   "target": "actor:007_tuna_fish_can",
   "members": {
-    "actor:002_master_chef_can": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-24_002_master_chef_can-0",
-      "interaction_rollouts": 4
-    },
-    "actor:004_sugar_box": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-2_004_sugar_box-0",
-      "interaction_rollouts": 2
-    },
-    "actor:005_tomato_soup_can": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-12_005_tomato_soup_can-0",
-      "interaction_rollouts": 13
-    },
     "actor:007_tuna_fish_can": {
       "roles": [
         "interacted"
@@ -51,54 +15,6 @@
       "kind": "actor",
       "name": "obj_0",
       "interaction_rollouts": 30
-    },
-    "actor:008_pudding_box": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-17_008_pudding_box-0",
-      "interaction_rollouts": 2
-    },
-    "actor:009_gelatin_box": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-4_009_gelatin_box-0",
-      "interaction_rollouts": 1
-    },
-    "actor:010_potted_meat_can": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-24_010_potted_meat_can-0",
-      "interaction_rollouts": 4
-    },
-    "actor:024_bowl": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-6_024_bowl-0",
-      "interaction_rollouts": 6
     },
     "link:fridge-0/body": {
       "roles": [
@@ -114,13 +30,7 @@
       "interaction_rollouts": 22,
       "support_rollouts": 42,
       "supports": [
-        "actor:002_master_chef_can",
-        "actor:004_sugar_box",
-        "actor:005_tomato_soup_can",
-        "actor:007_tuna_fish_can",
-        "actor:008_pudding_box",
-        "actor:009_gelatin_box",
-        "actor:010_potted_meat_can"
+        "actor:007_tuna_fish_can"
       ]
     },
     "link:kitchen_counter-0/body": {
@@ -137,11 +47,7 @@
       "interaction_rollouts": 6,
       "support_rollouts": 20,
       "supports": [
-        "actor:002_master_chef_can",
-        "actor:005_tomato_soup_can",
-        "actor:007_tuna_fish_can",
-        "actor:010_potted_meat_can",
-        "actor:024_bowl"
+        "actor:007_tuna_fish_can"
       ]
     }
   },

@@ -3,42 +3,6 @@
   "subtask": "pick",
   "target": "actor:008_pudding_box",
   "members": {
-    "actor:004_sugar_box": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-7_004_sugar_box-0",
-      "interaction_rollouts": 4
-    },
-    "actor:005_tomato_soup_can": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-3_005_tomato_soup_can-0",
-      "interaction_rollouts": 1
-    },
-    "actor:007_tuna_fish_can": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-4_007_tuna_fish_can-0",
-      "interaction_rollouts": 5
-    },
     "actor:008_pudding_box": {
       "roles": [
         "interacted"
@@ -51,59 +15,6 @@
       "kind": "actor",
       "name": "obj_0",
       "interaction_rollouts": 31
-    },
-    "actor:009_gelatin_box": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-4_009_gelatin_box-0",
-      "interaction_rollouts": 4
-    },
-    "actor:010_potted_meat_can": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-4_010_potted_meat_can-0",
-      "interaction_rollouts": 10
-    },
-    "actor:024_bowl": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-2_024_bowl-0",
-      "interaction_rollouts": 5
-    },
-    "actor:scs-[2]_scene_background": {
-      "roles": [
-        "interacted",
-        "support"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "scs-[2]_scene_background",
-      "interaction_rollouts": 1,
-      "support_rollouts": 2,
-      "supports": [
-        "actor:010_potted_meat_can"
-      ]
     },
     "link:fridge-0/body": {
       "roles": [
@@ -119,37 +30,8 @@
       "interaction_rollouts": 14,
       "support_rollouts": 28,
       "supports": [
-        "actor:004_sugar_box",
-        "actor:007_tuna_fish_can",
-        "actor:008_pudding_box",
-        "actor:010_potted_meat_can",
-        "actor:024_bowl"
+        "actor:008_pudding_box"
       ]
-    },
-    "link:fridge-0/bottom_door": {
-      "roles": [
-        "support"
-      ],
-      "interaction_types": [
-        "support"
-      ],
-      "kind": "link",
-      "name": "bottom_door",
-      "support_rollouts": 2,
-      "supports": [
-        "actor:010_potted_meat_can"
-      ]
-    },
-    "link:fridge-0/top_door": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact"
-      ],
-      "kind": "link",
-      "name": "top_door",
-      "interaction_rollouts": 1
     },
     "link:kitchen_counter-0/body": {
       "roles": [
@@ -165,12 +47,7 @@
       "interaction_rollouts": 8,
       "support_rollouts": 32,
       "supports": [
-        "actor:004_sugar_box",
-        "actor:005_tomato_soup_can",
-        "actor:007_tuna_fish_can",
-        "actor:008_pudding_box",
-        "actor:009_gelatin_box",
-        "actor:010_potted_meat_can"
+        "actor:008_pudding_box"
       ]
     }
   },

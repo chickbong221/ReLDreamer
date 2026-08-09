@@ -87,192 +87,133 @@
   },
   "members": {
     "actor:002_master_chef_can": {
+      "roles": [
+        "interacted"
+      ],
       "interaction_types": [
         "contact",
         "grasp",
         "support"
       ],
-      "kind": "actor",
-      "roles": [
-        "interacted"
-      ]
+      "kind": "actor"
     },
     "actor:003_cracker_box": {
+      "roles": [
+        "interacted"
+      ],
       "interaction_types": [
         "contact",
         "grasp",
         "support"
       ],
-      "kind": "actor",
-      "roles": [
-        "interacted"
-      ]
+      "kind": "actor"
     },
     "actor:004_sugar_box": {
-      "interaction_types": [
-        "contact",
-        "grasp",
-        "support"
-      ],
-      "kind": "actor",
       "roles": [
         "interacted"
-      ]
-    },
-    "actor:005_tomato_soup_can": {
+      ],
       "interaction_types": [
         "contact",
         "grasp",
         "support"
       ],
-      "kind": "actor",
+      "kind": "actor"
+    },
+    "actor:005_tomato_soup_can": {
       "roles": [
         "interacted",
         "support"
       ],
+      "interaction_types": [
+        "contact",
+        "grasp",
+        "support"
+      ],
+      "kind": "actor",
       "supports": [
         "actor:008_pudding_box"
       ]
     },
     "actor:007_tuna_fish_can": {
-      "interaction_types": [
-        "contact",
-        "grasp",
-        "support"
-      ],
-      "kind": "actor",
       "roles": [
         "interacted"
-      ]
-    },
-    "actor:008_pudding_box": {
+      ],
       "interaction_types": [
         "contact",
         "grasp",
         "support"
       ],
-      "kind": "actor",
+      "kind": "actor"
+    },
+    "actor:008_pudding_box": {
       "roles": [
         "interacted",
         "support"
       ],
+      "interaction_types": [
+        "contact",
+        "grasp",
+        "support"
+      ],
+      "kind": "actor",
       "supports": [
         "actor:005_tomato_soup_can"
       ]
     },
     "actor:009_gelatin_box": {
+      "roles": [
+        "interacted"
+      ],
       "interaction_types": [
         "contact",
         "grasp",
         "support"
       ],
-      "kind": "actor",
-      "roles": [
-        "interacted"
-      ]
+      "kind": "actor"
     },
     "actor:010_potted_meat_can": {
+      "roles": [
+        "interacted"
+      ],
       "interaction_types": [
         "contact",
         "grasp",
         "support"
       ],
-      "kind": "actor",
-      "roles": [
-        "interacted"
-      ]
+      "kind": "actor"
     },
     "actor:013_apple": {
+      "roles": [
+        "interacted"
+      ],
       "interaction_types": [
         "contact",
         "grasp",
         "support"
       ],
-      "kind": "actor",
-      "roles": [
-        "interacted"
-      ]
+      "kind": "actor"
     },
     "actor:024_bowl": {
+      "roles": [
+        "interacted"
+      ],
       "interaction_types": [
         "contact",
         "grasp",
         "support"
       ],
-      "kind": "actor",
-      "roles": [
-        "interacted",
-        "support"
-      ],
-      "supports": [
-        "actor:003_cracker_box"
-      ]
-    },
-    "actor:scs-[14,15]_scene_background": {
-      "interaction_types": [
-        "contact"
-      ],
-      "kind": "actor",
-      "roles": [
-        "interacted"
-      ]
-    },
-    "actor:scs-[2]_scene_background": {
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "roles": [
-        "interacted",
-        "support"
-      ],
-      "supports": [
-        "actor:010_potted_meat_can"
-      ]
-    },
-    "actor:scs-[4,5]_scene_background": {
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "roles": [
-        "interacted",
-        "support"
-      ],
-      "supports": [
-        "actor:010_potted_meat_can"
-      ]
-    },
-    "actor:scs-[6,7]_scene_background": {
-      "interaction_types": [
-        "contact"
-      ],
-      "kind": "actor",
-      "roles": [
-        "interacted"
-      ]
-    },
-    "link:chestOfDrawers_01-0/body": {
-      "interaction_types": [
-        "contact"
-      ],
-      "kind": "link",
-      "roles": [
-        "interacted"
-      ]
+      "kind": "actor"
     },
     "link:fridge-0/body": {
+      "roles": [
+        "interacted",
+        "support"
+      ],
       "interaction_types": [
         "contact",
         "support"
       ],
       "kind": "link",
-      "roles": [
-        "interacted",
-        "support"
-      ],
       "supports": [
         "actor:002_master_chef_can",
         "actor:003_cracker_box",
@@ -286,37 +227,16 @@
         "actor:024_bowl"
       ]
     },
-    "link:fridge-0/bottom_door": {
-      "interaction_types": [
-        "support"
-      ],
-      "kind": "link",
-      "roles": [
-        "support"
-      ],
-      "supports": [
-        "actor:010_potted_meat_can"
-      ]
-    },
-    "link:fridge-0/top_door": {
-      "interaction_types": [
-        "contact"
-      ],
-      "kind": "link",
-      "roles": [
-        "interacted"
-      ]
-    },
     "link:kitchen_counter-0/body": {
+      "roles": [
+        "interacted",
+        "support"
+      ],
       "interaction_types": [
         "contact",
         "support"
       ],
       "kind": "link",
-      "roles": [
-        "interacted",
-        "support"
-      ],
       "supports": [
         "actor:002_master_chef_can",
         "actor:003_cracker_box",
@@ -325,7 +245,6 @@
         "actor:007_tuna_fish_can",
         "actor:008_pudding_box",
         "actor:009_gelatin_box",
-        "actor:010_potted_meat_can",
         "actor:024_bowl"
       ]
     }

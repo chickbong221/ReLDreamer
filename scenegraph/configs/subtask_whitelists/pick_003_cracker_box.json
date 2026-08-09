@@ -3,18 +3,6 @@
   "subtask": "pick",
   "target": "actor:003_cracker_box",
   "members": {
-    "actor:002_master_chef_can": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-21_002_master_chef_can-0",
-      "interaction_rollouts": 1
-    },
     "actor:003_cracker_box": {
       "roles": [
         "interacted"
@@ -27,30 +15,6 @@
       "kind": "actor",
       "name": "obj_0",
       "interaction_rollouts": 30
-    },
-    "actor:005_tomato_soup_can": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-34_005_tomato_soup_can-0",
-      "interaction_rollouts": 2
-    },
-    "actor:010_potted_meat_can": {
-      "roles": [
-        "interacted"
-      ],
-      "interaction_types": [
-        "contact",
-        "support"
-      ],
-      "kind": "actor",
-      "name": "env-5_010_potted_meat_can-0",
-      "interaction_rollouts": 1
     },
     "link:fridge-0/body": {
       "roles": [
@@ -66,10 +30,7 @@
       "interaction_rollouts": 6,
       "support_rollouts": 18,
       "supports": [
-        "actor:002_master_chef_can",
-        "actor:003_cracker_box",
-        "actor:005_tomato_soup_can",
-        "actor:010_potted_meat_can"
+        "actor:003_cracker_box"
       ]
     },
     "link:kitchen_counter-0/body": {

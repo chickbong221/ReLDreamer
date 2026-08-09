@@ -15,11 +15,12 @@ from scenegraph.tools.build_subtask_whitelists import _WhitelistBuilder
 
 
 class OneHopWhitelistTests(unittest.TestCase):
-    def test_interactions_and_direct_support_only(self):
+    def test_the_target_and_its_direct_supporters_only(self):
         builder = _WhitelistBuilder("pick", "actor:024_bowl")
         builder.absorb({
             "interacted": [
                 {"key": "actor:024_bowl", "kind": "actor", "name": "bowl"},
+                # Contacted in passing. Nothing to do with picking the bowl.
                 {"key": "link:cabinet/handle", "kind": "link", "name": "handle"},
             ],
             "supports": [
@@ -30,8 +31,7 @@ class OneHopWhitelistTests(unittest.TestCase):
                     },
                     "supported_key": "actor:024_bowl",
                 },
-                # Recursive cabinet -> drawer evidence must be ignored because
-                # drawer is a supporter, not an interacted root.
+                # Supports the drawer, not the bowl: one hop only.
                 {
                     "supporter": {
                         "key": "link:cabinet/body", "kind": "link",
@@ -42,11 +42,32 @@ class OneHopWhitelistTests(unittest.TestCase):
             ],
         })
         members = builder.payload()["members"]
-        self.assertIn("actor:024_bowl", members)
-        self.assertIn("link:cabinet/handle", members)
-        self.assertIn("link:cabinet/drawer", members)
-        self.assertNotIn("link:cabinet/body", members)
-        self.assertEqual(members["link:cabinet/handle"]["roles"], ["interacted"])
+        self.assertEqual(
+            sorted(members), ["actor:024_bowl", "link:cabinet/drawer"])
+
+    def test_no_member_points_at_a_key_the_file_dropped(self):
+        builder = _WhitelistBuilder("pick", "actor:024_bowl")
+        builder.absorb({
+            "interacted": [
+                {"key": "actor:024_bowl", "kind": "actor", "name": "bowl"},
+                {"key": "actor:013_apple", "kind": "actor", "name": "apple"},
+            ],
+            "supports": [
+                {
+                    "supporter": {"key": "link:cabinet/drawer", "kind": "link",
+                                  "name": "drawer"},
+                    "supported_key": "actor:024_bowl",
+                },
+                {
+                    "supporter": {"key": "link:cabinet/drawer", "kind": "link",
+                                  "name": "drawer"},
+                    "supported_key": "actor:013_apple",
+                },
+            ],
+        })
+        members = builder.payload()["members"]
+        self.assertEqual(
+            members["link:cabinet/drawer"]["supports"], ["actor:024_bowl"])
 
     def test_uninteracted_handle_is_not_admitted(self):
         builder = _WhitelistBuilder("pick", "actor:024_bowl")
@@ -74,7 +95,6 @@ class OneHopWhitelistTests(unittest.TestCase):
             "interacted": [
                 {"key": "actor:024_bowl", "kind": "actor", "name": "bowl",
                  "grasped": True},
-                {"key": "link:cabinet/handle", "kind": "link", "name": "handle"},
             ],
             "supports": [{
                 "supporter": {"key": "link:cabinet/drawer", "kind": "link",
@@ -89,10 +109,7 @@ class OneHopWhitelistTests(unittest.TestCase):
             members["actor:024_bowl"]["interaction_types"],
             ["contact", "grasp", "support"],
         )
-        self.assertEqual(
-            members["link:cabinet/handle"]["interaction_types"], ["contact"],
-        )
-        # Supporters now carry the ``support`` token so the runtime can gate
+        # Supporters carry the ``support`` token so the runtime can gate
         # obj-obj support-compatibility on it.
         self.assertEqual(
             members["link:cabinet/drawer"]["interaction_types"], ["support"],
