@@ -110,7 +110,7 @@ graph_node_ent     [10]          uint16
 graph_node_app     [10,2,384]    float16
 graph_node_bbox    [10,2,4]      float16
 graph_node_target  [10]          uint8
-graph_edge_*       [96]          uint8
+graph_edge_*       [270]         uint8
 ```
 
 Nothing derivable is stored. The model reads validity, per-camera visibility
@@ -152,7 +152,7 @@ dark flag is otherwise indistinguishable from a resolved one.
 | `profile` | `room_scale` | threshold profile for bin fallbacks |
 | `cameras` | `[fetch_head, fetch_hand]` | camera order for the stored axis; the first also renders overlays |
 | `n_max` | `10` | vertex capacity including the ee node; must stay under 256. The largest per-target whitelist admits 3 objects, so the surplus is headroom for duplicate instances — overflow drops the newcomer, which can be the target |
-| `e_max` | `96` | fact capacity per frame; overflow drops spatial before affordance before physical. Sized from the smoke run's measured peak, not the ceiling — `tools/max_relations.py` prints both |
+| `e_max` | `270` | fact capacity per frame; overflow drops spatial before affordance before physical. Set to the truncation-proof ceiling for `n_max` — `tools/max_relations.py` prints it |
 | `k_persist` | `-1` | negative keeps a registered vertex for the whole episode |
 | `dino_model` | `dinov2_vits14_reg` | registers keep artifact tokens out of the patch features |
 | `dino_res` | `112` | must be a multiple of the patch size 14 |
@@ -164,8 +164,8 @@ dark flag is otherwise indistinguishable from a resolved one.
 
 | key | default | meaning |
 |---|---|---|
-| `layers` | `1` | message-passing rounds |
-| `units` | `256` | node / fact width — **the size preset's `.*\.units` wildcard overrides this**, so the `mshab` preset re-pins it |
+| `layers` | `2` | message-passing rounds; the graph is the ee, the target and its supporters, so 2 reaches every vertex from every vertex |
+| `units` | `256` | node / fact width — **the size preset's `.*\.units` wildcard overrides this**, deliberately, so the graph branch scales with model size (512 at `size50m`) |
 | `embed` | `64` | embedding-table width |
 | `app_dim` | `384` | stored DINO width; must match `env.maniskill.graph.app_dim` |
 | `app` | `64` | learned projection width *per camera* |

@@ -68,16 +68,14 @@ defaults:
         thresholds_path: ''
         whitelist_dir: ''
         cameras: [fetch_head, fetch_hand]   # first entry also renders overlays
-        # Sized from measurement: a whitelist holds the target plus its
-        # supporters, so 300 steps x 8 envs peaked at 7 vertices and 72 facts,
-        # against an analytic floor of 5 vertices and 60 facts
-        # (tools/max_relations.py). n_max keeps real headroom because vertex
-        # overflow drops the newcomer, which can be the target; e_max is cut
-        # closer because it sets the model's [B*T, 2*e_max, units] edge tensors
-        # and overflow there only drops spatial facts, counted in
-        # log/graph_fact_drops.
+        # e_max is the truncation-proof ceiling for this n_max, from
+        # tools/max_relations.py, not a measured peak. Two identical smoke runs
+        # peaked at 72 and 93 facts on 4 of 63 build configs, so the run-to-run
+        # spread is wider than any margin worth guessing at. Vertices were
+        # stable at 7 both times; n_max keeps three slots over that because
+        # vertex overflow drops the newcomer, which can be the target.
         n_max: 10                # vertex capacity including the ee node
-        e_max: 96
+        e_max: 270
         k_persist: -1            # <0 → a registered vertex stays for the episode
         dino_model: dinov2_vits14_reg
         dino_res: 112            # must be a multiple of the patch size 14
@@ -148,10 +146,13 @@ defaults:
       typ: rssm
       rssm: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, semstoch: 16, semclasses: 16, semlayers: 1, act: silu, norm: rms, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0}
     # app_dim is the stored DINO width; app/bbox are the learned per-camera
-    # projections. units follows the size preset's `.*\.units` wildcard, so
-    # pinning it needs an explicit override or a CLI flag.
-    # entity_vocab is overwritten from the mined whitelists at startup.
-    graph: {layers: 1, units: 256, embed: 64, app_dim: 384, app: 64, bbox: 8, reverse_edges: True, condition_on_deter: True, entity_vocab: 64}
+    # projections. units follows the size preset's `.*\.units` wildcard and is
+    # left there deliberately, so the graph branch scales with model size like
+    # every other head. entity_vocab is overwritten from the mined whitelists
+    # at startup. Two message-passing rounds cover a task-conditioned graph
+    # end to end: it is the ee, the target, and the target's supporters, so
+    # diameter 2 reaches every vertex from every vertex.
+    graph: {layers: 2, units: 256, embed: 64, app_dim: 384, app: 64, bbox: 8, reverse_edges: True, condition_on_deter: True, entity_vocab: 64}
     enc:
       typ: simple
       simple: {depth: 64, mults: [2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: rms, winit: trunc_normal_in, symlog: True, outer: False, kernel: 5, strided: False}
@@ -326,11 +327,6 @@ maniskill_rgb:
 mshab:
   <<: *size50m
   batch_size: 32
-  agent:
-    # Narrower than the size preset: the edge tensors are [B*T, 2*e_max, units]
-    # and dominate peak memory, while the task-conditioned graph is small.
-    # Confirm it took by reading the graphdec param count at startup.
-    graph.units: 256
   jax:
     prealloc: false     # critical: ManiSkill and JAX share GPU
   logger:

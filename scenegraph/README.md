@@ -55,11 +55,11 @@ graph_node_ent     [10]          uint16
 graph_node_app     [10,2,384]    float16
 graph_node_bbox    [10,2,4]      float16
 graph_node_target  [10]          uint8
-graph_edge_src     [96]          uint8
-graph_edge_dst     [96]          uint8
-graph_edge_rel     [96]          uint8
-graph_edge_abs     [96]          uint8
-graph_edge_temp    [96]          uint8
+graph_edge_src     [270]         uint8
+graph_edge_dst     [270]         uint8
+graph_edge_rel     [270]         uint8
+graph_edge_abs     [270]         uint8
+graph_edge_temp    [270]         uint8
 ```
 
 Nothing derivable is stored — no masks, no counts. Index zero is padding in

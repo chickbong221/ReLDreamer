@@ -59,7 +59,7 @@ def parse_args():
                    help="thresholds.yaml; omit for the packaged one")
     p.add_argument("--whitelist-dir", default="",
                    help="empty → the profile's configured directory")
-    p.add_argument("--e-max", type=int, default=96,
+    p.add_argument("--e-max", type=int, default=270,
                    help="dreamerv3/configs.yaml env.maniskill.graph.e_max")
     p.add_argument("--n-max", type=int, default=0,
                    help="0 → the profile's selection.n_max")
