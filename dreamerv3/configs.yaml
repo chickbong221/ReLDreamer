@@ -68,14 +68,16 @@ defaults:
         thresholds_path: ''
         whitelist_dir: ''
         cameras: [fetch_head, fetch_hand]   # first entry also renders overlays
-        # Sized from measurement, not from the ceiling: a whitelist holds the
-        # target plus its supporters, so 300 steps x 8 envs peaked at 7
-        # vertices and 72 facts. e_max 160 is ~2x that. The truncation-proof
-        # ceiling at this n_max is 270 (tools/max_relations.py) if the
-        # guarantee is worth 1.7x the edge compute. Overflow is not silent:
-        # it drops spatial first and counts into log/graph_fact_drops.
+        # Sized from measurement: a whitelist holds the target plus its
+        # supporters, so 300 steps x 8 envs peaked at 7 vertices and 72 facts,
+        # against an analytic floor of 5 vertices and 60 facts
+        # (tools/max_relations.py). n_max keeps real headroom because vertex
+        # overflow drops the newcomer, which can be the target; e_max is cut
+        # closer because it sets the model's [B*T, 2*e_max, units] edge tensors
+        # and overflow there only drops spatial facts, counted in
+        # log/graph_fact_drops.
         n_max: 10                # vertex capacity including the ee node
-        e_max: 160
+        e_max: 96
         k_persist: -1            # <0 → a registered vertex stays for the episode
         dino_model: dinov2_vits14_reg
         dino_res: 112            # must be a multiple of the patch size 14
