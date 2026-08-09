@@ -81,18 +81,40 @@ class RSSM(nj.Module):
     return jax.tree.map(
         lambda x: x[:, -nlast:].reshape((B * nlast, *x.shape[2:])), entries)
 
+  def encode_graph(self, graph, single=False):
+    """Node representations and pooled token for every timestep at once.
+
+    The graph encoder reads no recurrent state, so it runs outside the scan
+    exactly like the image encoder: one pass over B*T instead of batch_length
+    sequential launches of batch_size work. Recurrent conditioning is not lost,
+    it happens at the ``semobs`` head below, which sees this token next to
+    ``deter`` and the previous semantic state.
+
+    Built through sub() so the encoder's params live under dyn/, which is what
+    policy_keys ships to the policy worker.
+    """
+    enc = self.sub('graphenc', GraphPosterior, **self.graph_kw)
+    if single:
+      return enc(graph)
+    B, T = jax.tree.leaves(graph)[0].shape[:2]
+    flat = jax.tree.map(lambda x: x.reshape((B * T, *x.shape[2:])), graph)
+    nodes, token = enc(flat)
+    return (nodes.reshape((B, T, *nodes.shape[1:])),
+            token.reshape((B, T, *token.shape[1:])))
+
   def observe(self, carry, tokens, graph, action, reset, training, single=False):
     carry, tokens, action = nn.cast((carry, tokens, action))
     if self.semantic:
+      nodes, gtoken = self.encode_graph(graph, single=single)
       if single:
-        carry, (entry, feat, nodes) = self._observe_semantic(
-            carry, tokens, graph, action, reset, training)
+        carry, (entry, feat) = self._observe_semantic(
+            carry, tokens, gtoken, action, reset, training)
         return carry, entry, feat, nodes
       unroll = jax.tree.leaves(tokens)[0].shape[1] if self.unroll else 1
-      carry, (entries, feat, nodes) = nj.scan(
+      carry, (entries, feat) = nj.scan(
           lambda carry, inputs: self._observe_semantic(
               carry, *inputs, training),
-          carry, (tokens, graph, action, reset), unroll=unroll, axis=1)
+          carry, (tokens, gtoken, action, reset), unroll=unroll, axis=1)
       return carry, entries, feat, nodes
     if single:
       carry, (entry, feat) = self._observe_plain(
@@ -125,19 +147,16 @@ class RSSM(nj.Module):
     assert all(x.dtype == nn.COMPUTE_DTYPE for x in (deter, stoch, logit))
     return carry, (entry, feat)
 
-  def _observe_semantic(self, carry, tokens, graph, action, reset, training):
+  def _observe_semantic(self, carry, tokens, gtoken, action, reset, training):
     deter, sem, stoch, action = nn.mask(
         (carry['deter'], carry['sem'], carry['stoch'], action), ~reset)
     action = nn.DictConcat(self.act_space, 1)(action)
     action = nn.mask(action, ~reset)
     deter = self._core(deter, stoch, action, sem)
 
-    # Built through sub() so the posterior's params live under dyn/, which is
-    # what policy_keys ships to the policy worker.
-    enc = self.sub('graphenc', GraphPosterior, **self.graph_kw)
-    nodes, token = enc(graph, deter)
     semlogit = self._semhead(
-        'semobs', jnp.concatenate([deter, self._flat(sem), token], -1))
+        'semobs',
+        jnp.concatenate([deter, self._flat(sem), nn.cast(gtoken)], -1))
     sem = nn.cast(self._dist(semlogit).sample(seed=nj.seed()))
 
     tokens = tokens.reshape((*deter.shape[:-1], -1))
@@ -154,7 +173,7 @@ class RSSM(nj.Module):
         deter=deter, sem=sem, stoch=stoch, logit=logit, semlogit=semlogit)
     entry = dict(deter=deter, sem=sem, stoch=stoch)
     assert all(x.dtype == nn.COMPUTE_DTYPE for x in (deter, sem, stoch, logit))
-    return carry, (entry, feat, nodes)
+    return carry, (entry, feat)
 
   def imagine(self, carry, policy, length, training, single=False):
     if single:

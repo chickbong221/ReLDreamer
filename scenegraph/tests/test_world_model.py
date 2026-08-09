@@ -365,7 +365,7 @@ class WorldModelTests(unittest.TestCase):
         self.dyn = RSSM(
             self.act_space, graph_kw=dict(
                 layers=1, units=16, embed=8, app=6, bbox=4,
-                entity_vocab=ENT_VOCAB, condition_on_deter=True),
+                entity_vocab=ENT_VOCAB),
             deter=32, hidden=16, stoch=4, classes=4,
             semstoch=4, semclasses=4, semlayers=1, blocks=4, name='dyn')
         self.dec = GraphDecoder(

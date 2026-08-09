@@ -12,7 +12,6 @@ import numpy as np
 
 try:
     import jax
-    import jax.numpy as jnp
     import ninjax as nj
 except ImportError:  # pragma: no cover - jax is optional for the sim tests
     jax = None
@@ -23,7 +22,6 @@ if jax is not None:
 
 
 N_ENT = 8
-DETER = 16
 CAMS = 2
 APP_DIM = 6
 
@@ -131,19 +129,17 @@ class PoolingInvarianceTests(unittest.TestCase):
         # app is the projection width and no longer has to match APP_DIM.
         self.model = GraphPosterior(
             layers=2, units=32, embed=8, app=8, bbox=4, entity_vocab=N_ENT,
-            condition_on_deter=True, name='enc')
+            name='enc')
         # nj.pure takes the state positionally and the rng by keyword.
-        self.fn = nj.pure(lambda g, d: self.model(g, d))
-        self.deter = jnp.zeros((1, DETER), jnp.float32)
+        self.fn = nj.pure(lambda g: self.model(g))
         base = _graph(6, 8, 3, EDGES)
         self.params, _ = self.fn(
-            {}, unpack(base), self.deter,
+            {}, unpack(base),
             seed=jax.random.PRNGKey(0), create=True, modify=True)
 
     def _token(self, graph):
         _, (_, token) = self.fn(
-            self.params, unpack(graph), self.deter,
-            seed=jax.random.PRNGKey(0))
+            self.params, unpack(graph), seed=jax.random.PRNGKey(0))
         return np.asarray(token, np.float32)
 
     def test_permuting_vertices_leaves_the_token_fixed(self):

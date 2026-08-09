@@ -171,7 +171,6 @@ dark flag is otherwise indistinguishable from a resolved one.
 | `app` | `64` | learned projection width *per camera* |
 | `bbox` | `8` | learned box projection width per camera |
 | `reverse_edges` | `True` | add the reversed fact with a direction flag, so information reaches the ee node |
-| `condition_on_deter` | `True` | condition node and fact encodings on `h_t`, per the method. This puts the GNN inside the scan — set `False` to hoist it out and trade fidelity for speed |
 | `entity_vocab` | `64` | placeholder, overwritten from the mined whitelists at startup; do not set by hand |
 
 A vertex is `[AppProj_c(a_c), BBoxProj_c(b_c) for each camera, EntityEmbed(id),
@@ -244,7 +243,6 @@ All config-only, no code changes:
 --agent.loss_scales.relabs 0 --agent.loss_scales.reltemp 0   # no relation supervision
 --agent.loss_scales.semtgt 0                                 # target flag as input only, unsupervised
 --agent.graph.reverse_edges False                            # one-directional message passing
---agent.graph.condition_on_deter False                       # h_t-free encoder, GNN outside the scan
 --env.maniskill.graph.e_max 128                              # tighter fact budget
 --env.maniskill.instruction_table random.npz                 # control: same keys, no language features
 ```

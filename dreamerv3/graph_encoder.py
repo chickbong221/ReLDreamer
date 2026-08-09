@@ -100,7 +100,6 @@ class GraphPosterior(nj.Module):
     app: int = 64
     bbox: int = 8
     reverse_edges: bool = True
-    condition_on_deter: bool = True
     entity_vocab: int = 64
     norm: str = 'rms'
     act: str = 'gelu'
@@ -109,11 +108,14 @@ class GraphPosterior(nj.Module):
         self.kw = kw
         self.tables = relation_tables()
 
-    def __call__(self, graph, deter):
-        """One timestep. ``graph`` holds (B, ...) arrays, ``deter`` is (B, D).
+    def __call__(self, graph):
+        """``graph`` holds (B, ...) arrays; returns nodes (B, N, U) and the
+        pooled token (B, U).
 
-        Returns the node representations (B, N, U) and the pooled graph token
-        (B, U).
+        Nothing here reads the recurrent state, so the caller batches every
+        timestep into B and runs this once, the way the image encoder does.
+        Recurrent conditioning happens downstream, where the semantic head
+        sees the token alongside ``deter`` and the previous semantic state.
         """
         g = graph
         m = derive_masks(g)
@@ -132,8 +134,6 @@ class GraphPosterior(nj.Module):
         C = app.shape[-2]
         U = self.units
 
-        cond = nn.cast(deter) if self.condition_on_deter else None
-
         # Gated after projection, not before: the projections carry a bias, so
         # a zeroed input would still emit a constant that reads as content.
         parts = []
@@ -151,7 +151,7 @@ class GraphPosterior(nj.Module):
         # its embedding should not be split in half.
         parts.append(self.sub('tgt', nn.Embed, 2, self.embed)(
             g['graph_node_target']))
-        x = self._mlp('node', jnp.concatenate(parts, -1), cond) * valid[..., None]
+        x = self._mlp('node', jnp.concatenate(parts, -1)) * valid[..., None]
 
         fact = jnp.concatenate([
             self.sub('rel', nn.Embed, self.tables['n_rel'], self.embed)(rel),
@@ -159,7 +159,7 @@ class GraphPosterior(nj.Module):
             tmask[..., None] * self.sub(
                 'temp', nn.Embed, self.tables['n_temp'], self.embed)(tau),
         ], -1)
-        fact = self._mlp('fact', fact, cond) * emask[..., None]
+        fact = self._mlp('fact', fact) * emask[..., None]
 
         if self.reverse_edges:
             # I_t(i) is one-directional, so without the reverse pass nothing
@@ -190,14 +190,8 @@ class GraphPosterior(nj.Module):
 
         return x, self._pool(x, valid)
 
-    def _mlp(self, name, x, cond=None):
+    def _mlp(self, name, x):
         x = self.sub(name, nn.Linear, self.units, **self.kw)(x)
-        if cond is not None:
-            # h_t is identical for every vertex and every fact, so project it
-            # once and broadcast. Concatenating instead would materialise
-            # (B, N, |h|) and (B, E, |h|) and matmul them at full width.
-            x += self.sub(f'{name}cond', nn.Linear, self.units, bias=False,
-                          **self.kw)(cond)[:, None]
         return nn.act(self.act)(self.sub(f'{name}norm', nn.Norm, self.norm)(x))
 
     def _pool(self, x, valid):

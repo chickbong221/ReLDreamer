@@ -155,7 +155,7 @@ defaults:
     # at startup. Two message-passing rounds cover a task-conditioned graph
     # end to end: it is the ee, the target, and the target's supporters, so
     # diameter 2 reaches every vertex from every vertex.
-    graph: {layers: 2, units: 256, embed: 64, app_dim: 384, app: 64, bbox: 8, reverse_edges: True, condition_on_deter: True, entity_vocab: 64}
+    graph: {layers: 2, units: 256, embed: 64, app_dim: 384, app: 64, bbox: 8, reverse_edges: True, entity_vocab: 64}
     enc:
       typ: simple
       simple: {depth: 64, mults: [2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: rms, winit: trunc_normal_in, symlog: True, outer: False, kernel: 5, strided: False}
