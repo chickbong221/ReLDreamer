@@ -144,7 +144,10 @@ defaults:
     ac_grads: False
     dyn:
       typ: rssm
-      rssm: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, semstoch: 16, semclasses: 16, semlayers: 1, act: silu, norm: rms, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0}
+      # unroll inlines the observe scan over batch_length. The graph posterior
+      # runs inside that scan, so scanned it is batch_size tiny kernels per
+      # timestep; unrolled, XLA can fuse across timesteps. Costs compile time.
+      rssm: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, semstoch: 16, semclasses: 16, semlayers: 1, act: silu, norm: rms, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0, unroll: False}
     # app_dim is the stored DINO width; app/bbox are the learned per-camera
     # projections. units follows the size preset's `.*\.units` wildcard and is
     # left there deliberately, so the graph branch scales with model size like
