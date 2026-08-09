@@ -4,15 +4,15 @@
 compute whether or not a fact lands in it. ``smoke_graph_obs`` measures what a
 short rollout happened to emit; this bounds what the runtime can ever emit.
 
-The vertex budget is what bounds it, not the scene. The registry admits at most
-``n_max`` vertices however many instances of an asset a scene holds, and every
-instance carries its member's tokens and components. So the ceiling is the
-richest single vertex across the ee-side terms plus the richest pair across
-every vertex pair -- including a pair of two copies of one member, which is
-what duplicate instances are. Nothing here assumes how many copies exist.
+Two figures per whitelist. **Every member once** is the floor: those vertices
+appear together whenever a scene shows them, so ``e_max`` below it truncates in
+ordinary operation. **Every slot filled** is the ceiling, assuming ``n_max - 1``
+copies of the densest member -- rigorous, but it needs that many instances of
+one asset in a single scene, so it sits far above anything observed. Size
+``e_max`` from the smoke run's measured peak between the two.
 
-The bound is reached only if one member maximises both terms, so it can sit
-above any achievable graph. That is the safe direction for a static array.
+Union files are skipped: no episode binds one for membership, so a fact count
+for one would describe a graph the runtime never builds.
 
 Each gate below reads the same helper the runtime reads, so a change to the
 emission rules surfaces here instead of drifting away from them.
@@ -26,7 +26,7 @@ import argparse
 import itertools
 import os
 import sys
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 from scenegraph.configs.loader import load_config
 from scenegraph.core.affordance import (
@@ -44,6 +44,7 @@ from scenegraph.core.relation_rules import (
 )
 from scenegraph.core.schema import Node
 from scenegraph.core.whitelist import Whitelist, load_whitelist
+from scenegraph.tools.build_union_whitelist import UNION_TARGET
 
 SPECS = (
     "planar-distance", "height-offset", "grasp-compatibility",
@@ -62,8 +63,6 @@ def parse_args():
                    help="dreamerv3/configs.yaml env.maniskill.graph.e_max")
     p.add_argument("--n-max", type=int, default=0,
                    help="0 → the profile's selection.n_max")
-    p.add_argument("--skip", default="pick_all.json",
-                   help="comma-separated filenames excluded from the worst case")
     return p.parse_args()
 
 
@@ -184,17 +183,15 @@ def ceiling(wl: Whitelist, base_cfg: dict, n_max: int) -> Dict[str, object]:
         "pair_keys": pair_keys,
         "total": slots * best_vertex + pairs * best_pair,
         # Same bound at one vertex per member, so the gap against the ceiling
-        # is what the duplicate-instance headroom in n_max costs.
+        # is what the duplicate-instance headroom in n_max costs. Clipped to
+        # the slot count, though a per-target whitelist never approaches it.
         "distinct": distinct,
         "distinct_total": (
             distinct * best_vertex + distinct * (distinct - 1) // 2 * best_pair),
     }
 
 
-def report(path: str, wl: Whitelist, c: Dict[str, object], e_max: int) -> int:
-    total = int(c["total"])
-    share = 100.0 * total / e_max if e_max > 0 else float("inf")
-    fits = "fits" if total <= e_max else "OVERFLOWS"
+def report(path: str, wl: Whitelist, c: Dict[str, object]) -> None:
     print(f"\n{os.path.basename(path)}  "
           f"subtask={wl.subtask or '?'} target={wl.target or '?'}")
     print(f"  {len(wl.by_key)} members, {c['slots']} object slots, "
@@ -202,11 +199,10 @@ def report(path: str, wl: Whitelist, c: Dict[str, object], e_max: int) -> int:
     print(f"    per vertex  {c['per_vertex']:3d}  ({c['vertex_key']})")
     print(f"    per pair    {c['per_pair']:3d}  "
           f"({c['pair_keys'][0]} + {c['pair_keys'][1]})")
-    print(f"    at {c['distinct']:2d} vertices {c['distinct_total']:6d}   "
-          "(one per member, no duplicates)")
-    print(f"    CEILING     {total:6d}   e_max {e_max} -> {fits} "
-          f"({share:.0f}%)")
-    return total
+    print(f"    every member once  {c['distinct_total']:5d}  "
+          f"({c['distinct']} vertices)")
+    print(f"    every slot filled  {c['total']:5d}  "
+          f"({c['slots']} copies of the densest member)")
 
 
 def main() -> int:
@@ -224,28 +220,40 @@ def main() -> int:
               "tools/prepare_assets.py")
         return 1
     n_max = args.n_max or int(cfg["selection"]["n_max"])
-    skip = [s for s in args.skip.split(",") if s]
 
     print(f"n_max {n_max}: {n_max - 1} object slots, "
           f"{(n_max - 1) * (n_max - 2) // 2} pairs")
-    worst, worst_path = 0, ""
+    worst, worst_path, floor, floor_path = 0, "", 0, ""
     for path in paths:
         wl = load_whitelist(path)
-        total = report(path, wl, ceiling(wl, cfg, n_max), args.e_max)
-        if os.path.basename(path) in skip:
-            print("    (excluded: bin-edge asset, never bound for membership)")
+        # A union file is the bin-edge asset. No episode binds it for
+        # membership, so it has no vertex set and a fact count for it would
+        # describe a graph the runtime never builds.
+        if wl.target == UNION_TARGET:
+            print(f"\n{os.path.basename(path)}  bin-edge asset, "
+                  f"{len(wl.by_key)} members, never bound for membership")
             continue
-        if total > worst:
-            worst, worst_path = total, path
+        c = ceiling(wl, cfg, n_max)
+        report(path, wl, c)
+        if int(c["total"]) > worst:
+            worst, worst_path = int(c["total"]), path
+        if int(c["distinct_total"]) > floor:
+            floor, floor_path = int(c["distinct_total"]), path
 
-    print(f"\nworst case {worst} facts, from {os.path.basename(worst_path)}")
-    if worst > args.e_max:
-        print(f"FAIL: e_max {args.e_max} truncates it. Overflow is dropped "
-              "into log/graph_fact_drops with no other signal. Either raise "
-              f"e_max to {worst}, or lower n_max -- the pair term is "
-              "quadratic in it, so n_max is the cheaper knob.")
+    print(f"\nevery member once  {floor:5d}  ({os.path.basename(floor_path)})")
+    print(f"every slot filled  {worst:5d}  ({os.path.basename(worst_path)})")
+    if floor > args.e_max:
+        print(f"FAIL: e_max {args.e_max} cannot hold one instance of every "
+              "member. Those vertices appear whenever the scene shows them, so "
+              f"this truncates in ordinary operation. Raise e_max to {floor}.")
         return 1
-    print(f"OK: e_max {args.e_max} covers it, {args.e_max - worst} slots spare")
+    if worst > args.e_max:
+        print(f"NOTE: below the {worst}-fact ceiling, which needs "
+              f"{n_max - 1} copies of one asset in a single scene. Overflow "
+              "drops spatial first and counts into log/graph_fact_drops -- "
+              "size from the smoke run's measured peak and watch that counter.")
+    print(f"OK: e_max {args.e_max} covers every member once, "
+          f"{args.e_max - floor} slots spare")
     return 0
 
 

@@ -176,14 +176,21 @@ class GraphObsBuilder:
         # Facts the packer could not seat this frame. Vertex overflow has its
         # own counter; without this one an e_max that is too small drops
         # spatial edges silently for a whole run.
-        self._fact_drops = np.zeros(self.num_envs, dtype=np.float32)
-        # Frames whose graph names no target vertex. Unresolved active objects
-        # fail open for a whole episode at a time, and the flag is zero either
-        # way, so without this counter a run trains ungrounded and looks fine.
-        self._target_missing = np.zeros(self.num_envs, dtype=np.float32)
-        self._target_unresolved = np.zeros(self.num_envs, dtype=np.float32)
+        self._reset_counters()
         self._scene_cache_signature = None
         self._cpu_buffers: Dict[Tuple[str, str], torch.Tensor] = {}
+
+    def _reset_counters(self) -> None:
+        """Per-env diagnostics, allocated in one place.
+
+        Each of these silently degrades a run rather than failing it: too small
+        an e_max drops spatial edges, and a graph that names no target vertex
+        trains ungrounded and looks fine. Kept together so a caller that builds
+        the object without ``__init__`` cannot miss one.
+        """
+        self._fact_drops = np.zeros(self.num_envs, dtype=np.float32)
+        self._target_missing = np.zeros(self.num_envs, dtype=np.float32)
+        self._target_unresolved = np.zeros(self.num_envs, dtype=np.float32)
 
     @property
     def n_cams(self) -> int:
