@@ -305,7 +305,10 @@ def make_env(config, index, **overrides):
   kwargs = dict(config.env.get(suite, {}))   # mutable copy
   kwargs.update(overrides)                   # e.g. num_envs=1 for space discovery
   if kwargs.pop('use_seed', False):
-    kwargs['seed'] = hash((config.seed, index)) % (2 ** 32 - 1)
+    # ManiSkill expands this into one seed per parallel sub-environment using
+    # signed integer containers in parts of the MS-HAB stack. Keep the high
+    # bit clear, matching ManiSkill's own randint(2**31) seed generation.
+    kwargs['seed'] = hash((config.seed, index)) % (2 ** 31 - 1)
   if kwargs.pop('use_logdir', False):
     kwargs['logdir'] = elements.Path(config.logdir) / f'env{index}'
   env = ctor(task, **kwargs)
