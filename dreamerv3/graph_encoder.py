@@ -117,6 +117,23 @@ def _select_nodes(selector, nodes):
     return jnp.einsum('ben,bnu->beu', selector, nodes, optimize='optimal')
 
 
+def _embed(module, name, index, classes, units, dtype):
+    """Embedding lookup as a one-hot matmul, for a table indexed per fact.
+
+    A gather transposes to a scatter-add. These tables hold a handful of rows
+    against ``B * e_max`` indices -- padding included, since every padded slot
+    still reads row zero -- so the whole batch collides on a few addresses and
+    the backward serialises on atomics. Measured at ``e_max: 270``, that is
+    90% of the encoder's backward. The dense form is one small matmul each way.
+
+    ``winit`` is pinned to the output fan so the table initialises exactly as
+    ``nn.Embed`` does; the layer only changes how the row is read.
+    """
+    return module.sub(
+        name, nn.Linear, units, bias=False, winit='trunc_normal_out')(
+        jax.nn.one_hot(index, classes, dtype=dtype))
+
+
 class GraphPosterior(nj.Module):
 
     layers: int = 2
@@ -201,10 +218,13 @@ class GraphPosterior(nj.Module):
         B = rel.shape[0]
         fact = self.sub('fact', nn.Linear, self.edge_units, **self.kw)(
             jnp.concatenate([
-                self.sub('rel', nn.Embed, self.tables['n_rel'], self.embed)(rel),
-                self.sub('abs', nn.Embed, self.tables['n_abs'], self.embed)(sig),
-                tmask[..., None] * self.sub(
-                    'temp', nn.Embed, self.tables['n_temp'], self.embed)(tau),
+                _embed(self, 'rel', rel, self.tables['n_rel'],
+                       self.embed, dtype),
+                _embed(self, 'abs', sig, self.tables['n_abs'],
+                       self.embed, dtype),
+                tmask[..., None] * _embed(
+                    self, 'temp', tau, self.tables['n_temp'],
+                    self.embed, dtype),
             ], -1))
         # The slot weights already zero the padding rows, so the projection
         # bias a padded fact carries never reaches a pair.
@@ -413,11 +433,11 @@ class GraphDecoder(nj.Module):
     def _pair(self, x, src, dst, rel, mask):
         source, destination = _edge_selectors(
             src, dst, mask, x.shape[1], x.dtype)
-        rel_e = self.sub('reltype', nn.Embed, self.tables['n_rel'], self.embed)(rel)
         inp = jnp.concatenate([
             _select_nodes(source, x),
             _select_nodes(destination, x),
-            rel_e,
+            _embed(self, 'reltype', rel, self.tables['n_rel'],
+                   self.embed, x.dtype),
         ], -1)
         h = self.sub('pair', nn.Linear, self.units, **self.kw)(inp)
         return nn.act(self.act)(self.sub('pairnorm', nn.Norm, self.norm)(h))
