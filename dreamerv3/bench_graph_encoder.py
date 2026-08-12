@@ -119,21 +119,25 @@ def main() -> int:
         return (nodes.astype(jnp.float32).sum() +
                 token.astype(jnp.float32).sum())
 
-    def backward(g):
-        # The posterior sits under the world-model optimizer, so the number
-        # that matters is the one that includes its backward pass. Reduced to
-        # one scalar inside the jit: handing a whole gradient tree back across
-        # the boundary costs more than the backward pass itself.
-        _, _, grads = nj.grad(lossfn, [model])(g)
-        return sum(x.astype(jnp.float32).sum() for x in jax.tree.leaves(grads))
-
+    seed = jax.random.PRNGKey(0)
     params, _ = nj.pure(forward)(
-        {}, graph, seed=jax.random.PRNGKey(0), create=True, modify=True)
+        {}, graph, seed=seed, create=True, modify=True)
     count = sum(int(np.prod(v.shape)) for v in jax.tree.leaves(params))
 
-    seed = jax.random.PRNGKey(0)
+    def loss_of(p, g):
+        return nj.pure(lossfn)(p, g, seed=seed)[1]
+
+    # jax.grad over the pure function rather than nj.grad: every posterior
+    # parameter is a float leaf of the state, so the plain transform sees
+    # exactly the same set, and it keeps the measurement to one traced graph.
+    # Reduced to a scalar inside the jit -- handing the gradient tree back
+    # across the boundary costs more than the backward pass itself.
+    def backward(p, g):
+        grads = jax.grad(loss_of)(p, g)
+        return sum(x.sum() for x in jax.tree.leaves(grads))
+
     fwd = jax.jit(lambda p, g: nj.pure(forward)(p, g, seed=seed)[1])
-    bwd = jax.jit(lambda p, g: nj.pure(backward)(p, g, seed=seed)[1])
+    bwd = jax.jit(backward)
     forward_ms = time_call(lambda: fwd(params, graph), args.repeats)
     both_ms = time_call(lambda: bwd(params, graph), args.repeats)
 
