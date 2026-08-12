@@ -1,11 +1,16 @@
 """Semantic posterior and graph decoder over the maintained scene graph.
 
-The posterior embeds each vertex and each qualified fact, runs L rounds of
-message passing, and attention-pools the result into one fixed-width graph
-token; the semantic state is sampled from that token inside the RSSM. The
-decoder reconstructs appearance, the bounding box, visibility, and both
-relation states from the posterior node representations, so the semantic loss
-grounds the encoder trunk the pooling reads from.
+The posterior embeds each vertex and each qualified fact, folds the facts into
+a dense pair embedding, runs L EGT-Simple attention layers over the vertices,
+and attention-pools the result into one fixed-width graph token; the semantic
+state is sampled from that token inside the RSSM. The decoder reconstructs
+appearance, the bounding box, visibility, and both relation states from the
+posterior node representations, so the semantic loss grounds the encoder trunk
+the pooling reads from.
+
+EGT-Simple means the pair embedding is built once and every layer reads that
+same tensor: facts bias and gate attention but carry no state of their own, so
+there is no edge channel to update and no per-layer edge FFN.
 
 A vertex is ``[AppProj_c(a_c), BBoxProj_c(b_c), ..., EntityEmbed(id),
 TargetEmbed(flag)]`` over cameras ``c``. Appearance arrives on
@@ -96,10 +101,10 @@ def _edge_selectors(src, dst, mask, num_nodes, dtype):
     """Masked dense incidence matrices for a small fixed-capacity graph.
 
     The packed edge arrays are padded to a static width for JIT compilation.
-    Advanced gathers and scatter-adds still execute those padded slots and their
-    reverse-mode transposes, with every padding index colliding at node zero.
-    With only ``num_nodes`` <= 10 nodes, dense one-hot contractions are both
-    small and much friendlier to the GPU. Padding rows are exactly zero.
+    Advanced gathers still execute those padded slots and their reverse-mode
+    transposes, with every padding index colliding at node zero. With only
+    ``num_nodes`` <= 10 nodes, dense one-hot contractions are both small and
+    much friendlier to the GPU. Padding rows are exactly zero.
     """
     weight = mask.astype(dtype)[..., None]
     source = jax.nn.one_hot(src, num_nodes, dtype=dtype) * weight
@@ -112,24 +117,22 @@ def _select_nodes(selector, nodes):
     return jnp.einsum('ben,bnu->beu', selector, nodes, optimize='optimal')
 
 
-def _sum_to_nodes(selector, values):
-    """Sum edge values at their destinations without an atomic scatter."""
-    return jnp.einsum('ben,beu->bnu', selector, values, optimize='optimal')
-
-
 class GraphPosterior(nj.Module):
 
     layers: int = 2
     units: int = 256
+    heads: int = 4
     embed: int = 64
+    edge_units: int = 64
+    clip_logits: float = 5.0
     app: int = 64
     bbox: int = 8
-    reverse_edges: bool = True
     entity_vocab: int = 64
     norm: str = 'rms'
     act: str = 'gelu'
 
     def __init__(self, **kw):
+        assert self.units % self.heads == 0, (self.units, self.heads)
         self.kw = kw
         self.tables = relation_tables()
 
@@ -155,7 +158,7 @@ class GraphPosterior(nj.Module):
             g['graph_edge_rel'], g['graph_edge_abs'], g['graph_edge_temp'])
         tmask = nn.cast(m['temp_mask'], force=True)
         emask = nn.cast(m['edge_valid'], force=True)
-        B, N = ent.shape
+        N = ent.shape[1]
         C = app.shape[-2]
 
         # Gated after projection, not before: the projections carry a bias, so
@@ -177,48 +180,82 @@ class GraphPosterior(nj.Module):
             g['graph_node_target']))
         x = self._mlp('node', jnp.concatenate(parts, -1)) * valid[..., None]
 
-        fact = jnp.concatenate([
-            self.sub('rel', nn.Embed, self.tables['n_rel'], self.embed)(rel),
-            self.sub('abs', nn.Embed, self.tables['n_abs'], self.embed)(sig),
-            tmask[..., None] * self.sub(
-                'temp', nn.Embed, self.tables['n_temp'], self.embed)(tau),
-        ], -1)
-        fact = self._mlp('fact', fact) * emask[..., None]
-
-        if self.reverse_edges:
-            # I_t(i) is one-directional, so without the reverse pass nothing
-            # ever flows from an object back to the end effector.
-            from_idx = jnp.concatenate([src, dst], 1)
-            to_idx = jnp.concatenate([dst, src], 1)
-            facts = jnp.concatenate([fact, fact], 1)
-            mask = jnp.concatenate([emask, emask], 1)
-            direction = jnp.concatenate([
-                jnp.zeros_like(emask), jnp.ones_like(emask)], 1)[..., None]
-        else:
-            from_idx, to_idx, facts, mask = src, dst, fact, emask
-            direction = jnp.zeros_like(emask)[..., None]
-
-        source, destination = _edge_selectors(
-            from_idx, to_idx, mask, N, x.dtype)
-        # Keep the reduction in f32: bf16 loses integer precision past 256,
-        # which a reversed e_max above 128 can otherwise silently hit.
-        count = destination.astype(f32).sum(1)
+        pair = self._pairs(rel, sig, tau, src, dst, emask, tmask, N, x.dtype)
         for i in range(self.layers):
-            gathered = _select_nodes(source, x)
-            msg = self._mlp(
-                f'msg{i}', jnp.concatenate([gathered, facts, direction], -1))
-            # The message MLP carries a bias, so a zero selector alone does not
-            # make a padding message zero. Keep this gate after the projection.
-            msg = msg * mask[..., None]
-            total = _sum_to_nodes(destination, msg)
-            agg = total / nn.cast(jnp.maximum(count, 1.0))[..., None]
-            x = self._mlp(f'upd{i}', jnp.concatenate([x, agg], -1))
-            x = x * valid[..., None]
+            x = self._layer(i, x, pair, valid)
+        # Pre-norm leaves the residual stream unnormalised, and the pooling and
+        # the decoder heads both read x directly.
+        x = self.sub('final', nn.Norm, self.norm)(x) * valid[..., None]
 
         return x, self._pool(x, valid)
 
-    def _mlp(self, name, x):
-        x = self.sub(name, nn.Linear, self.units, **self.kw)(x)
+    def _pairs(self, rel, sig, tau, src, dst, emask, tmask, N, dtype):
+        """One embedding per ordered vertex pair, built once for every layer.
+
+        Facts land in their ordered slot through a single masked one-hot
+        contraction; a pair carrying several facts sums them. Each slot then
+        reads its own facts next to the opposite direction's, so direction is
+        explicit without duplicating the edge axis, and the presence flags
+        separate a pair with no fact from one whose facts embed near zero.
+        """
+        B = rel.shape[0]
+        fact = self.sub('fact', nn.Linear, self.edge_units, **self.kw)(
+            jnp.concatenate([
+                self.sub('rel', nn.Embed, self.tables['n_rel'], self.embed)(rel),
+                self.sub('abs', nn.Embed, self.tables['n_abs'], self.embed)(sig),
+                tmask[..., None] * self.sub(
+                    'temp', nn.Embed, self.tables['n_temp'], self.embed)(tau),
+            ], -1))
+        # The slot weights already zero the padding rows, so the projection
+        # bias a padded fact carries never reaches a pair.
+        slot = jax.nn.one_hot(
+            src * N + dst, N * N, dtype=dtype) * emask[..., None]
+        dense = jnp.einsum('bep,bec->bpc', slot, fact, optimize='optimal')
+        forward = dense.reshape((B, N, N, self.edge_units))
+        present = (slot.sum(1) > 0).astype(dtype).reshape((B, N, N, 1))
+        return self._mlp('pair', jnp.concatenate([
+            forward, forward.swapaxes(1, 2),
+            present, present.swapaxes(1, 2)], -1), self.edge_units)
+
+    def _layer(self, i, x, pair, valid):
+        """One EGT-Simple block: pair-biased gated attention, then an FFN.
+
+        Attention is global over the vertex set, so every pair of vertices is
+        one hop apart and the pair embedding is what makes an actual fact
+        different from the absence of one. The QK logits are clipped before the
+        bias is added, exactly as in EGT: the bias is the term meant to carry
+        structure, and an unclipped dot product can saturate the softmax before
+        it ever gets read.
+        """
+        B, N, _ = x.shape
+        dim = self.units // self.heads
+        h = self.sub(f'attnnorm{i}', nn.Norm, self.norm)(x)
+        qkv = self.sub(
+            f'qkv{i}', nn.Linear, (3, self.heads, dim), **self.kw)(h)
+        q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]
+        logits = jnp.clip(
+            jnp.einsum('bihd,bjhd->bijh', q, k, optimize='optimal') /
+            math.sqrt(dim), -self.clip_logits, self.clip_logits)
+        logits += self.sub(f'bias{i}', nn.Linear, self.heads, **self.kw)(pair)
+        # Padding vertices are dropped as keys twice over: out of the softmax,
+        # where they would otherwise take mass, and out of the gate, which is
+        # not normalised and would otherwise pass them through.
+        live = valid[:, None, :, None]
+        attn = jax.nn.softmax(jnp.where(live > 0, logits, -1e9), 2)
+        attn = attn * jax.nn.sigmoid(
+            self.sub(f'gate{i}', nn.Linear, self.heads, **self.kw)(pair)) * live
+        att = jnp.einsum('bijh,bjhd->bihd', attn, v, optimize='optimal')
+        x += self.sub(f'attnout{i}', nn.Linear, self.units, **self.kw)(
+            att.reshape((B, N, self.units)))
+
+        h = self.sub(f'ffnnorm{i}', nn.Norm, self.norm)(x)
+        h = nn.act(self.act)(
+            self.sub(f'ffn{i}', nn.Linear, 2 * self.units, **self.kw)(h))
+        x += self.sub(f'ffnout{i}', nn.Linear, self.units, **self.kw)(h)
+        return x * valid[..., None]
+
+    def _mlp(self, name, x, units=None):
+        x = self.sub(name, nn.Linear, units or self.units, **self.kw)(x)
         return nn.act(self.act)(self.sub(f'{name}norm', nn.Norm, self.norm)(x))
 
     def _pool(self, x, valid):

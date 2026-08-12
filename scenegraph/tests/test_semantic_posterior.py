@@ -23,7 +23,6 @@ if jax is not None:
         GraphPosterior,
         _edge_selectors,
         _select_nodes,
-        _sum_to_nodes,
         derive_masks,
         unpack,
     )
@@ -133,58 +132,37 @@ class DerivedMaskTests(unittest.TestCase):
 @unittest.skipIf(jax is None, 'jax is not installed')
 class DenseEdgeContractionTests(unittest.TestCase):
 
-    def test_matches_explicit_gather_and_scatter_with_duplicates_and_padding(self):
+    def test_matches_an_explicit_gather_with_duplicates_and_padding(self):
         nodes = np.arange(2 * 4 * 3, dtype=np.float32).reshape(2, 4, 3)
         src = np.array([[0, 1, 1, 0, 0], [3, 2, 0, 0, 0]], np.int32)
         dst = np.array([[1, 2, 2, 0, 0], [0, 1, 3, 0, 0]], np.int32)
         mask = np.array([[1, 1, 1, 0, 0], [1, 1, 1, 0, 0]], np.float32)
-        messages = (np.arange(2 * 5 * 3, dtype=np.float32).reshape(2, 5, 3)
-                    - 5.0) * mask[..., None]
 
         source, destination = _edge_selectors(
             jnp.asarray(src), jnp.asarray(dst), jnp.asarray(mask),
             nodes.shape[1], jnp.float32)
-        gathered = np.asarray(_select_nodes(source, jnp.asarray(nodes)))
-        total = np.asarray(_sum_to_nodes(
-            destination, jnp.asarray(messages)))
-        count = np.asarray(destination.astype(jnp.float32).sum(1))
+        gathered = [
+            np.asarray(_select_nodes(sel, jnp.asarray(nodes)))
+            for sel in (source, destination)]
 
-        expected_gathered = np.zeros_like(messages)
-        expected_total = np.zeros_like(nodes)
-        expected_count = np.zeros(nodes.shape[:2], np.float32)
-        for batch in range(nodes.shape[0]):
-            for edge in range(src.shape[1]):
-                if not mask[batch, edge]:
-                    continue
-                expected_gathered[batch, edge] = nodes[batch, src[batch, edge]]
-                expected_total[batch, dst[batch, edge]] += messages[batch, edge]
-                expected_count[batch, dst[batch, edge]] += 1
-
-        np.testing.assert_allclose(gathered, expected_gathered)
-        np.testing.assert_allclose(total, expected_total)
-        np.testing.assert_array_equal(count, expected_count)
-
-    def test_count_accumulates_in_float32_past_bfloat16_integer_precision(self):
-        edges = 540
-        src = jnp.zeros((1, edges), jnp.int32)
-        dst = jnp.full((1, edges), 2, jnp.int32)
-        mask = jnp.ones((1, edges), jnp.float32)
-        _, destination = _edge_selectors(
-            src, dst, mask, num_nodes=4, dtype=jnp.bfloat16)
-        count = destination.astype(jnp.float32).sum(1)
-
-        self.assertEqual(count.dtype, jnp.float32)
-        self.assertEqual(float(count[0, 2]), 540.0)
+        for index, out in zip((src, dst), gathered):
+            expected = np.zeros((*index.shape, nodes.shape[-1]), np.float32)
+            for batch in range(nodes.shape[0]):
+                for edge in range(index.shape[1]):
+                    if mask[batch, edge]:
+                        expected[batch, edge] = nodes[batch, index[batch, edge]]
+            np.testing.assert_allclose(out, expected)
 
 
 @unittest.skipIf(jax is None, 'jax is not installed')
-class PoolingInvarianceTests(unittest.TestCase):
+class PosteriorFixture(unittest.TestCase):
+    """One initialised posterior, run over hand-packed graphs."""
 
     def setUp(self):
         # app is the projection width and no longer has to match APP_DIM.
         self.model = GraphPosterior(
-            layers=2, units=32, embed=8, app=8, bbox=4, entity_vocab=N_ENT,
-            name='enc')
+            layers=2, units=32, heads=4, embed=8, edge_units=8, app=8, bbox=4,
+            entity_vocab=N_ENT, name='enc')
         # nj.pure takes the state positionally and the rng by keyword.
         self.fn = nj.pure(lambda g: self.model(g))
         base = _graph(6, 8, 3, EDGES)
@@ -192,10 +170,20 @@ class PoolingInvarianceTests(unittest.TestCase):
             {}, unpack(base),
             seed=jax.random.PRNGKey(0), create=True, modify=True)
 
-    def _token(self, graph):
-        _, (_, token) = self.fn(
+    def _run(self, graph):
+        _, (nodes, token) = self.fn(
             self.params, unpack(graph), seed=jax.random.PRNGKey(0))
-        return np.asarray(token, np.float32)
+        return np.asarray(nodes, np.float32), np.asarray(token, np.float32)
+
+    def _nodes(self, graph):
+        return self._run(graph)[0]
+
+    def _token(self, graph):
+        return self._run(graph)[1]
+
+
+@unittest.skipIf(jax is None, 'jax is not installed')
+class PoolingInvarianceTests(PosteriorFixture):
 
     def test_permuting_vertices_leaves_the_token_fixed(self):
         a = self._token(_graph(6, 8, 3, EDGES, order=[0, 1, 2]))
@@ -268,6 +256,57 @@ class PoolingInvarianceTests(unittest.TestCase):
     def test_an_empty_graph_pools_to_exactly_zero(self):
         token = self._token(_graph(6, 8, 0, []))
         np.testing.assert_array_equal(token, np.zeros_like(token))
+
+
+@unittest.skipIf(jax is None, 'jax is not installed')
+class AttentionLayerTests(PosteriorFixture):
+    """What the EGT layers owe the heads that read the node vectors.
+
+    Facts reach the nodes only as an attention bias and gate, so a relation
+    that moves nothing here is a relation the decoder can only guess at.
+    """
+
+    def test_output_shapes_follow_the_padded_vertex_axis(self):
+        nodes, token = self._run(_graph(6, 8, 3, EDGES))
+        self.assertEqual(nodes.shape, (1, 6, 32))
+        self.assertEqual(token.shape, (1, 32))
+
+    def test_padding_vertices_leave_exactly_zero_rows(self):
+        nodes = self._nodes(_graph(6, 8, 3, EDGES))
+        np.testing.assert_array_equal(
+            nodes[0, 3:], np.zeros((3, 32), np.float32))
+
+    def test_changing_a_valid_relation_moves_the_nodes_and_the_token(self):
+        a = self._run(_graph(6, 8, 3, EDGES))
+        b = self._run(_graph(6, 8, 3, [(0, 1, 4, 1, 0)] + EDGES[1:]))
+        for before, after in zip(a, b):
+            self.assertGreater(float(np.abs(before - after).max()), 1e-3)
+
+    def test_reversing_a_fact_moves_the_token(self):
+        # Direction survives the fold into ordered pair slots; a relation and
+        # its converse are different facts.
+        a = self._token(_graph(6, 8, 3, EDGES))
+        b = self._token(_graph(6, 8, 3, [(1, 0, 1, 1, 0)] + EDGES[1:]))
+        self.assertGreater(float(np.abs(a - b).max()), 1e-3)
+
+    def test_padded_facts_never_reach_the_nodes(self):
+        a = _graph(6, 8, 3, EDGES)
+        b = {k: v.copy() for k, v in a.items()}
+        # Everything but the relation id, which is what makes the slot padding.
+        b['graph_edge_src'][0, 5] = 2
+        b['graph_edge_dst'][0, 5] = 1
+        b['graph_edge_abs'][0, 5] = 3
+        b['graph_edge_temp'][0, 5] = 2
+        for before, after in zip(self._run(a), self._run(b)):
+            np.testing.assert_array_equal(before, after)
+
+    def test_permuting_vertices_permutes_the_node_rows(self):
+        order = [2, 0, 1]
+        a = self._nodes(_graph(6, 8, 3, EDGES, order=[0, 1, 2]))
+        b = self._nodes(_graph(6, 8, 3, EDGES, order=order))
+        for new, old in enumerate(order):
+            np.testing.assert_allclose(
+                a[0, old], b[0, new], rtol=1e-2, atol=1e-2)
 
 
 if __name__ == '__main__':

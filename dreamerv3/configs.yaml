@@ -150,11 +150,12 @@ defaults:
     # app_dim is the stored DINO width; app/bbox are the learned per-camera
     # projections. units follows the size preset's `.*\.units` wildcard and is
     # left there deliberately, so the graph branch scales with model size like
-    # every other head. entity_vocab is overwritten from the mined whitelists
-    # at startup. Two message-passing rounds cover a task-conditioned graph
-    # end to end: it is the ee, the target, and the target's supporters, so
-    # diameter 2 reaches every vertex from every vertex.
-    graph: {layers: 2, units: 256, embed: 64, app_dim: 384, app: 64, bbox: 8, reverse_edges: True, entity_vocab: 64}
+    # every other head; edge_units does not, since the pair embedding only has
+    # to hold a handful of relation tokens. entity_vocab is overwritten from
+    # the mined whitelists at startup. Attention is global, so layers buys
+    # composition rather than reach: two EGT-Simple blocks over a graph that is
+    # the ee, the target and the target's supporters.
+    graph: {layers: 2, units: 256, heads: 4, embed: 64, edge_units: 64, clip_logits: 5.0, app_dim: 384, app: 64, bbox: 8, entity_vocab: 64}
     enc:
       typ: simple
       simple: {depth: 64, mults: [2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: rms, winit: trunc_normal_in, symlog: True, outer: False, kernel: 5, strided: False}

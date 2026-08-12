@@ -164,13 +164,15 @@ dark flag is otherwise indistinguishable from a resolved one.
 
 | key | default | meaning |
 |---|---|---|
-| `layers` | `2` | message-passing rounds; the graph is the ee, the target and its supporters, so 2 reaches every vertex from every vertex |
-| `units` | `256` | node / fact width — **the size preset's `.*\.units` wildcard overrides this**, deliberately, so the graph branch scales with model size (512 at `size50m`) |
+| `layers` | `2` | EGT-Simple blocks. Attention is global, so this buys composition, not reach |
+| `units` | `256` | node width — **the size preset's `.*\.units` wildcard overrides this**, deliberately, so the graph branch scales with model size (512 at `size50m`). Must divide by `heads` |
+| `heads` | `4` | attention heads per block |
 | `embed` | `64` | embedding-table width |
+| `edge_units` | `64` | pair-embedding width. Fixed across size presets: it only has to hold a handful of relation tokens |
+| `clip_logits` | `5.0` | bound on the QK logits, applied **before** the pair bias is added |
 | `app_dim` | `384` | stored DINO width; must match `env.maniskill.graph.app_dim` |
 | `app` | `64` | learned projection width *per camera* |
 | `bbox` | `8` | learned box projection width per camera |
-| `reverse_edges` | `True` | add the reversed fact with a direction flag, so information reaches the ee node |
 | `entity_vocab` | `64` | placeholder, overwritten from the mined whitelists at startup; do not set by hand |
 
 A vertex is `[AppProj_c(a_c), BBoxProj_c(b_c) for each camera, EntityEmbed(id),
@@ -183,6 +185,30 @@ The target is a two-token embedding rather than a widened entity vocabulary. A
 category means the same thing whether or not it is this episode's goal, so
 splitting `actor:bowl` into goal and non-goal ids would halve the data behind
 each and buy nothing.
+
+### The EGT-Simple trunk
+
+Facts do not move along edges; they bias attention. The `e_max` fact rows are
+folded once into a dense `[n_max, n_max, edge_units]` pair embedding — one
+masked one-hot contraction, no scatter — where slot `(i, j)` sums the facts
+pointing from `i` to `j` and then reads them next to slot `(j, i)`, so
+direction is explicit and a pair with no fact is flagged as such. Each block
+is pre-norm, and both projections read that one tensor:
+
+```
+A_ij = softmax_j( clip(Q_i K_j^T / sqrt(d_h), -5, 5) + b(E_ij) ) * sigmoid(g(E_ij))
+```
+
+The pair embedding never updates — no residual edge channel, no edge FFN. That
+is what makes it *Simple*, and it is what keeps a 10-vertex graph from paying
+for an `n_max^2` residual stream. `b` and `g` are per-block projections of the
+shared `E`. Padding vertices are masked out of the softmax and out of the gate,
+and every block ends by re-zeroing their rows.
+
+Attention is global, so relation information is available to every vertex in
+one block; the depth is there to compose facts, not to cross the graph. The
+node vectors then go through the same masked attention pooling as before, which
+is what turns a variable vertex set into the one fixed token the RSSM reads.
 
 **`agent.dyn.rssm`** — `semstoch: 16`, `semclasses: 16`, `semlayers: 1`,
 `free_nats: 1.0`.
@@ -242,7 +268,7 @@ All config-only, no code changes:
 ```bash
 --agent.loss_scales.relabs 0 --agent.loss_scales.reltemp 0   # no relation supervision
 --agent.loss_scales.semtgt 0                                 # target flag as input only, unsupervised
---agent.graph.reverse_edges False                            # one-directional message passing
+--agent.graph.layers 1                                       # one attention block
 --env.maniskill.graph.e_max 128                              # tighter fact budget
 --env.maniskill.instruction_table random.npz                 # control: same keys, no language features
 ```
