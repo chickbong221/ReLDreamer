@@ -121,9 +121,11 @@ def main() -> int:
 
     def backward(g):
         # The posterior sits under the world-model optimizer, so the number
-        # that matters is the one that includes its backward pass.
+        # that matters is the one that includes its backward pass. Reduced to
+        # one scalar inside the jit: handing a whole gradient tree back across
+        # the boundary costs more than the backward pass itself.
         _, _, grads = nj.grad(lossfn, [model])(g)
-        return grads
+        return sum(x.astype(jnp.float32).sum() for x in jax.tree.leaves(grads))
 
     params, _ = nj.pure(forward)(
         {}, graph, seed=jax.random.PRNGKey(0), create=True, modify=True)
