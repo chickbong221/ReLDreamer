@@ -151,7 +151,7 @@ dark flag is otherwise indistinguishable from a resolved one.
 | `whitelist_dir` | `''` | mined whitelists; falls back to `thresholds.yaml` |
 | `profile` | `room_scale` | threshold profile for bin fallbacks |
 | `cameras` | `[fetch_head, fetch_hand]` | camera order for the stored axis; the first also renders overlays |
-| `n_max` | `10` | vertex capacity including the ee node; must stay under 256. The largest per-target whitelist admits 3 objects, so the surplus is headroom for duplicate instances — overflow drops the newcomer, which can be the target |
+| `n_max` | `10` | vertex capacity including the ee node; must stay under 256. The largest per-target whitelist has 4 member keys, so the surplus is headroom for duplicate instances; overflow admits the newcomer by evicting the oldest resident |
 | `e_max` | `270` | fact capacity per frame; overflow drops spatial before affordance before physical. Set to the truncation-proof ceiling for `n_max` — `tools/max_relations.py` prints it |
 | `k_persist` | `-1` | negative keeps a registered vertex for the whole episode |
 | `dino_model` | `dinov2_vits14_reg` | registers keep artifact tokens out of the patch features |
@@ -253,7 +253,8 @@ Deliberate for this version, listed so they are not rediscovered as bugs:
 
 * **Same-category siblings occupy slots.** Instances are not filtered, so every
   bowl in the scene is its own vertex against `n_max` while only one carries
-  `graph_node_target`. Sizing assumes a bounded number of copies; watch
+  `graph_node_target`. Sizing assumes a bounded number of copies. On overflow,
+  the newest instance replaces the oldest resident; watch
   `graph_overflow_drops`.
 * **Terminal graphs are one frame stale.** The vector env auto-resets inside
   `step`, so the terminal transition re-emits the previous packed graph. Every

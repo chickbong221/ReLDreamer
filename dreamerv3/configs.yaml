@@ -73,7 +73,7 @@ defaults:
         # peaked at 72 and 93 facts on 4 of 63 build configs, so the run-to-run
         # spread is wider than any margin worth guessing at. Vertices were
         # stable at 7 both times; n_max keeps three slots over that because
-        # vertex overflow drops the newcomer, which can be the target.
+        # vertex overflow evicts the oldest resident for the newcomer.
         n_max: 10                # vertex capacity including the ee node
         e_max: 270
         k_persist: -1            # <0 → a registered vertex stays for the episode
@@ -327,7 +327,7 @@ maniskill_rgb:
       num_frames: 1          # no frame stacking → 3 channels input to CNN
 
 mshab:
-  <<: *size50m
+  <<: *size100m
   batch_size: 32
   jax:
     prealloc: false     # critical: ManiSkill and JAX share GPU

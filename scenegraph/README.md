@@ -85,10 +85,12 @@ Two node types:
   vertex index 0.
 * `object` -- every non-robot actor or articulation link.
 
-The vertex set is append-only per episode: an index is handed out on first
-sight and never reused or reordered, so a node that leaves the view keeps its
-position and its last pose. Each node carries an entity id plus, per camera, a
-normalised bounding box and a frozen DINOv2 embedding.
+An index is handed out on first sight and remains stable while capacity is
+available. At capacity, a newly seen instance reuses the oldest resident's
+index; the displaced instance is removed from persistence and relation history.
+Otherwise, a node that leaves the view keeps its position and last pose. Each
+node carries an entity id plus, per camera, a normalised bounding box and a
+frozen DINOv2 embedding.
 
 Visibility is per camera and immediate: one segmentation pixel makes a node
 visible in that camera, with no area threshold and no grace frames. A node

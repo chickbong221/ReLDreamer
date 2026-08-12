@@ -1,7 +1,7 @@
 """Vertex registry and episode-scoped persistence.
 
-The registry is append-only within an episode, so a node that leaves and
-re-enters the view keeps its index.
+Indices stay stable until overflow; a new instance then takes the oldest
+resident's index.
 """
 
 import unittest
@@ -50,27 +50,46 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(out["z"].index, 1)
         self.assertEqual(out["a"].index, 2)
 
-    def test_overflow_keeps_the_higher_priority_role(self):
+    def test_overflow_evicts_oldest_even_when_it_has_higher_priority(self):
         reg = EntityRegistry(n_max=2)  # ee plus one object
-        reg.assign({"ee": _ee(), "sup": _node("sup", roles=("support",))})
-        out = reg.assign({
-            "ee": _ee(),
-            "sup": _node("sup", roles=("support",)),
-            "tgt": _node("tgt", roles=("interacted",)),
-        })
-        self.assertIn("tgt", out)
-        self.assertNotIn("sup", out)
-
-    def test_overflow_drops_the_lower_priority_newcomer(self):
-        reg = EntityRegistry(n_max=2)
         reg.assign({"ee": _ee(), "tgt": _node("tgt", roles=("interacted",))})
         out = reg.assign({
             "ee": _ee(),
             "tgt": _node("tgt", roles=("interacted",)),
             "sup": _node("sup", roles=("support",)),
         })
-        self.assertNotIn("sup", out)
+        self.assertNotIn("tgt", out)
+        self.assertIn("sup", out)
+        self.assertEqual(reg.evicted_ids, ["tgt"])
         self.assertEqual(reg.overflow_drops, 1)
+
+    def test_overflow_keeps_newest_instances_and_reuses_oldest_index(self):
+        reg = EntityRegistry(n_max=3)  # ee plus two objects
+        first = reg.assign({"ee": _ee(), "a": _node("a"), "b": _node("b")})
+        a_index = first["a"].index
+        b_index = first["b"].index
+        out = reg.assign({
+            "ee": _ee(),
+            "a": _node("a"), "b": _node("b"), "c": _node("c"),
+        })
+        self.assertNotIn("a", out)
+        self.assertEqual(out["b"].index, b_index)
+        self.assertEqual(out["c"].index, a_index)
+        self.assertEqual(reg.evicted_ids, ["a"])
+        self.assertEqual(reg.overflow_drops, 1)
+
+    def test_evicted_old_instance_does_not_rotate_back_in(self):
+        reg = EntityRegistry(n_max=3)
+        reg.assign({"ee": _ee(), "a": _node("a"), "b": _node("b")})
+        reg.assign({
+            "ee": _ee(), "a": _node("a"), "b": _node("b"), "c": _node("c"),
+        })
+        out = reg.assign({
+            "ee": _ee(), "a": _node("a"), "b": _node("b"), "c": _node("c"),
+        })
+        self.assertNotIn("a", out)
+        self.assertEqual(set(out), {"ee", "b", "c"})
+        self.assertEqual(reg.evicted_ids, [])
 
 
 class PersistenceTests(unittest.TestCase):
