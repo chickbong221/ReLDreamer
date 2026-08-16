@@ -1,9 +1,9 @@
 """Build the two-type node set (``ee`` + ``object``) for one frame.
 
 The builder excludes background, folds gripper links into the single ``ee``
-node, and creates object nodes for visible non-robot actors and links. It also
-derives each node's per-camera appearance support: a normalised bounding box
-and the patch-grid coverage the frozen encoder's features are pooled under.
+node, and creates object nodes for visible non-robot actors and links.
+Segmentation decides membership only; the relation-only graph carries no
+per-camera appearance, box or visibility channel.
 
 Task relevance is decided later by the hard per-subtask whitelist.  This
 module deliberately avoids name-based scene filtering so a visible supporter
@@ -112,47 +112,6 @@ def make_object_node(entity, state: PrivilegedState) -> Node:
 # --------------------------------------------------------------------------- #
 # Main builder
 # --------------------------------------------------------------------------- #
-def fill_appearance(
-    nodes: Dict[str, Node], seg_by_cam: List[np.ndarray], grid: int,
-) -> None:
-    """Attach the per-camera bbox and patch-grid coverage to every node.
-
-    ``grid`` is the frozen encoder's patch-grid resolution. Coverage stays
-    fractional rather than binary so a patch a node only partly occupies
-    contributes proportionally to its pooled embedding.
-
-    A camera with no pixels for a node leaves that row zero, which is what the
-    model reads back as invisible in that camera. Segmentation ids are
-    scene-global, so a node seen by one camera only lands correctly in both.
-    """
-    for seg in seg_by_cam:
-        H, W = seg.shape
-        if H % grid or W % grid:
-            raise ValueError(
-                f"segmentation {H}x{W} is not divisible by patch grid {grid}"
-            )
-    shape = (len(seg_by_cam), grid * grid)
-    for node in nodes.values():
-        node.bbox = np.zeros((shape[0], 4), np.float32)
-        node.patch_weights = np.zeros(shape, np.float32)
-        if not node.segmentation_ids:
-            continue
-        for cam, seg in enumerate(seg_by_cam):
-            H, W = seg.shape
-            fy, fx = H // grid, W // grid
-            m = np.isin(seg, node.segmentation_ids)
-            ys, xs = np.nonzero(m)
-            if ys.size == 0:
-                continue
-            # Exclusive maxima, so a one-pixel node still has nonzero extent.
-            node.bbox[cam] = (
-                xs.min() / W, (xs.max() + 1) / W,
-                ys.min() / H, (ys.max() + 1) / H,
-            )
-            cov = m.reshape(grid, fy, grid, fx).sum((1, 3)) / (fy * fx)
-            node.patch_weights[cam] = cov.reshape(-1)
-
-
 def _ingest_camera(
     seg: np.ndarray,
     state: PrivilegedState,
@@ -222,15 +181,13 @@ def build_nodes(
     camera_order: Optional[List[str]] = None,
     need_masks: bool = True,
     admit: Optional[Callable[[Any], bool]] = None,
-    patch_grid: int = 8,
 ) -> Tuple[Dict[str, Node], MaskAccumulator, str, np.ndarray]:
     """Return (nodes_by_id, masks, record_camera_name, rgb).
 
-    ``seg_overrides`` (dict of ``cam -> [H, W]``) unions visibility across
-    cameras and yields one bbox and coverage grid per camera, ordered by
-    ``camera_order``. Overlay masks are collected only for ``record_camera``.
-    ``seg_override`` (singular) is the single-camera path used by the offline
-    probe.
+    ``seg_overrides`` (dict of ``cam -> [H, W]``) unions membership across
+    cameras, ordered by ``camera_order``. Overlay masks are collected only for
+    ``record_camera``. ``seg_override`` (singular) is the single-camera path
+    used by the offline probe.
     """
     if seg_overrides is not None:
         if not seg_overrides:
@@ -271,5 +228,4 @@ def build_nodes(
         )
 
     nodes["ee"].pixel_area = area_by_key["ee"]
-    fill_appearance(nodes, seg_by_cam, patch_grid)
     return nodes, masks, cam, rgb

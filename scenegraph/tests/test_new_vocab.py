@@ -209,27 +209,12 @@ def _vocab(keys):
     return GraphVocab(entity, relation, absolute, temporal, abs_valid, temp_valid)
 
 
-CAMS, DIM = 2, 6
-
-# Head sees both, hand sees only the object. The model reads visibility back
-# off these boxes, so they carry the whole per-camera story.
-_HEAD_BOX = {"ee": [0.0, 0.25, 0.0, 0.25], "bowl": [0.5, 1.0, 0.5, 1.0]}
-_HAND_BOX = {"ee": [0.0, 0.0, 0.0, 0.0], "bowl": [0.1, 0.4, 0.1, 0.4]}
-
-
 class PackingTests(unittest.TestCase):
 
-    def _packed(self, n_max=4, e_max=8, support=True, target="bowl"):
+    def _packed(self, n_max=4, e_max=8, target="bowl"):
         ee = _ee()
         obj = _obj("bowl", (0.05, 0.0, 0.0))
-        if support:
-            for node, name in ((ee, "ee"), (obj, "bowl")):
-                node.bbox = np.array(
-                    [_HEAD_BOX[name], _HAND_BOX[name]], np.float32)
-                node.appearance = np.full((CAMS, DIM), 0.5, np.float32)
-                # Hand never saw the ee: that row stays exactly zero.
-                if name == "ee":
-                    node.appearance[1] = 0.0
+        ee.uid, obj.uid = 1, 5
         g = _graph(ee, obj)
         g.meta["active_target_node_id"] = target
         cfg = _cfg()
@@ -238,21 +223,23 @@ class PackingTests(unittest.TestCase):
         g.edges.extend(ee_object_physical_edges(g, state, cfg))
         TemporalBuffer(K=cfg["temporal"]["K"]).annotate(g, cfg)
         vocab = _vocab(["<pad>", "<ee>", "actor:bowl"])
-        return pack_graph(
-            g, vocab, n_max=n_max, e_max=e_max, n_cams=CAMS, app_dim=DIM)
+        return pack_graph(g, vocab, n_max=n_max, e_max=e_max)
 
     def test_dtypes_stay_narrow(self):
         packed = self._packed()
         self.assertEqual(packed["graph_edge_src"].dtype, np.uint8)
         self.assertEqual(packed["graph_edge_abs"].dtype, np.uint8)
         self.assertEqual(packed["graph_node_ent"].dtype, np.uint16)
-        self.assertEqual(packed["graph_node_bbox"].dtype, np.float16)
-        self.assertEqual(packed["graph_node_app"].dtype, np.float16)
+        self.assertEqual(packed["graph_node_uid"].dtype, np.uint16)
 
-    def test_shapes_carry_a_camera_axis(self):
+    def test_uid_lands_on_the_owning_slot(self):
         packed = self._packed()
-        self.assertEqual(packed["graph_node_bbox"].shape, (4, CAMS, 4))
-        self.assertEqual(packed["graph_node_app"].shape, (4, CAMS, DIM))
+        np.testing.assert_array_equal(packed["graph_node_uid"], [1, 5, 0, 0])
+
+    def test_padding_rows_carry_no_identity(self):
+        packed = self._packed()
+        self.assertTrue((packed["graph_node_uid"][2:] == 0).all())
+        self.assertTrue((packed["graph_node_ent"][2:] == 0).all())
 
     def test_the_target_flag_lands_on_the_goal_slot(self):
         packed = self._packed()
@@ -270,29 +257,6 @@ class PackingTests(unittest.TestCase):
     def test_a_target_outside_the_vertex_set_flags_nothing(self):
         packed = self._packed(target="apple")
         self.assertFalse(packed["graph_node_target"].any())
-
-    def test_appearance_lands_on_the_owning_slot(self):
-        packed = self._packed()
-        np.testing.assert_allclose(
-            packed["graph_node_bbox"][1, 0], _HEAD_BOX["bowl"], atol=1e-3)
-        np.testing.assert_allclose(
-            packed["graph_node_bbox"][1, 1], _HAND_BOX["bowl"], atol=1e-3)
-
-    def test_a_camera_that_never_saw_a_node_stays_zero(self):
-        packed = self._packed()
-        self.assertTrue((packed["graph_node_app"][0, 1] == 0).all())
-        self.assertTrue((packed["graph_node_app"][0, 0] != 0).all())
-
-    def test_padding_rows_carry_no_appearance(self):
-        packed = self._packed()
-        self.assertTrue((packed["graph_node_bbox"][2:] == 0).all())
-        self.assertTrue((packed["graph_node_app"][2:] == 0).all())
-        self.assertTrue((packed["graph_node_ent"][2:] == 0).all())
-
-    def test_no_support_packs_zeroed_but_still_valid(self):
-        packed = self._packed(support=False)
-        self.assertTrue((packed["graph_node_bbox"] == 0).all())
-        self.assertTrue((packed["graph_node_ent"][:2] != 0).all())
 
     def test_padding_edges_carry_a_pad_relation(self):
         packed = self._packed()

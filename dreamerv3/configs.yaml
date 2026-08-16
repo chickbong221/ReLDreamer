@@ -61,26 +61,21 @@ defaults:
       eval_max_episode_steps: 0  # 0 → reuse max_episode_steps; mshab overrides to 200
       frame_stack: 1             # mshab path: no FrameStack wrapper
       reward_mode: normalized_dense  # 'sparse' | 'dense' | 'normalized_dense'
-      graph:                     # scene graph obs; obs_mode must include rgb and segmentation
-        # false: exact plain DreamerV3 model; true: graph-semantic extension
+      graph:                     # relation-only scene graph obs; obs_mode must include segmentation
+        # false: exact plain DreamerV3 model; true: semantic slot extension
         enabled: false
         profile: room_scale
         thresholds_path: ''
         whitelist_dir: ''
         cameras: [fetch_head, fetch_hand]   # first entry also renders overlays
-        # e_max is the truncation-proof ceiling for this n_max, from
-        # tools/max_relations.py, not a measured peak. Two identical smoke runs
-        # peaked at 72 and 93 facts on 4 of 63 build configs, so the run-to-run
-        # spread is wider than any margin worth guessing at. Vertices were
-        # stable at 7 both times; n_max keeps three slots over that because
-        # vertex overflow evicts the oldest resident for the newcomer.
-        n_max: 10                # vertex capacity including the ee node
-        e_max: 270
+        # Slot 0 is the ee, so n_max - 1 is the protected-object budget and every
+        # whitelist is checked against it at startup. The dense ceiling for this
+        # n_max is 3 * n_max * (n_max - 1) = 90; e_max below that truncates
+        # spatial facts first, so watch log/graph_fact_drops.
+        n_max: 6
+        e_max: 64
+        uid_vocab: 256           # episode-stable identity vocabulary; must match agent.graph
         k_persist: -1            # <0 → a registered vertex stays for the episode
-        dino_model: dinov2_vits14_reg
-        dino_res: 112            # must be a multiple of the patch size 14
-        dino_weights: ''         # local checkpoint; empty → torch.hub
-        app_dim: 384             # frozen feature width; checked against the model
         staleness_enabled: true
         bypass_teemo: false
 
@@ -136,26 +131,25 @@ defaults:
     profiler: False     # traces updates 100-120 into logdir; CUPTI floods stderr
 
   agent:
-    # semtgt is small on purpose: goal identity is a handful of bits and the
-    # head saturates, so a larger scale would buy nothing and crowd the
-    # semantic state's relational content.
-    loss_scales: {rec: 1.0, rew: 1.0, con: 1.0, dyn: 1.0, rep: 0.1, policy: 1.0, value: 1.0, repval: 0.3, node: 1.0, relabs: 1.0, reltemp: 1.0, semtgt: 0.1, semdyn: 1.0, semrep: 0.1}
+    # slot is the one-step slot-dynamics loss; post*/prior* decode relations from
+    # posterior and predicted slots. The temporal heads sit low because a change
+    # label is a handful of bits over an absolute state already supervised.
+    loss_scales: {rec: 1.0, rew: 1.0, con: 1.0, dyn: 1.0, rep: 0.1, policy: 1.0, value: 1.0, repval: 0.3, slot: 1.0, postabs: 1.0, priorabs: 1.0, posttemp: 0.25, priortemp: 0.25}
     opt: {lr: 4e-5, agc: 0.3, eps: 1e-20, beta1: 0.9, beta2: 0.999, momentum: True, wd: 0.0, schedule: const, warmup: 1000, anneal: 0}
     ac_grads: False
     dyn:
       typ: rssm
       # unroll applies only to the recurrent RSSM scans. Graph encoding is
       # already batched over B*T outside the observation scan.
-      rssm: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, semstoch: 16, semclasses: 16, semlayers: 1, act: silu, norm: rms, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0, unroll: False}
-    # app_dim is the stored DINO width; app/bbox are the learned per-camera
-    # projections. units follows the size preset's `.*\.units` wildcard and is
-    # left there deliberately, so the graph branch scales with model size like
-    # every other head; edge_units does not, since the pair embedding only has
-    # to hold a handful of relation tokens. entity_vocab is overwritten from
-    # the mined whitelists at startup. Attention is global, so layers buys
-    # composition rather than reach: two EGT-Simple blocks over a graph that is
-    # the ee, the target and the target's supporters.
-    graph: {layers: 2, units: 256, heads: 4, embed: 64, edge_units: 64, clip_logits: 5.0, app_dim: 384, app: 64, bbox: 8, entity_vocab: 64}
+      rssm: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, slots: 6, slot_dim: 256, slot_heads: 4, act: silu, norm: rms, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0, unroll: False}
+    # No `units` key here on purpose: the size presets carry a `.*\.units`
+    # wildcard, so a key by that name would silently widen the graph branch to
+    # the preset's model width. slot_dim is the graph path's one width and it is
+    # pinned. entity_vocab is overwritten from the mined whitelists at startup;
+    # uid_vocab must match env.maniskill.graph.uid_vocab. uid_input feeds the
+    # episode-random uid to the node encoder -- off by default, since that would
+    # put an arbitrary per-episode vector into the slot-dynamics target.
+    graph: {layers: 2, embed: 64, entity_vocab: 64, uid_vocab: 256, uid_input: False}
     enc:
       typ: simple
       simple: {depth: 64, mults: [2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: rms, winit: trunc_normal_in, symlog: True, outer: False, kernel: 5, strided: False}
@@ -281,8 +275,7 @@ debug:
     .*\.units: 8
     .*\.stoch: 2
     .*\.classes: 4
-    .*\.semstoch: 2
-    .*\.semclasses: 4
+    .*\.slot_dim: 16
     .*\.deter: 8
     .*\.hidden: 3
     .*\.embed: 8

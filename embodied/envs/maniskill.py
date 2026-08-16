@@ -353,7 +353,10 @@ class ManiSkill(embodied.Env):
     """Whitelist-dependent vocabulary sizes the agent cannot derive itself."""
     if self._graph is None:
       return {}
-    return {'entity_vocab': self._graph.vocab.sizes['entity']}
+    return {
+        'entity_vocab': self._graph.vocab.sizes['entity'],
+        'uid_vocab': self._graph.uid_vocab,
+    }
 
   # ------------------------------------------------------------------ #
   #  Shape discovery

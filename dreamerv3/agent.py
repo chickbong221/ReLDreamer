@@ -11,7 +11,8 @@ import numpy as np
 import optax
 
 from . import rssm
-from .graph_encoder import GRAPH_KEYS, SCAN_KEYS, GraphDecoder, unpack
+from .graph_encoder import (
+    GRAPH_KEYS, SCAN_KEYS, RelationDecoder, SlotReadout, unpack)
 
 f32 = jnp.float32
 i32 = jnp.int32
@@ -57,33 +58,31 @@ class Agent(embodied.jax.Agent):
     self.enc = {
         'simple': rssm.Encoder,
     }[config.enc.typ](enc_space, **config.enc[config.enc.typ], name='enc')
-    # app_dim is the stored replay width, which only the decoder needs.
-    # GraphPosterior does not declare it, so it would fall through to every
-    # sublayer as an unknown kwarg.
-    graph_kw = {k: v for k, v in dict(config.graph).items() if k != 'app_dim'}
     self.dyn = {
         'rssm': rssm.RSSM,
     }[config.dyn.typ](
-        act_space, graph_kw=graph_kw, semantic=self.semantic,
+        act_space, graph_kw=dict(config.graph), semantic=self.semantic,
         **config.dyn[config.dyn.typ], name='dyn')
     self.dec = {
         'simple': rssm.Decoder,
     }[config.dec.typ](
-        dec_space, semantic=self.semantic,
-        **config.dec[config.dec.typ], name='dec')
+        dec_space, **config.dec[config.dec.typ], name='dec')
     dynkw = config.dyn[config.dyn.typ]
-    self.graphdec = GraphDecoder(
-        config.graph.app_dim,
-        units=config.graph.units, embed=config.graph.embed,
-        entity_vocab=config.graph.entity_vocab,
-        act=dynkw['act'], norm=dynkw['norm'], winit=dynkw['winit'],
+    slotkw = dict(
+        slot_dim=dynkw['slot_dim'], act=dynkw['act'], norm=dynkw['norm'],
+        winit=dynkw['winit'])
+    self.graphdec = RelationDecoder(
+        embed=config.graph.embed, **slotkw,
         name='graphdec') if self.semantic else None
+    self.readout = SlotReadout(
+        **{k: v for k, v in slotkw.items() if k != 'act'},
+        name='readout') if self.semantic else None
 
     if self.semantic:
       self.feat2tensor = lambda x: jnp.concatenate([
           nn.cast(x['deter']),
-          nn.cast(x['sem'].reshape((*x['sem'].shape[:-2], -1))),
-          nn.cast(x['stoch'].reshape((*x['stoch'].shape[:-2], -1)))], -1)
+          nn.cast(x['stoch'].reshape((*x['stoch'].shape[:-2], -1))),
+          nn.cast(self.readout(x['slots'], x['slot_mask']))], -1)
     else:
       self.feat2tensor = lambda x: jnp.concatenate([
           nn.cast(x['deter']),
@@ -111,7 +110,7 @@ class Agent(embodied.jax.Agent):
     self.modules = [
         self.dyn, self.enc, self.dec, self.rew, self.con, self.pol, self.val]
     if self.semantic:
-      self.modules.append(self.graphdec)
+      self.modules += [self.graphdec, self.readout]
     self.opt = embodied.jax.Optimizer(
         self.modules, self._make_opt(**config.opt), summary_depth=1,
         name='opt')
@@ -120,13 +119,14 @@ class Agent(embodied.jax.Agent):
     rec = scales.pop('rec')
     scales.update({k: rec for k in dec_space})
     if not self.semantic:
-      for key in ('node', 'relabs', 'reltemp', 'semtgt', 'semdyn', 'semrep'):
+      for key in ('slot', 'postabs', 'priorabs', 'posttemp', 'priortemp'):
         scales.pop(key, None)
     self.scales = scales
 
   @property
   def policy_keys(self):
-    return '^(enc|dyn|dec|pol)/'
+    # readout is on the policy path: feat2tensor pools the slots through it.
+    return '^(enc|dyn|dec|pol|readout)/'
 
   def _graph(self, obs):
     if not self.semantic:
@@ -214,13 +214,13 @@ class Agent(embodied.jax.Agent):
     enc_carry, enc_entries, tokens = self.enc(
         enc_carry, obs, reset, training)
     graph = self._graph(obs)
-    dyn_carry, dyn_entries, los, repfeat, nodes, mets = self.dyn.loss(
+    dyn_carry, dyn_entries, los, repfeat, aux, mets = self.dyn.loss(
         dyn_carry, tokens, graph, prevact, reset, training,
         step_valid=step_valid)
     losses.update(los)
     metrics.update(mets)
     if self.semantic:
-      los, mets = self.graphdec(nodes, graph, repfeat['sem'], step_valid)
+      los, mets = self._relation_losses(repfeat, aux, graph, step_valid)
       losses.update(los)
       metrics.update(mets)
     dec_carry, dec_entries, recons = self.dec(
@@ -306,6 +306,38 @@ class Agent(embodied.jax.Agent):
         'tokens': tokens, 'graph': graph, 'repfeat': repfeat,
         'losses': losses}
     return loss, (carry, entries, outs, metrics)
+
+  def _relation_losses(self, feat, aux, graph, step_valid):
+    """Decode every supplied fact from posterior slots and from prior slots.
+
+    The prior arm is what keeps imagination honest: a slot set that only decodes
+    correctly after seeing a graph leaves the semantic space as soon as the
+    rollout starts, and nothing else in the loss would catch it. One decoder,
+    both arms, so the two cannot drift apart.
+    """
+    B, T = step_valid.shape
+    flat = lambda x: x.reshape((B * T, *x.shape[2:]))
+    g = {k: flat(v) for k, v in graph.items()}
+    step = f32(flat(step_valid)).reshape((B * T, 1))
+    emask = f32(g['graph_edge_rel'] != 0) * step
+    tmask = emask * f32(g['graph_edge_temp'] != 0)
+    align = nn.cast(flat(aux['align']), force=True)
+
+    losses, metrics = {}, {}
+    for name, slots in (('post', feat['slots']), ('prior', aux['prior'])):
+      logp_abs, logp_temp = self.graphdec(flat(slots), g, align, emask)
+      for head, logp, target, mask in (
+          ('abs', logp_abs, g['graph_edge_abs'], emask),
+          ('temp', logp_temp, g['graph_edge_temp'], tmask)):
+        picked = jnp.take_along_axis(logp, target[..., None], -1)[..., 0]
+        losses[f'{name}{head}'] = (
+            (-picked * mask).sum(-1) /
+            jnp.maximum(mask.sum(-1), 1.0)).reshape((B, T))
+        metrics[f'{name}{head}_acc'] = (
+            (f32(logp.argmax(-1) == target) * mask).sum() /
+            jnp.maximum(mask.sum(), 1.0))
+    metrics['fact_count'] = emask.sum(-1).mean()
+    return losses, metrics
 
   def report(self, carry, data):
     if not self.config.report:

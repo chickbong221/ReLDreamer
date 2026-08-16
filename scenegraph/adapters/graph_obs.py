@@ -1,12 +1,11 @@
 """Online graph plumbing shared by every trainer.
 
-Owns one ``GraphBuilder`` per parallel env, one frozen DINO encoder, and one
-per-camera appearance cache, and turns each per-env ``Graph`` into a
-fixed-shape batched tensor dict.
+Owns one ``GraphBuilder`` per parallel env and turns each per-env ``Graph`` into
+a fixed-shape batched tensor dict.
 
-Segmentation and RGB are sliced from the raw observation that
-``NamedCameraRGBWrapper`` stashes on its way past, rather than re-fetched per
-env. MS-HAB's ``BaseEnv._last_obs`` carries only the state half, and calling
+Segmentation is sliced from the raw observation that ``NamedCameraRGBWrapper``
+stashes on its way past, rather than re-fetched per env. MS-HAB's
+``BaseEnv._last_obs`` carries only the state half, and calling
 ``env.unwrapped.get_obs()`` would rerun ``get_info`` -> MS-HAB ``evaluate``,
 which mutates ``subtask_pointer`` / ``subtask_steps_left`` / cumulative force,
 and would also re-render + CUDA-sync once per env.
@@ -14,13 +13,14 @@ and would also re-render + CUDA-sync once per env.
 
 from __future__ import annotations
 
+import json
+import os
 from copy import copy as _shallow_copy
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 import torch
 
-from .dino import DinoFeatures
 from .privileged_state import (
     begin_frame_cache,
     clear_privileged_state_caches,
@@ -47,8 +47,7 @@ _SCENE_CACHE_CAP = 8192
 
 _DTYPES: Dict[str, np.dtype] = {
     "graph_node_ent": np.uint16,
-    "graph_node_app": np.float16,
-    "graph_node_bbox": np.float16,
+    "graph_node_uid": np.uint16,
     "graph_node_target": np.uint8,
     "graph_edge_src": np.uint8,
     "graph_edge_dst": np.uint8,
@@ -56,6 +55,35 @@ _DTYPES: Dict[str, np.dtype] = {
     "graph_edge_abs": np.uint8,
     "graph_edge_temp": np.uint8,
 }
+
+
+def _verify_slot_capacity(whitelist_dir: str, n_max: int) -> None:
+    """Fail at startup if any whitelist needs more object slots than exist.
+
+    Slot 0 is the ee, so a whitelist may name at most ``n_max - 1`` members.
+    Overflow evicts a resident, and with six slots that silently costs a
+    supporter the relation heads were trained to read.
+    """
+    capacity = n_max - 1
+    over: Dict[str, int] = {}
+    for name in sorted(os.listdir(whitelist_dir)):
+        if not name.endswith(".json") or name.endswith("_all.json"):
+            continue
+        with open(os.path.join(whitelist_dir, name), "r") as f:
+            raw = json.load(f)
+        members = raw.get("members", {}) if isinstance(raw, dict) else {}
+        count = sum(
+            1 for k in members
+            if isinstance(k, str) and not k.startswith("_"))
+        if count > capacity:
+            over[name] = count
+    if over:
+        listing = ", ".join(f"{k}={v}" for k, v in sorted(over.items()))
+        raise ValueError(
+            f"graph: {len(over)} whitelist(s) name more than {capacity} "
+            f"protected objects, which n_max={n_max} cannot seat: {listing}. "
+            "Raise n_max or exclude those tasks."
+        )
 
 
 def _verify_whitelist_coverage(env, whitelist_dir: str) -> None:
@@ -123,10 +151,10 @@ class GraphObsBuilder:
         e_max: int,
         cameras: List[str],
         sensor_source=None,
-        dino: Optional[DinoFeatures] = None,
-        app_dim: int = 384,
         bypass_teemo: bool = False,
         staleness_enabled: bool = True,
+        uid_vocab: int = 256,
+        seed: int = 0,
     ):
         self.env = env
         self.sensor_source = sensor_source
@@ -134,6 +162,7 @@ class GraphObsBuilder:
         self.vocab = vocab
         self.n_max = int(n_max)
         self.e_max = int(e_max)
+        self.uid_vocab = int(uid_vocab)
         self.bypass_teemo = bool(bypass_teemo)
         self.staleness_enabled = bool(staleness_enabled)
         self.cameras = list(cameras)
@@ -142,9 +171,6 @@ class GraphObsBuilder:
         # Overlay rendering and the offline tools need one frame to draw on.
         # The model reads every camera independently and never sees this.
         self.record_camera = self.cameras[0]
-        self.dino = dino
-        self.app_dim = int(dino.dim if dino is not None else app_dim)
-        self.patch_grid = int(dino.grid) if dino is not None else 8
         self.builders = []
         for i in range(self.num_envs):
             cfg_i = _shallow_copy(teemo_cfg)
@@ -153,19 +179,14 @@ class GraphObsBuilder:
                 GraphBuilder(env, cfg_i, env_idx=i, env_id=f"env{i}",
                              camera=self.record_camera,
                              camera_order=self.cameras,
-                             staleness_enabled=self.staleness_enabled)
+                             staleness_enabled=self.staleness_enabled,
+                             uid_vocab=self.uid_vocab, seed=seed)
             )
         self._frames = np.zeros(self.num_envs, dtype=np.int64)
         # Last packed arrays per env, re-emitted on terminal frames whose
         # sensors already belong to the next episode.
         self._last_packed: List[Optional[Dict[str, np.ndarray]]] = [
             None for _ in range(self.num_envs)
-        ]
-        # Per-env, per-node [C, app_dim] appearance. A camera row holds the
-        # last embedding that camera pooled for the node, or zero if it never
-        # saw it. Cleared per env at the episode boundary.
-        self._appearance: List[Dict[str, np.ndarray]] = [
-            {} for _ in range(self.num_envs)
         ]
         # Env indices whose latest graph + record-cam masks are cached for
         # offline rendering. Empty in the hot path.
@@ -193,16 +214,11 @@ class GraphObsBuilder:
         self._target_unresolved = np.zeros(self.num_envs, dtype=np.float32)
 
     @property
-    def n_cams(self) -> int:
-        return len(self.cameras)
-
-    @property
     def obs_spec_shapes(self) -> Dict[str, tuple]:
         """Per-env shapes for each graph key."""
         return {
             "graph_node_ent":  (self.n_max,),
-            "graph_node_app":  (self.n_max, self.n_cams, self.app_dim),
-            "graph_node_bbox": (self.n_max, self.n_cams, 4),
+            "graph_node_uid":  (self.n_max,),
             "graph_node_target": (self.n_max,),
             "graph_edge_src":  (self.e_max,),
             "graph_edge_dst":  (self.e_max,),
@@ -262,7 +278,6 @@ class GraphObsBuilder:
         stats["match_key"] = sum(len(b._match_key_cache) for b in self.builders)
         stats["edge_history"] = sum(len(b._edge_history) for b in self.builders)
         stats["registry"] = sum(len(b.registry) for b in self.builders)
-        stats["appearance"] = sum(len(c) for c in self._appearance)
         stats["temporal_values"] = sum(
             len(b.temporal._values) for b in self.builders
         )
@@ -302,7 +317,6 @@ class GraphObsBuilder:
             rgb_override=None,
             record_camera=self.record_camera,
             need_masks=need_masks,
-            patch_grid=self.patch_grid,
         )
         if need_masks:
             self.last_graph_by_env[env_idx] = graph
@@ -357,55 +371,6 @@ class GraphObsBuilder:
             out[cam] = buf.numpy()
         return out
 
-    def _read_rgb(self) -> torch.Tensor:
-        """``[num_envs, C, H, W, 3]`` uint8, left on the render device."""
-        sensor_data = self._sensor_data()
-        return torch.stack(
-            [sensor_data[cam]["rgb"] for cam in self.cameras], 1)
-
-    def _pool_appearance(self, active: List[int], graphs: Dict[int, Any]) -> None:
-        """Pool this frame's DINO features onto every node, then fall back to
-        the per-camera cache for cameras that lost sight of it.
-
-        Every buffer is sized at ``num_envs`` x ``n_max`` rather than cut to
-        the active set and the widest graph. Those two both move from step to
-        step, and a shape that moves hands the caching allocator a fresh block
-        size per combination, which it keeps rather than returning to the OS.
-        Terminal envs still pool nothing: only ``active`` writes a cache row.
-        """
-        C, D, P = self.n_cams, self.app_dim, self.patch_grid ** 2
-        if not any(graphs[i].nodes for i in active):
-            return
-
-        pooled = None
-        if self.dino is not None:
-            weights = torch.zeros(
-                (self.num_envs, C, self.n_max, P), dtype=torch.float32)
-            for env_idx in active:
-                for j, node in enumerate(graphs[env_idx].nodes[:self.n_max]):
-                    if node.patch_weights is not None:
-                        weights[env_idx, :, j] = torch.from_numpy(
-                            node.patch_weights)
-            tokens = self.dino.patch_tokens(self._read_rgb())
-            pooled = self.dino.pool(tokens, weights.to(self.dino.device))
-            # [B, C, N, D] -> [B, N, C, D] to match the packed layout.
-            pooled = pooled.permute(0, 2, 1, 3).cpu().numpy()
-
-        for env_idx in active:
-            cache = self._appearance[env_idx]
-            for j, node in enumerate(graphs[env_idx].nodes[:self.n_max]):
-                if node.bbox is None:
-                    node.bbox = np.zeros((C, 4), np.float32)
-                app = cache.get(node.node_id)
-                if app is None:
-                    app = np.zeros((C, D), np.float32)
-                    cache[node.node_id] = app
-                if pooled is not None:
-                    current = pooled[env_idx, j]
-                    seen = np.abs(current).sum(-1) > 0
-                    app[seen] = current[seen]
-                node.appearance = app.copy()
-
     def _current_scene_signature(self):
         base = self.env.unwrapped
         scene = getattr(base, "scene", None)
@@ -459,8 +424,7 @@ class GraphObsBuilder:
         ``is_first`` drives the per-env episode reset. ``is_last`` marks envs
         whose sensors already belong to the next episode because the vector env
         auto-reset inside ``step``; those re-emit the previous frame's arrays
-        rather than a graph built from the wrong episode, and neither pool DINO
-        features nor touch their appearance cache.
+        rather than a graph built from the wrong episode.
         """
         first = (
             np.asarray(is_first, dtype=bool).reshape(-1)
@@ -472,8 +436,6 @@ class GraphObsBuilder:
         )
         if first.any():
             self._refresh_scene_caches_if_needed()
-        for i in np.nonzero(first)[0]:
-            self._appearance[i].clear()
 
         if self.bypass_teemo:
             return self._stack([self._zero_pack() for _ in range(self.num_envs)])
@@ -492,7 +454,6 @@ class GraphObsBuilder:
                     )
             finally:
                 end_frame_cache()
-            self._pool_appearance(active, graphs)
 
         packed: List[Dict[str, np.ndarray]] = []
         for i in range(self.num_envs):
@@ -500,7 +461,6 @@ class GraphObsBuilder:
                 out = pack_graph(
                     graphs[i], self.vocab,
                     n_max=self.n_max, e_max=self.e_max,
-                    n_cams=self.n_cams, app_dim=self.app_dim,
                 )
                 self._last_packed[i] = out
                 self._fact_drops[i] = float(
@@ -557,29 +517,16 @@ def build_graph_obs(
         )
 
     _verify_whitelist_coverage(env, teemo_cfg["whitelist_dir"])
-    vocab = build_graph_vocab(teemo_cfg["whitelist_dir"])
 
     n_max = int(teemo_cfg["selection"]["n_max"])
-    e_max = int(graph_cfg.get("e_max", 256))
-    app_dim = int(graph_cfg.get("app_dim", 384))
+    _verify_slot_capacity(teemo_cfg["whitelist_dir"], n_max)
+    vocab = build_graph_vocab(teemo_cfg["whitelist_dir"])
+
+    e_max = int(graph_cfg.get("e_max", 64))
 
     cameras = graph_cfg.get("cameras")
     if not cameras:
         cameras = [graph_cfg.get("camera", "fetch_head")]
-
-    dino = None
-    if not bool(graph_cfg.get("bypass_teemo", False)):
-        dino = DinoFeatures(
-            graph_cfg.get("dino_model") or "dinov2_vits14_reg",
-            res=int(graph_cfg.get("dino_res", 112)),
-            weights_path=graph_cfg.get("dino_weights") or None,
-        )
-        if dino.dim != app_dim:
-            raise ValueError(
-                f"graph: dino_model {dino.name!r} has feature width {dino.dim} "
-                f"but graph.app_dim is {app_dim}; the model reads app_dim from "
-                "config and would mismatch replay."
-            )
 
     return builder_cls(
         env,
@@ -590,8 +537,8 @@ def build_graph_obs(
         e_max=e_max,
         cameras=list(cameras),
         sensor_source=sensor_source,
-        dino=dino,
-        app_dim=app_dim,
         bypass_teemo=bool(graph_cfg.get("bypass_teemo", False)),
         staleness_enabled=bool(graph_cfg.get("staleness_enabled", True)),
+        uid_vocab=int(graph_cfg.get("uid_vocab", 256)),
+        seed=int(graph_cfg.get("seed", 0)),
     )

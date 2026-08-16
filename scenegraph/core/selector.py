@@ -13,41 +13,64 @@ being discarded.
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Set
+
+import numpy as np
 
 from .persistence import _snapshot
 from .schema import Node
 from .whitelist import Whitelist, match_key
+
+# Reserved uids. Object uids start at 2 and are drawn without replacement from
+# a per-episode random permutation.
+UID_PAD = 0
+UID_EE = 1
+
 
 class EntityRegistry:
     """Bounded, first-seen-ordered vertex index. One instance per episode.
 
     ``ee`` always holds index 0. Object indices are handed out on first sight
     and remain stable until capacity is reached. A genuinely new instance then
-    takes the oldest resident's index. First-seen order is retained even after
-    overflow eviction, preventing an old persistent instance from returning on
-    the next frame and displacing a newer one. Appearance retention is separate
-    and lives in the adapter-level cache.
+    takes the oldest unprotected resident's index. First-seen order is retained
+    even after overflow eviction, preventing an old persistent instance from
+    returning on the next frame and displacing a newer one.
+
+    Each admitted vertex also carries a uid, which is what the model aligns its
+    recurrent slots by. The packed index is free to move; the uid is not.
     """
 
-    def __init__(self, n_max: int):
+    def __init__(self, n_max: int, uid_vocab: int = 256, seed: int = 0):
         self.n_max = int(n_max)
+        self.uid_vocab = int(uid_vocab)
+        if self.uid_vocab <= 2:
+            raise ValueError(f"uid_vocab must exceed 2, got {self.uid_vocab}")
+        self._rng = np.random.default_rng(seed)
         self._index: Dict[str, int] = {}
+        self._uid: Dict[str, int] = {}
+        self._uid_pool: List[int] = []
         self._free: List[int] = []
         self._first_seen: Dict[str, int] = {}
         self._seen_clock = 0
         self._next = 1  # 0 is reserved for the end effector
         self.evicted_ids: List[str] = []
         self.overflow_drops = 0
+        self._refill_uids()
+
+    def _refill_uids(self) -> None:
+        pool = np.arange(2, self.uid_vocab)
+        self._uid_pool = [int(u) for u in self._rng.permutation(pool)]
 
     def reset_episode(self) -> None:
         self._index.clear()
+        self._uid.clear()
         self._free.clear()
         self._first_seen.clear()
         self._seen_clock = 0
         self._next = 1
         self.evicted_ids.clear()
         self.overflow_drops = 0
+        self._refill_uids()
 
     def __len__(self) -> int:
         return len(self._index)
@@ -55,21 +78,41 @@ class EntityRegistry:
     def index_of(self, entity_id: str) -> Optional[int]:
         return self._index.get(entity_id)
 
-    def assign(self, nodes: Dict[str, Node]) -> Dict[str, Node]:
+    def uid_of(self, entity_id: str) -> int:
+        return self._uid.get(entity_id, UID_PAD)
+
+    def _claim_uid(self, entity_id: str) -> int:
+        uid = self._uid.get(entity_id)
+        if uid is not None:
+            return uid
+        if not self._uid_pool:
+            raise RuntimeError(
+                f"uid pool exhausted at uid_vocab={self.uid_vocab}; one episode "
+                "admitted more distinct instances than the vocabulary holds"
+            )
+        uid = self._uid_pool.pop()
+        self._uid[entity_id] = uid
+        return uid
+
+    def assign(
+        self, nodes: Dict[str, Node], protected: Iterable[str] = (),
+    ) -> Dict[str, Node]:
         """Index every object node, evicting the oldest resident on overflow.
 
         Returns the admitted subset. ``evicted_ids`` reports residents displaced
         by this call so the graph builder can purge their persistence and edge
         history. An already-seen overflow instance remains older than the
         current residents and is rejected instead of causing frame-to-frame
-        slot rotation.
+        slot rotation. Ids in ``protected`` are never evicted.
         """
         self.evicted_ids.clear()
+        keep: Set[str] = {k for k in protected if k}
         admitted: Dict[str, Node] = {}
         pending: List[str] = []
         for ent_id, node in nodes.items():
             if node.node_type == "ee":
                 node.index = 0
+                node.uid = UID_EE
                 admitted[ent_id] = node
                 continue
             idx = self._index.get(ent_id)
@@ -77,6 +120,7 @@ class EntityRegistry:
                 pending.append(ent_id)
                 continue
             node.index = idx
+            node.uid = self._claim_uid(ent_id)
             admitted[ent_id] = node
 
         # Assign a permanent episode-local first-seen order before making room.
@@ -91,10 +135,10 @@ class EntityRegistry:
         for ent_id in sorted(pending, key=lambda k: self._first_seen[k]):
             node = nodes[ent_id]
             if len(self._index) >= capacity:
-                oldest = self._oldest_resident()
-                # No object capacity, or this is an old overflow instance that
-                # is still being offered by visibility/persistence. Keep the
-                # newer resident set stable.
+                oldest = self._oldest_resident(keep)
+                # No evictable capacity, or this is an old overflow instance
+                # that is still being offered by visibility/persistence. Keep
+                # the newer resident set stable.
                 if oldest is None or self._first_seen[ent_id] < self._first_seen[oldest]:
                     self.overflow_drops += 1
                     continue
@@ -107,19 +151,24 @@ class EntityRegistry:
                 self._next += 1
             self._index[ent_id] = idx
             node.index = idx
+            node.uid = self._claim_uid(ent_id)
             admitted[ent_id] = node
         return admitted
 
-    def _oldest_resident(self) -> Optional[str]:
-        if not self._index:
+    def _oldest_resident(self, protected: Set[str] = frozenset()) -> Optional[str]:
+        candidates = [k for k in self._index if k not in protected]
+        if not candidates:
             return None
-        return min(self._index, key=lambda key: self._first_seen[key])
+        return min(candidates, key=lambda key: self._first_seen[key])
 
     def release(self, entity_id: str, *, forget: bool = True) -> None:
         idx = self._index.pop(entity_id, None)
         if idx is not None:
             self._free.append(idx)
             self._free.sort()
+        # A released vertex is gone from the episode's slot set; re-admitting it
+        # later is a new instance and must not reuse the retired uid.
+        self._uid.pop(entity_id, None)
         if forget:
             self._first_seen.pop(entity_id, None)
 

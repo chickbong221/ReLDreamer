@@ -1,15 +1,16 @@
-"""Hyper-relational per-frame packing.
+"""Relation-only per-frame packing.
 
-Nodes fill a compact prefix in vertex-index order, ee first, each carrying one
-bbox and one appearance vector per camera plus a flag marking the subtask's
-target; each fact is one row of (relation, absolute, temporal). Arrays use the
-narrowest dtype holding their vocabulary since these land in the replay buffer
-every step; the encoder casts back on read.
+Nodes fill a compact prefix in vertex-index order, ee first, each carrying its
+category, its episode uid and a flag marking the subtask's target; each fact is
+one row of (src, dst, relation, absolute, temporal). Arrays use the narrowest
+dtype holding their vocabulary since these land in the replay buffer every
+step; the encoder casts back on read.
 
-Nothing derivable is stored. Index zero is padding in every vocabulary, so
-validity, per-camera visibility, whether a camera ever observed a node, and
-both counts all follow from the ids, the boxes and the embedding norms -- see
-``graph_encoder`` for the exact derivations the model reads them back with.
+Nothing derivable is stored and no appearance channel exists. Index zero is
+padding in every vocabulary, so node validity and fact validity both follow
+from the ids -- see ``graph_encoder`` for the derivations the model reads them
+back with. The packed index is not stable across frames; ``graph_node_uid`` is,
+and the model aligns its recurrent slots by that.
 """
 
 from __future__ import annotations
@@ -49,8 +50,6 @@ def pack_graph(
     *,
     n_max: int,
     e_max: int,
-    n_cams: int,
-    app_dim: int,
 ) -> Dict[str, np.ndarray]:
     if n_max > 255:
         raise ValueError(
@@ -58,8 +57,7 @@ def pack_graph(
         )
 
     node_ent = np.zeros(n_max, dtype=np.uint16)
-    node_app = np.zeros((n_max, n_cams, app_dim), dtype=np.float16)
-    node_bbox = np.zeros((n_max, n_cams, 4), dtype=np.float16)
+    node_uid = np.zeros(n_max, dtype=np.uint16)
     # Which vertex the current subtask is acting on. All-zero is the honest
     # encoding of "unknown": the target may be unresolved, not yet admitted, or
     # displaced by vertex overflow, and a bit on the wrong instance is worse
@@ -82,11 +80,13 @@ def pack_graph(
                 f"node {node.node_id!r} ({node.node_type}) encodes to the pad "
                 "entity id; every packed vertex needs a whitelist key"
             )
+        if not node.uid:
+            raise ValueError(
+                f"node {node.node_id!r} carries no uid; the registry must "
+                "assign one before packing"
+            )
         node_ent[i] = ent
-        if node.bbox is not None:
-            node_bbox[i] = node.bbox
-        if node.appearance is not None:
-            node_app[i] = node.appearance
+        node_uid[i] = node.uid
         if node.node_id == target_id:
             node_target[i] = 1
         position[node.node_id] = i
@@ -143,8 +143,7 @@ def pack_graph(
 
     return {
         "graph_node_ent": node_ent,
-        "graph_node_app": node_app,
-        "graph_node_bbox": node_bbox,
+        "graph_node_uid": node_uid,
         "graph_node_target": node_target,
         "graph_edge_src": edge_src,
         "graph_edge_dst": edge_dst,
@@ -155,7 +154,7 @@ def pack_graph(
 
 
 GRAPH_KEYS = (
-    "graph_node_ent", "graph_node_app", "graph_node_bbox", "graph_node_target",
+    "graph_node_ent", "graph_node_uid", "graph_node_target",
     "graph_edge_src", "graph_edge_dst", "graph_edge_rel", "graph_edge_abs",
     "graph_edge_temp",
 )

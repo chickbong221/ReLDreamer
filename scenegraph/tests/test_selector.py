@@ -94,20 +94,17 @@ class RegistryTests(unittest.TestCase):
 
 class PersistenceTests(unittest.TestCase):
 
-    def test_retained_node_comes_back_invisible_and_unsupported(self):
+    def test_retained_node_comes_back_invisible(self):
         sel = _selector()
         node = _node("a")
-        node.bbox = np.array([[0.1, 0.2, 0.3, 0.4]] * 2, np.float32)
-        node.appearance = np.ones((2, 8), np.float32)
         sel.commit({"a": node}, frame=0)
         merged = sel.merge_persistent({}, frame=5)
         self.assertIn("a", merged)
         self.assertFalse(merged["a"].visible)
-        # The registry retains identity and index only. A retained node has no
-        # camera support this frame, so the box goes to zero; its appearance
-        # comes back from the adapter-level cache, not from here.
-        self.assertIsNone(merged["a"].bbox)
-        self.assertIsNone(merged["a"].appearance)
+        # Persistence retains identity and index only. A node absent from the
+        # emitted graph is handled downstream by uid-aligned slot persistence.
+        self.assertEqual(merged["a"].segmentation_ids, [])
+        self.assertEqual(merged["a"].steps_since_seen, 5)
 
     def test_k_persist_negative_never_evicts(self):
         sel = _selector(k_persist=-1)

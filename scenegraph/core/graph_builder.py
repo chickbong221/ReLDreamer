@@ -39,6 +39,8 @@ class GraphBuilder:
         camera: Optional[str] = None,
         camera_order: Optional[List[str]] = None,
         staleness_enabled: bool = True,
+        uid_vocab: int = 256,
+        seed: int = 0,
     ):
         self.env = env
         self.cfg = cfg
@@ -50,7 +52,10 @@ class GraphBuilder:
 
         self.temporal = TemporalBuffer(K=cfg["temporal"]["K"])
         self.selector = NodeSelector(cfg)
-        self.registry = EntityRegistry(n_max=int(cfg["selection"]["n_max"]))
+        self.registry = EntityRegistry(
+            n_max=int(cfg["selection"]["n_max"]),
+            uid_vocab=uid_vocab,
+            seed=seed * 1000003 + env_idx)
         self.cfg.setdefault("_affordance_selection_cache", {})
 
         self._whitelist_dir: Optional[str] = cfg.get("whitelist_dir")
@@ -171,7 +176,7 @@ class GraphBuilder:
         episode_boundary: bool = False,
         seg_override=None, seg_overrides=None,
         rgb_override=None, camera_override=None, record_camera=None,
-        need_masks: bool = True, patch_grid: int = 8,
+        need_masks: bool = True,
     ) -> Tuple[Graph, MaskAccumulator, str, np.ndarray]:
         if episode_boundary:
             self.reset_episode()
@@ -190,7 +195,6 @@ class GraphBuilder:
             record_camera=record_camera,
             camera_order=self.camera_order,
             need_masks=need_masks,
-            patch_grid=patch_grid,
             # Recording paths keep full masks/nodes for overlays; the training
             # hot path skips node construction for never-admissible entities.
             admit=None if need_masks else self._entity_admitted,
@@ -232,7 +236,9 @@ class GraphBuilder:
             else:
                 n.steps_since_seen = frame - self._last_seen[nid]
 
-        nodes = self.registry.assign(nodes)
+        # The goal vertex holds its slot for the whole episode: evicting it would
+        # strand the recurrent slot the progress heads read.
+        nodes = self.registry.assign(nodes, protected=(active_target_node_id,))
 
         # Overflow now keeps the most recently encountered instances. Remove a
         # displaced old instance from persistence and all relation state, or

@@ -65,7 +65,7 @@ class CacheEntriesMetricTests(unittest.TestCase):
         return obj
 
     def test_the_metric_totals_the_containers(self):
-        b = self._builder({'registry': 3, 'appearance': 4})
+        b = self._builder({'registry': 3, 'edge_history': 4})
         self.assertEqual(b.cache_entries, 7)
 
     def test_overflow_drops_is_not_a_container_size(self):

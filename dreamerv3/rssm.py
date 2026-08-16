@@ -9,27 +9,63 @@ import jax.numpy as jnp
 import ninjax as nj
 import numpy as np
 
-from .graph_encoder import GraphPosterior
+from .graph_encoder import GraphEncoder, onehot_embed
 
 f32 = jnp.float32
+i32 = jnp.int32
 sg = jax.lax.stop_gradient
 
 
+def align_slots(obs_uid, slot_uid, slot_mask):
+  """Packed vertex -> recurrent slot, as a ``[B, N, S]`` boolean map.
+
+  Matching is uid equality against the slots already occupied. Slot 0 is the end
+  effector, which the packer always seats at vertex 0. Remaining new uids take
+  free object slots in packed order, so an occupied slot never moves and a uid
+  that reappears later rejoins the slot it left. Returns the map, which slots
+  carry an observation this step, and which were admitted by this step.
+  """
+  N, S = obs_uid.shape[1], slot_uid.shape[1]
+  live = obs_uid > 0
+  occupied = slot_mask > 0
+  match = (
+      (obs_uid[:, :, None] == slot_uid[:, None, :]) &
+      live[:, :, None] & occupied[:, None, :])
+  seen = match.any(-1)
+
+  is_ee = (jnp.arange(N) == 0)[None, :]
+  ee_slot = (jnp.arange(S) == 0)[None, :]
+  ee = (live & is_ee & ~seen)[:, :, None] & ee_slot[:, None, :]
+
+  new = live & ~seen & ~is_ee
+  free = (~occupied) & ~ee_slot
+  rank = jnp.cumsum(new, 1, dtype=i32) - new
+  hole = jnp.cumsum(free, 1, dtype=i32) - free
+  admit = (
+      new[:, :, None] & free[:, None, :] &
+      (rank[:, :, None] == hole[:, None, :]))
+
+  align = match | admit | ee
+  return align, align.any(1), (admit | ee).any(1)
+
+
 class RSSM(nj.Module):
-  """Plain Dreamer RSSM, optionally extended with a semantic graph state.
+  """Plain Dreamer RSSM, optionally extended with semantic slots.
 
   With ``semantic=False``, this constructs the original DreamerV3 state and
-  parameter shapes. With ``semantic=True``, the semantic stochastic state sits
-  between h_t and z_t and is inferred from the scene graph during observation.
+  parameter shapes. With ``semantic=True``, the state additionally carries one
+  slot per scene-graph vertex. Slots are matched to observed vertices by uid,
+  advance under a shared transition, and reach the low-level dynamics only
+  through the deterministic state.
   """
 
   deter: int = 4096
   hidden: int = 2048
   stoch: int = 32
   classes: int = 32
-  semstoch: int = 16
-  semclasses: int = 16
-  semlayers: int = 1
+  slots: int = 6
+  slot_dim: int = 256
+  slot_heads: int = 4
   semantic: bool = True
   norm: str = 'rms'
   act: str = 'gelu'
@@ -45,88 +81,95 @@ class RSSM(nj.Module):
 
   def __init__(self, act_space, graph_kw=None, **kw):
     assert self.deter % self.blocks == 0
+    assert self.slot_dim % self.slot_heads == 0, (
+        self.slot_dim, self.slot_heads)
     self.act_space = act_space
     self.kw = kw
+    graph_kw = dict(graph_kw or {})
+    self.entity_vocab = int(graph_kw.get('entity_vocab', 64))
+    self.embed = int(graph_kw.get('embed', 64))
     self.graph_kw = dict(
-        **(graph_kw or {}), act=self.act, norm=self.norm, **kw)
+        **graph_kw, slot_dim=self.slot_dim, act=self.act, norm=self.norm, **kw)
 
   @property
   def entry_space(self):
-    if self.semantic:
-      return dict(
-          deter=elements.Space(np.float32, self.deter),
-          sem=elements.Space(np.float32, (self.semstoch, self.semclasses)),
-          stoch=elements.Space(np.float32, (self.stoch, self.classes)))
-    return dict(
+    spaces = dict(
         deter=elements.Space(np.float32, self.deter),
         stoch=elements.Space(np.float32, (self.stoch, self.classes)))
+    if self.semantic:
+      spaces.update(
+          slots=elements.Space(np.float32, (self.slots, self.slot_dim)),
+          slot_uid=elements.Space(np.uint16, self.slots),
+          slot_ent=elements.Space(np.uint16, self.slots),
+          slot_mask=elements.Space(bool, self.slots),
+          target_mask=elements.Space(bool, self.slots))
+    return spaces
 
   def initial(self, bsize):
-    if self.semantic:
-      return nn.cast(dict(
-          deter=jnp.zeros([bsize, self.deter], f32),
-          sem=jnp.zeros([bsize, self.semstoch, self.semclasses], f32),
-          stoch=jnp.zeros([bsize, self.stoch, self.classes], f32)))
-    return nn.cast(dict(
+    state = dict(
         deter=jnp.zeros([bsize, self.deter], f32),
-        stoch=jnp.zeros([bsize, self.stoch, self.classes], f32)))
+        stoch=jnp.zeros([bsize, self.stoch, self.classes], f32))
+    if self.semantic:
+      state.update(
+          slots=jnp.zeros([bsize, self.slots, self.slot_dim], f32),
+          slot_uid=jnp.zeros([bsize, self.slots], jnp.uint16),
+          slot_ent=jnp.zeros([bsize, self.slots], jnp.uint16),
+          slot_mask=jnp.zeros([bsize, self.slots], bool),
+          target_mask=jnp.zeros([bsize, self.slots], bool))
+    return nn.cast(state)
 
   def truncate(self, entries, carry=None):
     assert entries['deter'].ndim == 3, entries['deter'].shape
-    carry = jax.tree.map(lambda x: x[:, -1], entries)
-    return carry
+    return jax.tree.map(lambda x: x[:, -1], entries)
 
   def starts(self, entries, carry, nlast):
     B = len(jax.tree.leaves(carry)[0])
     return jax.tree.map(
         lambda x: x[:, -nlast:].reshape((B * nlast, *x.shape[2:])), entries)
 
+  # ------------------------------------------------------------------ graph
+
   def encode_graph(self, graph, single=False):
-    """Node representations and pooled token for every timestep at once.
+    """Node embeddings for every timestep at once.
 
-    The graph encoder reads no recurrent state, so it runs outside the scan
-    exactly like the image encoder: one pass over B*T instead of batch_length
-    sequential launches of batch_size work. Recurrent conditioning is not lost,
-    it happens at the ``semobs`` head below, which sees this token next to
-    ``deter`` and the previous semantic state.
-
-    Built through sub() so the encoder's params live under dyn/, which is what
-    policy_keys ships to the policy worker.
+    The encoder reads no recurrent state, so it runs outside the scan exactly
+    like the image encoder: one pass over B*T instead of batch_length
+    sequential launches of batch_size work. Built through sub() so its params
+    live under dyn/, which is what policy_keys ships to the policy worker.
     """
-    enc = self.sub('graphenc', GraphPosterior, **self.graph_kw)
+    enc = self.sub('graphenc', GraphEncoder, **self.graph_kw)
     if single:
       return enc(graph)
     B, T = jax.tree.leaves(graph)[0].shape[:2]
     flat = jax.tree.map(lambda x: x.reshape((B * T, *x.shape[2:])), graph)
-    nodes, token = enc(flat)
-    return (nodes.reshape((B, T, *nodes.shape[1:])),
-            token.reshape((B, T, *token.shape[1:])))
+    nodes = enc(flat)
+    return nodes.reshape((B, T, *nodes.shape[1:]))
+
+  # ------------------------------------------------------------------ observe
 
   def observe(self, carry, tokens, graph, action, reset, training, single=False):
     carry, tokens, action = nn.cast((carry, tokens, action))
-    if self.semantic:
-      nodes, gtoken = self.encode_graph(graph, single=single)
+    if not self.semantic:
+      step = lambda c, inputs: self._observe_plain(c, *inputs, training)
       if single:
-        carry, (entry, feat) = self._observe_semantic(
-            carry, tokens, gtoken, action, reset, training)
-        return carry, entry, feat, nodes
+        carry, (entry, feat) = step(carry, (tokens, action, reset))
+        return carry, entry, feat, {}
       unroll = jax.tree.leaves(tokens)[0].shape[1] if self.unroll else 1
       carry, (entries, feat) = nj.scan(
-          lambda carry, inputs: self._observe_semantic(
-              carry, *inputs, training),
-          carry, (tokens, gtoken, action, reset), unroll=unroll, axis=1)
-      return carry, entries, feat, nodes
+          step, carry, (tokens, action, reset), unroll=unroll, axis=1)
+      return carry, entries, feat, {}
+
+    nodes = self.encode_graph(graph, single=single)
+    obs = (nodes, graph['graph_node_uid'], graph['graph_node_ent'],
+           graph['graph_node_target'])
+    step = lambda c, inputs: self._observe_slots(c, *inputs, training)
     if single:
-      carry, (entry, feat) = self._observe_plain(
-          carry, tokens, action, reset, training)
-      return carry, entry, feat, None
-    else:
-      unroll = jax.tree.leaves(tokens)[0].shape[1] if self.unroll else 1
-      carry, (entries, feat) = nj.scan(
-          lambda carry, inputs: self._observe_plain(
-              carry, *inputs, training),
-          carry, (tokens, action, reset), unroll=unroll, axis=1)
-      return carry, entries, feat, None
+      carry, (entry, feat, aux) = step(carry, (tokens, *obs, action, reset))
+      return carry, entry, feat, aux
+    unroll = jax.tree.leaves(tokens)[0].shape[1] if self.unroll else 1
+    carry, (entries, feat, aux) = nj.scan(
+        step, carry, (tokens, *obs, action, reset), unroll=unroll, axis=1)
+    return carry, entries, feat, aux
 
   def _observe_plain(self, carry, tokens, action, reset, training):
     deter, stoch, action = nn.mask(
@@ -147,59 +190,111 @@ class RSSM(nj.Module):
     assert all(x.dtype == nn.COMPUTE_DTYPE for x in (deter, stoch, logit))
     return carry, (entry, feat)
 
-  def _observe_semantic(self, carry, tokens, gtoken, action, reset, training):
-    deter, sem, stoch, action = nn.mask(
-        (carry['deter'], carry['sem'], carry['stoch'], action), ~reset)
+  def _observe_slots(
+      self, carry, tokens, nodes, obs_uid, obs_ent, obs_tgt, action, reset,
+      training):
+    deter, stoch, slots = nn.mask(
+        (carry['deter'], carry['stoch'], carry['slots']), ~reset)
+    slot_uid, slot_ent, slot_mask, target_mask = nn.mask(
+        (carry['slot_uid'], carry['slot_ent'], carry['slot_mask'],
+         carry['target_mask']), ~reset)
+    action = nn.mask(action, ~reset)
     action = nn.DictConcat(self.act_space, 1)(action)
     action = nn.mask(action, ~reset)
-    deter = self._core(deter, stoch, action, sem)
 
-    semlogit = self._semhead(
-        'semobs',
-        jnp.concatenate([deter, self._flat(sem), nn.cast(gtoken)], -1))
-    sem = nn.cast(self._dist(semlogit).sample(seed=nj.seed()))
+    ctx = self._slot_context(slots, slot_mask, target_mask)
+    deter = self._core(deter, stoch, action, ctx)
+    prior = self._slot_transition(
+        slots, slot_mask, target_mask, slot_ent, deter, stoch, action)
+
+    align, matched, fresh = align_slots(obs_uid, slot_uid, slot_mask)
+    take = align.astype(i32)
+    picked = lambda v: (take * v[:, :, None]).sum(1)
+    slot_uid = jnp.where(fresh, picked(obs_uid), slot_uid).astype(jnp.uint16)
+    slot_ent = jnp.where(fresh, picked(obs_ent), slot_ent).astype(jnp.uint16)
+    slot_mask = slot_mask | fresh
+    target_mask = jnp.where(matched, picked(obs_tgt) > 0, target_mask)
+
+    # Direct replacement, not a learned fusion gate: the observed embedding is
+    # the semantic target the prior is trained against, so making the posterior
+    # anything else would blur what the slot loss means. Slots whose uid is not
+    # in this frame's graph keep the prediction instead of resetting.
+    aligned = jnp.einsum(
+        'bns,bnu->bsu', nn.cast(align, force=True), nodes, optimize='optimal')
+    keep = nn.cast(slot_mask, force=True)[..., None]
+    slots = jnp.where(matched[..., None], aligned, prior) * keep
 
     tokens = tokens.reshape((*deter.shape[:-1], -1))
-    x = jnp.concatenate([self._flat(sem), tokens], -1)
-    if not self.absolute:
-      x = jnp.concatenate([deter, x], -1)
+    x = tokens if self.absolute else jnp.concatenate([deter, tokens], -1)
     for i in range(self.obslayers):
       x = self.sub(f'obs{i}', nn.Linear, self.hidden, **self.kw)(x)
       x = nn.act(self.act)(self.sub(f'obs{i}norm', nn.Norm, self.norm)(x))
     logit = self._logit('obslogit', x)
     stoch = nn.cast(self._dist(logit).sample(seed=nj.seed()))
-    carry = dict(deter=deter, sem=sem, stoch=stoch)
-    feat = dict(
-        deter=deter, sem=sem, stoch=stoch, logit=logit, semlogit=semlogit)
-    entry = dict(deter=deter, sem=sem, stoch=stoch)
-    assert all(x.dtype == nn.COMPUTE_DTYPE for x in (deter, sem, stoch, logit))
-    return carry, (entry, feat)
+
+    state = dict(
+        deter=deter, stoch=stoch, slots=slots, slot_uid=slot_uid,
+        slot_ent=slot_ent, slot_mask=slot_mask, target_mask=target_mask)
+    feat = dict(**state, logit=logit)
+    aux = dict(prior=prior, align=align, matched=matched, fresh=fresh)
+    assert all(x.dtype == nn.COMPUTE_DTYPE for x in (deter, stoch, slots))
+    return state, (dict(state), feat, aux)
+
+  def _slot_context(self, slots, slot_mask, target_mask):
+    """One compact vector summarising the slot set for the ``h`` transition."""
+    m = nn.cast(slot_mask, force=True)
+    x = self.sub('slotctxnorm', nn.Norm, self.norm)(slots) * m[..., None]
+    x = jnp.concatenate(
+        [x.reshape((x.shape[0], -1)), m, nn.cast(target_mask, force=True)], -1)
+    return self.sub('slotctx', nn.Linear, self.slot_dim, **self.kw)(x)
+
+  def _slot_transition(
+      self, slots, slot_mask, target_mask, slot_ent, deter, stoch, action):
+    """One shared predictor over all slots, after one cross-slot exchange.
+
+    The attention block keeps every slot's own output; it never pools them. The
+    same parameters run on all six, so a slot's behaviour comes from its content
+    and its role embeddings rather than from its index.
+    """
+    B, S, D = slots.shape
+    dim = D // self.slot_heads
+    m = nn.cast(slot_mask, force=True)[..., None]
+    h = self.sub('slotnorm', nn.Norm, self.norm)(slots) * m
+    qkv = self.sub(
+        'slotqkv', nn.Linear, (3, self.slot_heads, dim), **self.kw)(h)
+    q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]
+    logits = jnp.einsum(
+        'bihd,bjhd->bijh', q, k, optimize='optimal') / math.sqrt(dim)
+    live = m[:, None, :, :]
+    attn = jax.nn.softmax(jnp.where(live > 0, logits, -1e9), 2)
+    inter = jnp.einsum(
+        'bijh,bjhd->bihd', attn, v, optimize='optimal').reshape((B, S, D))
+    inter = self.sub('slotattnout', nn.Linear, D, **self.kw)(inter) * m
+
+    glob = jnp.concatenate([
+        self.sub('slothctx', nn.Linear, D, **self.kw)(deter),
+        self.sub('slotzctx', nn.Linear, D, **self.kw)(
+            stoch.reshape((B, -1))),
+        self.sub('slotactx', nn.Linear, self.embed, **self.kw)(action),
+    ], -1)
+    x = jnp.concatenate([
+        h, inter, jnp.repeat(glob[:, None], S, 1),
+        onehot_embed(
+            self, 'slotent', slot_ent, self.entity_vocab, self.embed,
+            slots.dtype),
+        onehot_embed(
+            self, 'slottgt', target_mask.astype(i32), 2, self.embed,
+            slots.dtype),
+    ], -1)
+    x = self.sub('slotmlp', nn.Linear, 2 * D, **self.kw)(x)
+    x = nn.act(self.act)(self.sub('slotmlpnorm', nn.Norm, self.norm)(x))
+    x = self.sub('slotout', nn.Linear, D, **self.kw)(x)
+    return self.sub('slotpost', nn.Norm, self.norm)(slots + x) * m
+
+  # ------------------------------------------------------------------ imagine
 
   def imagine(self, carry, policy, length, training, single=False):
-    if single:
-      action = policy(sg(carry)) if callable(policy) else policy
-      actemb = nn.DictConcat(self.act_space, 1)(action)
-      if self.semantic:
-        deter = self._core(
-            carry['deter'], carry['stoch'], actemb, carry['sem'])
-        semlogit = self._sem_prior(deter, carry['sem'])
-        sem = nn.cast(self._dist(semlogit).sample(seed=nj.seed()))
-        logit = self._prior(deter, sem)
-        stoch = nn.cast(self._dist(logit).sample(seed=nj.seed()))
-        carry = nn.cast(dict(deter=deter, sem=sem, stoch=stoch))
-        feat = nn.cast(dict(
-            deter=deter, sem=sem, stoch=stoch,
-            logit=logit, semlogit=semlogit))
-        assert all(x.dtype == nn.COMPUTE_DTYPE for x in (deter, sem, stoch))
-      else:
-        deter = self._core(carry['deter'], carry['stoch'], actemb)
-        logit = self._prior(deter)
-        stoch = nn.cast(self._dist(logit).sample(seed=nj.seed()))
-        carry = nn.cast(dict(deter=deter, stoch=stoch))
-        feat = nn.cast(dict(deter=deter, stoch=stoch, logit=logit))
-        assert all(x.dtype == nn.COMPUTE_DTYPE for x in (deter, stoch, logit))
-      return carry, (feat, action)
-    else:
+    if not single:
       unroll = length if self.unroll else 1
       if callable(policy):
         carry, (feat, action) = nj.scan(
@@ -209,18 +304,40 @@ class RSSM(nj.Module):
         carry, (feat, action) = nj.scan(
             lambda c, a: self.imagine(c, a, 1, training, single=True),
             nn.cast(carry), nn.cast(policy), length, unroll=unroll, axis=1)
-      # We can also return all carry entries but it might be expensive.
-      # entries = dict(deter=feat['deter'], stoch=feat['stoch'])
-      # return carry, entries, feat, action
       return carry, feat, action
+
+    action = policy(sg(carry)) if callable(policy) else policy
+    actemb = nn.DictConcat(self.act_space, 1)(action)
+    if not self.semantic:
+      deter = self._core(carry['deter'], carry['stoch'], actemb)
+      logit = self._prior(deter)
+      stoch = nn.cast(self._dist(logit).sample(seed=nj.seed()))
+      carry = nn.cast(dict(deter=deter, stoch=stoch))
+      feat = nn.cast(dict(deter=deter, stoch=stoch, logit=logit))
+      return carry, (feat, action)
+
+    # Identity, occupancy and role are latched: imagination never sees a graph,
+    # so nothing may admit, evict or rename a slot inside the rollout.
+    mask, tgt = carry['slot_mask'], carry['target_mask']
+    ctx = self._slot_context(carry['slots'], mask, tgt)
+    deter = self._core(carry['deter'], carry['stoch'], actemb, ctx)
+    logit = self._prior(deter)
+    stoch = nn.cast(self._dist(logit).sample(seed=nj.seed()))
+    slots = self._slot_transition(
+        carry['slots'], mask, tgt, carry['slot_ent'], deter, carry['stoch'],
+        actemb)
+    state = dict(
+        deter=deter, stoch=stoch, slots=slots, slot_uid=carry['slot_uid'],
+        slot_ent=carry['slot_ent'], slot_mask=mask, target_mask=tgt)
+    return nn.cast(state), (nn.cast(dict(**state, logit=logit)), action)
+
+  # ------------------------------------------------------------------ loss
 
   def loss(self, carry, tokens, graph, acts, reset, training, step_valid=None):
     metrics = {}
-    prev_sem = nn.cast(carry['sem']) if self.semantic else None
-    carry, entries, feat, nodes = self.observe(
+    carry, entries, feat, aux = self.observe(
         carry, tokens, graph, acts, reset, training)
-    prior = self._prior(
-        feat['deter'], feat['sem'] if self.semantic else None)
+    prior = self._prior(feat['deter'])
     post = feat['logit']
     losses = {
         'dyn': self._dist(sg(post)).kl(self._dist(prior)),
@@ -228,44 +345,49 @@ class RSSM(nj.Module):
     }
     metrics['dyn_ent'] = self._dist(prior).entropy().mean()
     metrics['rep_ent'] = self._dist(post).entropy().mean()
-    semkeys = ()
-    if self.semantic:
-      semprior = self._sem_prior(
-          feat['deter'], self._shift(feat['sem'], prev_sem, reset))
-      sempost = feat['semlogit']
-      losses['semdyn'] = self._dist(sg(sempost)).kl(self._dist(semprior))
-      losses['semrep'] = self._dist(sempost).kl(self._dist(sg(semprior)))
-      metrics['sem_ent'] = self._dist(sempost).entropy().mean()
-      semkeys = ('semdyn', 'semrep')
-      # Unclipped, so the semantic KL stays observable below the free-nats
-      # floor where the optimised loss is flat. Reduced in f32: this is read
-      # against that floor, and bf16 cannot sum a batch without drifting.
-      valid = (
-          jnp.ones(losses['semdyn'].shape, f32) if step_valid is None
-          else step_valid.astype(f32))
-      for key in semkeys:
-        metrics[f'{key}_raw'] = (
-            (losses[key].astype(f32) * valid).sum()
-            / jnp.maximum(valid.sum(), 1.0))
     if self.free_nats:
       losses = {k: jnp.maximum(v, self.free_nats) for k, v in losses.items()}
+
+    if self.semantic:
+      losses['slot'], mets = self._slot_loss(feat, aux, step_valid)
+      metrics.update(mets)
+    return carry, entries, losses, feat, aux, metrics
+
+  def _slot_loss(self, feat, aux, step_valid):
+    """One-step slot prediction against the observed embedding.
+
+    The target is stop-gradient: without it the encoder could move the target to
+    wherever the transition already points, which the relation heads would never
+    notice. A slot is supervised only when this frame's graph actually carried
+    its uid, and never on the frame it was admitted, whose previous slot was
+    zero and whose prior therefore predicts nothing.
+    """
+    target = sg(feat['slots'].astype(f32))
+    pred = aux['prior'].astype(f32)
+    delta = pred - target
+    huber = jnp.where(
+        jnp.abs(delta) < 1.0, 0.5 * delta ** 2, jnp.abs(delta) - 0.5).mean(-1)
+    num = (pred * target).sum(-1)
+    den = (jnp.sqrt(jnp.maximum((pred * pred).sum(-1), 1e-12)) *
+           jnp.sqrt(jnp.maximum((target * target).sum(-1), 1e-12)))
+    cos = num / den
+    per_slot = huber + 0.25 * (1.0 - cos)
+
+    mask = (
+        feat['slot_mask'] & aux['matched'] & ~aux['fresh']).astype(f32)
     if step_valid is not None:
-      # After clipping: masking first would lift the zeroed terminal entries
-      # back to the free-nats floor.
-      for key in semkeys:
-        losses[key] = losses[key] * nn.cast(step_valid, force=True)
-    return carry, entries, losses, feat, nodes, metrics
+      mask = mask * step_valid.astype(f32)[..., None]
+    total = mask.sum(-1)
+    loss = (per_slot * mask).sum(-1) / jnp.maximum(total, 1.0)
+    metrics = dict(
+        slot_cos=(cos * mask).sum() / jnp.maximum(mask.sum(), 1.0),
+        slot_supervised=total.mean(),
+        slot_occupancy=feat['slot_mask'].astype(f32).sum(-1).mean())
+    return loss, metrics
 
-  def _shift(self, sem, prev, reset):
-    """g_{t-1} per timestep: the chunk's incoming carry, then sem shifted right,
-    zeroed wherever the episode restarts."""
-    shifted = jnp.concatenate([prev[:, None], sem[:, :-1]], 1)
-    return nn.mask(shifted, ~reset)
+  # ------------------------------------------------------------------ core
 
-  def _flat(self, x):
-    return x.reshape((*x.shape[:-2], -1))
-
-  def _core(self, deter, stoch, action, sem=None):
+  def _core(self, deter, stoch, action, slots=None):
     stoch = stoch.reshape((stoch.shape[0], -1))
     action /= sg(jnp.maximum(1, jnp.abs(action)))
     g = self.blocks
@@ -278,9 +400,8 @@ class RSSM(nj.Module):
     x2 = self.sub('dynin2', nn.Linear, self.hidden, **self.kw)(action)
     x2 = nn.act(self.act)(self.sub('dynin2norm', nn.Norm, self.norm)(x2))
     inputs = [x0, x1, x2]
-    if sem is not None:
-      sem = sem.reshape((sem.shape[0], -1))
-      x3 = self.sub('dynin3', nn.Linear, self.hidden, **self.kw)(sem)
+    if slots is not None:
+      x3 = self.sub('dynin3', nn.Linear, self.hidden, **self.kw)(slots)
       x3 = nn.act(self.act)(self.sub('dynin3norm', nn.Norm, self.norm)(x3))
       inputs.append(x3)
     x = jnp.concatenate(inputs, -1)[..., None, :].repeat(g, -2)
@@ -294,29 +415,14 @@ class RSSM(nj.Module):
     reset = jax.nn.sigmoid(reset)
     cand = jnp.tanh(reset * cand)
     update = jax.nn.sigmoid(update - 1)
-    deter = update * cand + (1 - update) * deter
-    return deter
+    return update * cand + (1 - update) * deter
 
-  def _prior(self, deter, sem=None):
-    x = deter if sem is None else jnp.concatenate(
-        [deter, self._flat(sem)], -1)
+  def _prior(self, deter):
+    x = deter
     for i in range(self.imglayers):
       x = self.sub(f'prior{i}', nn.Linear, self.hidden, **self.kw)(x)
       x = nn.act(self.act)(self.sub(f'prior{i}norm', nn.Norm, self.norm)(x))
     return self._logit('priorlogit', x)
-
-  def _sem_prior(self, deter, sem):
-    return self._semhead(
-        'semprior', jnp.concatenate([deter, self._flat(sem)], -1))
-
-  def _semhead(self, name, x):
-    for i in range(self.semlayers):
-      x = self.sub(f'{name}{i}', nn.Linear, self.hidden, **self.kw)(x)
-      x = nn.act(self.act)(self.sub(f'{name}{i}norm', nn.Norm, self.norm)(x))
-    kw = dict(**self.kw, outscale=self.outscale)
-    x = self.sub(
-        f'{name}logit', nn.Linear, self.semstoch * self.semclasses, **kw)(x)
-    return x.reshape(x.shape[:-1] + (self.semstoch, self.semclasses))
 
   def _logit(self, name, x):
     kw = dict(**self.kw, outscale=self.outscale)
@@ -325,8 +431,7 @@ class RSSM(nj.Module):
 
   def _dist(self, logits):
     out = embodied.jax.outs.OneHot(logits, self.unimix)
-    out = embodied.jax.outs.Agg(out, 1, jnp.sum)
-    return out
+    return embodied.jax.outs.Agg(out, 1, jnp.sum)
 
 
 class Encoder(nj.Module):
@@ -410,11 +515,16 @@ class Encoder(nj.Module):
 
     x = jnp.concatenate(outs, -1)
     tokens = x.reshape((*bshape, *x.shape[1:]))
-    entries = {}
-    return carry, entries, tokens
+    return carry, {}, tokens
 
 
 class Decoder(nj.Module):
+  """Pixel and vector reconstruction from ``deter`` and ``stoch`` only.
+
+  Slots are deliberately excluded: reconstruction gradients are the largest in
+  the model, and routing them through the semantic state would train the slots
+  to carry appearance rather than relations.
+  """
 
   units: int = 1024
   norm: str = 'rms'
@@ -428,7 +538,6 @@ class Decoder(nj.Module):
   bspace: int = 8
   outer: bool = False
   strided: bool = False
-  semantic: bool = False
 
   def __init__(self, obs_space, **kw):
     assert all(len(s.shape) <= 3 for s in obs_space.values()), obs_space
@@ -455,8 +564,7 @@ class Decoder(nj.Module):
     K = self.kernel
     recons = {}
     bshape = reset.shape
-    keys = ('stoch', 'sem', 'deter') if self.semantic else ('stoch', 'deter')
-    inp = [nn.cast(feat[k]) for k in keys]
+    inp = [nn.cast(feat[k]) for k in ('stoch', 'deter')]
     inp = [x.reshape((math.prod(bshape), -1)) for x in inp]
     inp = jnp.concatenate(inp, -1)
 
@@ -481,10 +589,6 @@ class Decoder(nj.Module):
         u, g = math.prod(shape), self.bspace
         x0, x1 = nn.cast((feat['deter'], feat['stoch']))
         x1 = x1.reshape((*x1.shape[:-2], -1))
-        if self.semantic:
-          x2 = nn.cast(feat['sem'])
-          x1 = jnp.concatenate([
-              x1, x2.reshape((*x2.shape[:-2], -1))], -1)
         x0 = x0.reshape((-1, x0.shape[-1]))
         x1 = x1.reshape((-1, x1.shape[-1]))
         x0 = self.sub('sp0', nn.BlockLinear, u, g, **self.kw)(x0)
@@ -522,8 +626,6 @@ class Decoder(nj.Module):
           [self.obs_space[k].shape[-1] for k in self.imgkeys][:-1])
       for k, out in zip(self.imgkeys, jnp.split(x, split, -1)):
         out = embodied.jax.outs.MSE(out)
-        out = embodied.jax.outs.Agg(out, 3, jnp.sum)
-        recons[k] = out
+        recons[k] = embodied.jax.outs.Agg(out, 3, jnp.sum)
 
-    entries = {}
-    return carry, entries, recons
+    return carry, {}, recons
