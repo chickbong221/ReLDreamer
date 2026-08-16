@@ -152,24 +152,25 @@ class RSSM(nj.Module):
     if not self.semantic:
       step = lambda c, inputs: self._observe_plain(c, *inputs, training)
       if single:
-        carry, (entry, feat) = step(carry, (tokens, action, reset))
-        return carry, entry, feat, {}
-      unroll = max(1, min(self.unroll, jax.tree.leaves(tokens)[0].shape[1]))
-      carry, (entries, feat) = nj.scan(
-          step, carry, (tokens, action, reset), unroll=unroll, axis=1)
-      return carry, entries, feat, {}
+        carry, (entry, logit) = step(carry, (tokens, action, reset))
+      else:
+        unroll = max(1, min(self.unroll, jax.tree.leaves(tokens)[0].shape[1]))
+        carry, (entry, logit) = nj.scan(
+            step, carry, (tokens, action, reset), unroll=unroll, axis=1)
+      return carry, entry, dict(**entry, logit=logit), {}
 
     nodes = self.encode_graph(graph, single=single)
     obs = (nodes, graph['graph_node_uid'], graph['graph_node_ent'],
            graph['graph_node_target'])
     step = lambda c, inputs: self._observe_slots(c, *inputs, training)
     if single:
-      carry, (entry, feat, aux) = step(carry, (tokens, *obs, action, reset))
-      return carry, entry, feat, aux
-    unroll = max(1, min(self.unroll, jax.tree.leaves(tokens)[0].shape[1]))
-    carry, (entries, feat, aux) = nj.scan(
-        step, carry, (tokens, *obs, action, reset), unroll=unroll, axis=1)
-    return carry, entries, feat, aux
+      carry, (entry, logit, aux) = step(carry, (tokens, *obs, action, reset))
+    else:
+      unroll = max(1, min(self.unroll, jax.tree.leaves(tokens)[0].shape[1]))
+      carry, (entry, logit, aux) = nj.scan(
+          step, carry, (tokens, *obs, action, reset), unroll=unroll, axis=1)
+    aux['matched'] = aux['align'].any(-2)
+    return carry, entry, dict(**entry, logit=logit), aux
 
   def _observe_plain(self, carry, tokens, action, reset, training):
     deter, stoch, action = nn.mask(
@@ -185,10 +186,8 @@ class RSSM(nj.Module):
     logit = self._logit('obslogit', x)
     stoch = nn.cast(self._dist(logit).sample(seed=nj.seed()))
     carry = dict(deter=deter, stoch=stoch)
-    feat = dict(deter=deter, stoch=stoch, logit=logit)
-    entry = dict(deter=deter, stoch=stoch)
     assert all(x.dtype == nn.COMPUTE_DTYPE for x in (deter, stoch, logit))
-    return carry, (entry, feat)
+    return carry, (dict(carry), logit)
 
   def _observe_slots(
       self, carry, tokens, nodes, obs_uid, obs_ent, obs_tgt, action, reset,
@@ -235,10 +234,12 @@ class RSSM(nj.Module):
     state = dict(
         deter=deter, stoch=stoch, slots=slots, slot_uid=slot_uid,
         slot_ent=slot_ent, slot_mask=slot_mask, target_mask=target_mask)
-    feat = dict(**state, logit=logit)
-    aux = dict(prior=prior, align=align, matched=matched, fresh=fresh)
+    # Every array returned here costs one dynamic_update_slice per iteration, so
+    # feat is rebuilt from the stacked entries outside the scan and matched is
+    # recovered from align rather than stacked alongside it.
+    aux = dict(prior=prior, align=align, fresh=fresh)
     assert all(x.dtype == nn.COMPUTE_DTYPE for x in (deter, stoch, slots))
-    return state, (dict(state), feat, aux)
+    return state, (dict(state), logit, aux)
 
   def _slot_context(self, slots, slot_mask, target_mask):
     """One compact vector summarising the slot set for the ``h`` transition."""
@@ -296,14 +297,24 @@ class RSSM(nj.Module):
   def imagine(self, carry, policy, length, training, single=False):
     if not single:
       unroll = max(1, min(self.unroll, length))
+      # Identity, occupancy and role are latched for the whole rollout, so the
+      # scan stacks only what varies and the carry supplies the rest.
+      latched = ('slot_uid', 'slot_ent', 'slot_mask', 'target_mask')
+      trim = lambda out: (
+          out[0],
+          ({k: v for k, v in out[1][0].items() if k not in latched}, out[1][1]))
       if callable(policy):
         carry, (feat, action) = nj.scan(
-            lambda c, _: self.imagine(c, policy, 1, training, single=True),
+            lambda c, _: trim(
+                self.imagine(c, policy, 1, training, single=True)),
             nn.cast(carry), (), length, unroll=unroll, axis=1)
       else:
         carry, (feat, action) = nj.scan(
-            lambda c, a: self.imagine(c, a, 1, training, single=True),
+            lambda c, a: trim(self.imagine(c, a, 1, training, single=True)),
             nn.cast(carry), nn.cast(policy), length, unroll=unroll, axis=1)
+      if self.semantic:
+        feat.update({
+            k: jnp.repeat(carry[k][:, None], length, 1) for k in latched})
       return carry, feat, action
 
     action = policy(sg(carry)) if callable(policy) else policy
