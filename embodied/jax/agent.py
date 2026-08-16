@@ -302,7 +302,9 @@ class Agent(embodied.Agent):
       if self.n_updates == 100:
         elements.print(f'Start JAX profiler: {str(outdir)}', color='yellow')
         jax.profiler.start_trace(str(outdir))
-      if self.n_updates == 120:
+      # Every update traces identically, and a longer window only overflows the
+      # CUPTI activity buffer and drops events.
+      if self.n_updates == 103:
         elements.print('Stop JAX profiler', color='yellow')
         jax.profiler.stop_trace()
         if copyto:

@@ -128,7 +128,7 @@ defaults:
     expect_devices: 0
     enable_policy: True
     coordinator_address: ''
-    profiler: False     # traces updates 100-120 into logdir; CUPTI floods stderr
+    profiler: False     # traces updates 100-103 into logdir
 
   agent:
     # slot is the one-step slot-dynamics loss; post*/prior* decode relations from
