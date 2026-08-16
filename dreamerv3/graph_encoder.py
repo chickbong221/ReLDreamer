@@ -79,22 +79,33 @@ def onehot_embed(module, name, index, classes, units, dtype):
         jax.nn.one_hot(index, classes, dtype=dtype))
 
 
-def _selectors(src, dst, mask, num_nodes, dtype):
-    """Masked dense incidence matrices, ``[B, E, N]`` each.
+def _take(nodes, idx):
+    """One node vector per fact: ``nodes`` [B, N, U], ``idx`` [B, E] -> [B, E, U].
 
-    The packed fact arrays are padded to a static width, so an advanced gather
-    would execute the padded slots too and collide every one of them on node
-    zero in the backward. At ``n_max: 6`` the dense contraction is both smaller
-    and free of that scatter. Padding rows are exactly zero.
+    An indexed read, not a contraction over the vertex axis. Contracting a dense
+    incidence matrix instead makes a batched matmul whose inner dimension is
+    n_max; at 6 that runs at a few percent of peak and costs in proportion to
+    e_max, which is mostly padding.
     """
-    weight = mask.astype(dtype)[..., None]
-    return (jax.nn.one_hot(src, num_nodes, dtype=dtype) * weight,
-            jax.nn.one_hot(dst, num_nodes, dtype=dtype) * weight)
+    return jnp.take_along_axis(nodes, idx[..., None], 1)
 
 
-def _gather(selector, nodes):
-    """One node vector per fact, without an indexed gather."""
-    return jnp.einsum('ben,bnu->beu', selector, nodes, optimize='optimal')
+def _scatter(values, idx, num_nodes):
+    """Sum per-fact values into their destination vertex, [B, E, U] -> [B, N, U].
+
+    Padded facts all address vertex zero and must already be zeroed.
+    """
+    b = jnp.arange(values.shape[0])[:, None]
+    out = jnp.zeros(
+        (values.shape[0], num_nodes, values.shape[-1]), values.dtype)
+    return out.at[b, idx].add(values)
+
+
+def _fanin(idx, weight, num_nodes):
+    """Real facts arriving at each vertex, [B, E] -> [B, N]."""
+    b = jnp.arange(idx.shape[0])[:, None]
+    out = jnp.zeros((idx.shape[0], num_nodes), weight.dtype)
+    return out.at[b, idx].add(weight)
 
 
 class GraphEncoder(nj.Module):
@@ -151,18 +162,16 @@ class GraphEncoder(nj.Module):
                 'temp', g['graph_edge_temp'], self.tables['n_temp']),
         ], -1), self.fact_dim) * evalid[..., None]
 
-        source, dest = _selectors(
-            g['graph_edge_src'], g['graph_edge_dst'], evalid, N, dtype)
+        src, dst = g['graph_edge_src'], g['graph_edge_dst']
         # Fan-in per destination vertex, so aggregation is a mean over real
         # facts rather than a sum that grows with how many the packer seated.
-        degree = jnp.maximum(dest.sum(1), 1.0)[..., None]
+        degree = jnp.maximum(_fanin(dst, evalid, N), 1.0)[..., None]
 
         for i in range(self.layers):
             msg = self._mlp(f'msg{i}', jnp.concatenate(
-                [_gather(source, x), _gather(dest, x), fact], -1), self.fact_dim)
+                [_take(x, src), _take(x, dst), fact], -1), self.fact_dim)
             msg = msg * evalid[..., None]
-            agg = jnp.einsum(
-                'ben,beu->bnu', dest, msg, optimize='optimal') / degree
+            agg = _scatter(msg, dst, N) / degree
             x = x + self._mlp(
                 f'upd{i}', jnp.concatenate([x, agg], -1), self.slot_dim)
             x = x * nvalid
@@ -195,15 +204,15 @@ class RelationDecoder(nj.Module):
 
     def __call__(self, slots, graph, align, mask):
         rel = graph['graph_edge_rel']
-        N = align.shape[1]
         dtype = slots.dtype
-        source, dest = _selectors(
-            graph['graph_edge_src'], graph['graph_edge_dst'], mask, N, dtype)
-        to_slot = lambda sel: jnp.einsum(
-            'ben,bns->bes', sel, align, optimize='optimal')
+        # Resolve each packed vertex to the slot holding it once over the n_max
+        # axis, then read one vector per fact off that.
+        node = jnp.einsum(
+            'bns,bsu->bnu', align.astype(dtype), slots, optimize='optimal')
+        weight = mask.astype(dtype)[..., None]
         h = jnp.concatenate([
-            _gather(to_slot(source), slots),
-            _gather(to_slot(dest), slots),
+            _take(node, graph['graph_edge_src']) * weight,
+            _take(node, graph['graph_edge_dst']) * weight,
             onehot_embed(
                 self, 'rel', rel, self.tables['n_rel'], self.embed, dtype),
         ], -1)
