@@ -145,12 +145,14 @@ defaults:
       rssm: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, slots: 6, slot_dim: 256, slot_heads: 4, act: silu, norm: rms, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0, unroll: 1}
     # No `units` key here on purpose: the size presets carry a `.*\.units`
     # wildcard, so a key by that name would silently widen the graph branch to
-    # the preset's model width. slot_dim is the graph path's one width and it is
-    # pinned. entity_vocab is overwritten from the mined whitelists at startup;
+    # the preset's model width. The graph path has two pinned widths: slot_dim
+    # on the n_max node axis, fact_dim on the e_max fact axis, which is an order
+    # of magnitude wider and carries most of the branch's cost.
+    # entity_vocab is overwritten from the mined whitelists at startup;
     # uid_vocab must match env.maniskill.graph.uid_vocab. uid_input feeds the
     # episode-random uid to the node encoder -- off by default, since that would
     # put an arbitrary per-episode vector into the slot-dynamics target.
-    graph: {layers: 2, embed: 64, entity_vocab: 64, uid_vocab: 256, uid_input: False}
+    graph: {layers: 2, embed: 64, fact_dim: 64, entity_vocab: 64, uid_vocab: 256, uid_input: False}
     enc:
       typ: simple
       simple: {depth: 64, mults: [2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: rms, winit: trunc_normal_in, symlog: True, outer: False, kernel: 5, strided: False}
@@ -277,6 +279,7 @@ debug:
     .*\.stoch: 2
     .*\.classes: 4
     .*\.slot_dim: 16
+    .*\.fact_dim: 8
     .*\.deter: 8
     .*\.hidden: 3
     .*\.embed: 8

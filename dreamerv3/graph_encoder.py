@@ -101,6 +101,7 @@ class GraphEncoder(nj.Module):
 
     layers: int = 2
     slot_dim: int = 256
+    fact_dim: int = 64
     embed: int = 64
     entity_vocab: int = 64
     uid_vocab: int = 256
@@ -138,14 +139,17 @@ class GraphEncoder(nj.Module):
         ]
         if self.uid_input:
             parts.append(table('uid', g['graph_node_uid'], self.uid_vocab))
-        x = self._mlp('node', jnp.concatenate(parts, -1)) * nvalid
+        x = self._mlp('node', jnp.concatenate(parts, -1), self.slot_dim) * nvalid
 
+        # The fact axis is e_max wide against n_max=6 nodes, so it carries the
+        # bulk of the cost. A fact is a handful of categorical bits and does not
+        # need slot width; only the node and update paths do.
         fact = self._mlp('fact', jnp.concatenate([
             table('rel', rel, self.tables['n_rel']),
             table('abs', g['graph_edge_abs'], self.tables['n_abs']),
             tmask[..., None] * table(
                 'temp', g['graph_edge_temp'], self.tables['n_temp']),
-        ], -1)) * evalid[..., None]
+        ], -1), self.fact_dim) * evalid[..., None]
 
         source, dest = _selectors(
             g['graph_edge_src'], g['graph_edge_dst'], evalid, N, dtype)
@@ -155,17 +159,18 @@ class GraphEncoder(nj.Module):
 
         for i in range(self.layers):
             msg = self._mlp(f'msg{i}', jnp.concatenate(
-                [_gather(source, x), _gather(dest, x), fact], -1))
+                [_gather(source, x), _gather(dest, x), fact], -1), self.fact_dim)
             msg = msg * evalid[..., None]
             agg = jnp.einsum(
                 'ben,beu->bnu', dest, msg, optimize='optimal') / degree
-            x = x + self._mlp(f'upd{i}', jnp.concatenate([x, agg], -1))
+            x = x + self._mlp(
+                f'upd{i}', jnp.concatenate([x, agg], -1), self.slot_dim)
             x = x * nvalid
 
         return self.sub('out', nn.Norm, self.norm)(x) * nvalid
 
-    def _mlp(self, name, x):
-        x = self.sub(name, nn.Linear, self.slot_dim, **self.kw)(x)
+    def _mlp(self, name, x, units):
+        x = self.sub(name, nn.Linear, units, **self.kw)(x)
         return nn.act(self.act)(self.sub(f'{name}norm', nn.Norm, self.norm)(x))
 
 
@@ -179,6 +184,7 @@ class RelationDecoder(nj.Module):
     """
 
     slot_dim: int = 256
+    fact_dim: int = 64
     embed: int = 64
     norm: str = 'rms'
     act: str = 'gelu'
@@ -201,7 +207,7 @@ class RelationDecoder(nj.Module):
             onehot_embed(
                 self, 'rel', rel, self.tables['n_rel'], self.embed, dtype),
         ], -1)
-        h = self.sub('pair', nn.Linear, self.slot_dim, **self.kw)(h)
+        h = self.sub('pair', nn.Linear, self.fact_dim, **self.kw)(h)
         h = nn.act(self.act)(self.sub('pairnorm', nn.Norm, self.norm)(h))
         abs_classes = jnp.asarray(self.tables['abs_valid'])[rel]
         # Every change label is legal for any rho that carries one; index 0 is

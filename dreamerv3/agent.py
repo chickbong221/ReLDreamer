@@ -72,7 +72,7 @@ class Agent(embodied.jax.Agent):
         slot_dim=dynkw['slot_dim'], act=dynkw['act'], norm=dynkw['norm'],
         winit=dynkw['winit'])
     self.graphdec = RelationDecoder(
-        embed=config.graph.embed, **slotkw,
+        embed=config.graph.embed, fact_dim=config.graph.fact_dim, **slotkw,
         name='graphdec') if self.semantic else None
     self.readout = SlotReadout(
         **{k: v for k, v in slotkw.items() if k != 'act'},
