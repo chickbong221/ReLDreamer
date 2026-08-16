@@ -453,8 +453,12 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
       logger.add(usage.stats(), prefix='usage')
       logger.add({'fps/policy': policy_fps.result()})
       logger.add({'fps/train': train_fps.result()})
-      logger.add({'timer': elements.timer.stats()['summary']})
+      # stats() drains the accumulators, so read it once and reuse.
+      timer_stats = elements.timer.stats()
+      logger.add({'timer': timer_stats['summary']})
       logger.write()
+      if timer_stats.get('summary'):
+        print(timer_stats['summary'])
 
   cp.save()
 
