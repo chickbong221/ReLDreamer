@@ -144,8 +144,13 @@ def make_agent(config):
   obs_space = {k: v for k, v in env.obs_space.items() if notlog(k)}
   act_space = {k: v for k, v in env.act_space.items() if k != 'reset'}
   # Only the env knows how many entity types the mined whitelists cover.
+  # Wrapper.__getattr__ turns a missing attribute into ValueError, so the
+  # default of getattr never fires on an env that has no graph.
   agent_config = config.agent
-  sizes = getattr(env, 'graph_vocab_sizes', None) or {}
+  try:
+    sizes = env.graph_vocab_sizes or {}
+  except (AttributeError, ValueError):
+    sizes = {}
   if sizes:
     agent_config = agent_config.update(
         {f'graph.{k}': v for k, v in sizes.items()})
