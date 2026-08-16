@@ -77,22 +77,6 @@ class Replay:
   def add(self, step, worker=0):
     step = {k: v for k, v in step.items() if not k.startswith('log/')}
 
-    # --- Batched input: values shaped [N, ...] → split into N scalar adds ---
-    # Detect batch dimension: any numpy/array value with first dim > 1.
-    # Scalar obs from normal Driver already have no leading batch dim here,
-    # so this branch only fires when ManiSkill batched mode is active.
-    first_val = next(iter(step.values()))
-    if (hasattr(first_val, '__len__')
-        and not isinstance(first_val, (str, bytes))
-        and np.asarray(first_val).ndim >= 1
-        and np.asarray(first_val).shape[0] > 1):
-      N = np.asarray(first_val).shape[0]
-      for i in range(N):
-        self.add({k: np.asarray(v)[i] for k, v in step.items()},
-                 worker=worker * N + i)
-      return
-    # --- End batched input handling ---
-
     with self.rwlock.reading:
       step = {k: np.asarray(v) for k, v in step.items()}
 
