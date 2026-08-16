@@ -139,9 +139,10 @@ defaults:
     ac_grads: False
     dyn:
       typ: rssm
-      # unroll applies only to the recurrent RSSM scans. Graph encoding is
-      # already batched over B*T outside the observation scan.
-      rssm: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, slots: 6, slot_dim: 256, slot_heads: 4, act: silu, norm: rms, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0, unroll: False}
+      # unroll is how many scan iterations XLA fuses into one block. It applies
+      # only to the recurrent RSSM scans; graph encoding is already batched over
+      # B*T outside the observation scan.
+      rssm: {deter: 8192, hidden: 1024, stoch: 32, classes: 64, slots: 6, slot_dim: 256, slot_heads: 4, act: silu, norm: rms, unimix: 0.01, outscale: 1.0, winit: trunc_normal_in, imglayers: 2, obslayers: 1, dynlayers: 1, absolute: False, blocks: 8, free_nats: 1.0, unroll: 1}
     # No `units` key here on purpose: the size presets carry a `.*\.units`
     # wildcard, so a key by that name would silently widen the graph branch to
     # the preset's model width. slot_dim is the graph path's one width and it is

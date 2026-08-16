@@ -69,7 +69,7 @@ class RSSM(nj.Module):
   semantic: bool = True
   norm: str = 'rms'
   act: str = 'gelu'
-  unroll: bool = False
+  unroll: int = 1
   unimix: float = 0.01
   outscale: float = 1.0
   imglayers: int = 2
@@ -154,7 +154,7 @@ class RSSM(nj.Module):
       if single:
         carry, (entry, feat) = step(carry, (tokens, action, reset))
         return carry, entry, feat, {}
-      unroll = jax.tree.leaves(tokens)[0].shape[1] if self.unroll else 1
+      unroll = max(1, min(self.unroll, jax.tree.leaves(tokens)[0].shape[1]))
       carry, (entries, feat) = nj.scan(
           step, carry, (tokens, action, reset), unroll=unroll, axis=1)
       return carry, entries, feat, {}
@@ -166,7 +166,7 @@ class RSSM(nj.Module):
     if single:
       carry, (entry, feat, aux) = step(carry, (tokens, *obs, action, reset))
       return carry, entry, feat, aux
-    unroll = jax.tree.leaves(tokens)[0].shape[1] if self.unroll else 1
+    unroll = max(1, min(self.unroll, jax.tree.leaves(tokens)[0].shape[1]))
     carry, (entries, feat, aux) = nj.scan(
         step, carry, (tokens, *obs, action, reset), unroll=unroll, axis=1)
     return carry, entries, feat, aux
@@ -295,7 +295,7 @@ class RSSM(nj.Module):
 
   def imagine(self, carry, policy, length, training, single=False):
     if not single:
-      unroll = length if self.unroll else 1
+      unroll = max(1, min(self.unroll, length))
       if callable(policy):
         carry, (feat, action) = nj.scan(
             lambda c, _: self.imagine(c, policy, 1, training, single=True),
